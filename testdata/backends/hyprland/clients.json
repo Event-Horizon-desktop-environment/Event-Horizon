@@ -1,0 +1,131 @@
+[
+  {
+    "address": "0x55dc86b61e60",
+    "mapped": true,
+    "hidden": false,
+    "visible": true,
+    "acceptsInput": true,
+    "at": [
+      1282,
+      2
+    ],
+    "size": [
+      1276,
+      1436
+    ],
+    "workspace": {
+      "id": 2,
+      "name": "2"
+    },
+    "floating": false,
+    "monitor": 1,
+    "class": "otter-term",
+    "title": "Fixture Window Title",
+    "initialClass": "otter-term",
+    "initialTitle": "Fixture Window Title",
+    "pid": 150048,
+    "xwayland": false,
+    "pinned": false,
+    "pinFullscreened": false,
+    "fullscreen": 0,
+    "fullscreenClient": 0,
+    "fullscreenHandler": "default",
+    "allowedOverFullscreen": true,
+    "grouped": [],
+    "tags": [],
+    "swallowing": "0x0",
+    "focusHistoryID": 1,
+    "inhibitingIdle": false,
+    "xdgTag": "",
+    "xdgDescription": "",
+    "contentType": "none",
+    "tearingHint": false,
+    "stableId": "1800011f"
+  },
+  {
+    "address": "0x55dc865a0340",
+    "mapped": true,
+    "hidden": false,
+    "visible": true,
+    "acceptsInput": true,
+    "at": [
+      2562,
+      2
+    ],
+    "size": [
+      2556,
+      1362
+    ],
+    "workspace": {
+      "id": 1,
+      "name": "1"
+    },
+    "floating": false,
+    "monitor": 0,
+    "class": "microsoft-edge-dev",
+    "title": "Fixture Window Title",
+    "initialClass": "microsoft-edge-dev",
+    "initialTitle": "Fixture Window Title",
+    "pid": 66382,
+    "xwayland": false,
+    "pinned": false,
+    "pinFullscreened": false,
+    "fullscreen": 0,
+    "fullscreenClient": 0,
+    "fullscreenHandler": "default",
+    "allowedOverFullscreen": true,
+    "grouped": [],
+    "tags": [],
+    "swallowing": "0x0",
+    "focusHistoryID": 0,
+    "inhibitingIdle": true,
+    "xdgTag": "",
+    "xdgDescription": "",
+    "contentType": "none",
+    "tearingHint": false,
+    "stableId": "180000d1"
+  },
+  {
+    "address": "0x55dc867b13f0",
+    "mapped": true,
+    "hidden": false,
+    "visible": true,
+    "acceptsInput": true,
+    "at": [
+      2,
+      2
+    ],
+    "size": [
+      1276,
+      1436
+    ],
+    "workspace": {
+      "id": 2,
+      "name": "2"
+    },
+    "floating": false,
+    "monitor": 1,
+    "class": "vesktop",
+    "title": "Fixture Window Title",
+    "initialClass": "vesktop",
+    "initialTitle": "Fixture Window Title",
+    "pid": 2366,
+    "xwayland": false,
+    "pinned": false,
+    "pinFullscreened": false,
+    "fullscreen": 0,
+    "fullscreenClient": 0,
+    "fullscreenHandler": "default",
+    "allowedOverFullscreen": true,
+    "grouped": [],
+    "tags": [],
+    "swallowing": "0x0",
+    "focusHistoryID": 2,
+    "inhibitingIdle": false,
+    "xdgTag": "",
+    "xdgDescription": "",
+    "contentType": "none",
+    "tearingHint": false,
+    "stableId": "18000004"
+  }
+]

@@ -1,0 +1,49 @@
+@figures = [
+  zero
+  one
+  two
+  three
+  four
+  five
+  six
+  seven
+  eight
+  nine
+];
+@numerators = [
+  zero.numr
+  one.numr
+  two.numr
+  three.numr
+  four.numr
+  five.numr
+  six.numr
+  seven.numr
+  eight.numr
+  nine.numr
+];
+@denominators = [
+  zero.dnom
+  one.dnom
+  two.dnom
+  three.dnom
+  four.dnom
+  five.dnom
+  six.dnom
+  seven.dnom
+  eight.dnom
+  nine.dnom
+];
+
+lookup FRAC {
+  sub slash by fraction;
+} FRAC;
+
+lookup UP {
+  sub @figures by @numerators;
+} UP;
+
+lookup DOWN {
+  sub fraction @numerators' by @denominators;
+  sub @denominators @numerators' by @denominators;
+} DOWN;

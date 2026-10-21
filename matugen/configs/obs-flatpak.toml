@@ -1,0 +1,3 @@
+[templates.ehobs_flatpak]
+input_path = 'SHELL_DIR/matugen/templates/obs.obt'
+output_path = 'HOME_DIR/.var/app/com.obsproject.Studio/config/obs-studio/themes/event-horizon.obt'

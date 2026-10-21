@@ -1,0 +1,3 @@
+[templates.ehowler]
+input_path = 'SHELL_DIR/matugen/templates/owler.json'
+output_path = 'CONFIG_DIR/owler/themes/matugen.json'

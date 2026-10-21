@@ -1,0 +1,19 @@
+.{
+    .name = .event_horizon_zig,
+    .version = "0.1.0",
+    .fingerprint = 0x215d378ebad27910,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "build.sh",
+        "README.md",
+        "LICENSE",
+        "src",
+        "protocols",
+        "testdata",
+        "third_party",
+        "matugen",
+        "assets",
+    },
+}

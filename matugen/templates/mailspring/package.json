@@ -1,0 +1,12 @@
+{
+  "name": "event-horizon",
+  "displayName": "Event Horizon",
+  "theme": "ui",
+  "version": "1.0.0",
+  "description": "Event Horizon palette theme for Mailspring",
+  "license": "MIT",
+  "engines": {
+    "mailspring": "*"
+  },
+  "private": true
+}

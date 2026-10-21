@@ -1,0 +1,40 @@
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>vesktop,Fixture Window Title
+activewindowv2>>55dc867b13f0
+focusedmon>>DP-3,3
+focusedmonv2>>DP-3,3
+activewindow>>,Fixture Window Title
+activewindowv2>>
+focusedmon>>DP-2,2
+focusedmonv2>>DP-2,2
+activewindow>>vesktop,Fixture Window Title
+activewindowv2>>55dc867b13f0
+createworkspace>>91
+createworkspacev2>>91,91
+activewindow>>,Fixture Window Title
+activewindowv2>>
+workspace>>91
+workspacev2>>91,91
+createworkspace>>92
+createworkspacev2>>92,92
+workspace>>92
+workspacev2>>92,92
+destroyworkspace>>91
+destroyworkspacev2>>91,91
+activewindow>>vesktop,Fixture Window Title
+activewindowv2>>55dc867b13f0
+workspace>>2
+workspacev2>>2,2
+destroyworkspace>>92
+destroyworkspacev2>>92,92
+activewindow>>otter-term,Fixture Window Title
+activewindowv2>>55dc86b61e60
+activewindow>>otter-term,Fixture Window Title
+activewindowv2>>55dc86b61e60
+activewindow>>otter-term,Fixture Window Title
+activewindowv2>>55dc86b61e60
+windowtitle>>55dc86b61e60
+windowtitlev2>>55dc86b61e60,Fixture Window Title
+activewindow>>otter-term,Fixture Window Title
+activewindowv2>>55dc86b61e60

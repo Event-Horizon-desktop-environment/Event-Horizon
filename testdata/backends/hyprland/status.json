@@ -1,0 +1,4 @@
+{
+  "configProvider": "lua",
+  "backend": "drm"
+}
