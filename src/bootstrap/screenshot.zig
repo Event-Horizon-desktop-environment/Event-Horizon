@@ -396,6 +396,22 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
     defer conn.freeBound(&bound);
     conn.bindAll(&bound);
 
+    // --- list windows ---------------------------------------------------
+    if (f.list_windows) {
+        if (bound.foreign_toplevel_list == null) {
+            rep.err("screenshot: ext-foreign-toplevel-list not available (not Hyprland?).\n", .{});
+            return 1;
+        }
+        var tracker = foreign.Tracker.init(alloc);
+        defer tracker.deinit();
+        tracker.bindExt(bound.foreign_toplevel_list);
+        _ = wl.wl_display_roundtrip(conn.display);
+        for (tracker.windows.items) |w| {
+            rep.out("{s}  {s}  {s}\n", .{ w.identifier, w.app_id, w.title });
+        }
+        return 0;
+    }
+
     const backends = shot.Backends{
         .display = conn.display,
         .shm = bound.shm,
@@ -472,22 +488,6 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
         };
         if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
         return captureStatus(&rep, f, handed_off);
-    }
-
-    // --- list windows ---------------------------------------------------
-    if (f.list_windows) {
-        if (bound.foreign_toplevel_list == null) {
-            rep.err("screenshot: ext-foreign-toplevel-list not available (not Hyprland?).\n", .{});
-            return 1;
-        }
-        var tracker = foreign.Tracker.init(alloc);
-        defer tracker.deinit();
-        tracker.bindExt(bound.foreign_toplevel_list);
-        _ = wl.wl_display_roundtrip(conn.display);
-        for (tracker.windows.items) |w| {
-            rep.out("{s}  {s}  {s}\n", .{ w.identifier, w.app_id, w.title });
-        }
-        return 0;
     }
 
     // --- output choice --------------------------------------------------
