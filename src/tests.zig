@@ -245,6 +245,7 @@ test {
     _ = @import("desktop_shell/overview/tiles.zig");
     _ = @import("desktop_shell/overview/host.zig");
     _ = @import("desktop_shell/overview/capture.zig");
+    _ = @import("desktop_shell/overview/launch.zig");
     _ = @import("desktop_shell/overview/shots.zig");
     _ = @import("desktop_shell/overview/strip.zig");
     _ = @import("desktop_shell/overview/backdrop.zig");

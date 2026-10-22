@@ -105,13 +105,18 @@ pub const Sidebar = struct {
     }
 
     /// Index into `app_mod.sidebar_categories` of the rail button lit for
-    /// the active tab (first category whose id or subs match, else 0).
+    /// the active tab. Page owners win over category ids: a category id can
+    /// numerically collide with another section's page (Sound's legacy id 18
+    /// is the Network category's Wired page), and the page's own section is
+    /// the one that must light up.
     pub fn activeCategory(self: *const Sidebar) usize {
         for (app_mod.sidebar_categories, 0..) |cat, i| {
-            if (cat.id == self.active_tab) return i;
             for (cat.subs) |s| {
                 if (s.tab_id == self.active_tab) return i;
             }
+        }
+        for (app_mod.sidebar_categories, 0..) |cat, i| {
+            if (cat.id == self.active_tab) return i;
         }
         return 0;
     }
@@ -661,4 +666,22 @@ test "settings2-ui-sidebar: rail and list geometry" {
     try t.expect(d == .pick_result);
     sb.setQuery("zzz-no-match");
     try t.expectEqual(@as(usize, 0), sb.results_len);
+}
+
+test "settings2-ui-sidebar: a page wins over a colliding category id" {
+    const t = std.testing;
+    var sb = Sidebar{};
+    // Sound's category id is 18, but the Network section owns the Wired page
+    // 18; activating Wired must light (and list) Network, not Sound.
+    sb.active_tab = 18;
+    const ci = sb.activeCategory();
+    try t.expectEqualStrings("Network", app_mod.sidebar_categories[ci].label);
+    var owns = false;
+    for (app_mod.sidebar_categories[ci].subs) |s| {
+        if (s.tab_id == 18) owns = true;
+    }
+    try t.expect(owns);
+    // The Sound category still resolves through one of its own pages.
+    sb.active_tab = 8;
+    try t.expectEqualStrings("Sound", app_mod.sidebar_categories[sb.activeCategory()].label);
 }

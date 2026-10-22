@@ -1376,13 +1376,21 @@ pub const Applier = struct {
             writeJsonObject(arena, self.io, settings_path, root);
         }
 
-        /// `merge_heroic_prefs`: flip the store theme selection and point
-        /// Heroic's custom-themes directory at ours.
+        /// `merge_heroic_prefs`: select our store theme and point Heroic's
+        /// custom-themes directory at ours.
+        ///
+        /// Heroic stores a custom-theme selection as the CSS file name
+        /// (`event-horizon.css`), not the body class it derives from it:
+        /// `getThemeCSS` joins the stored value onto `customThemesPath`.
+        /// Writing the bare `event-horizon` makes that lookup miss, so the
+        /// stylesheet is empty and Heroic boots with its default light
+        /// palette. Keep the `.css` suffix.
         fn mergeHeroicPrefs(self: *Applier, heroic_dir: []const u8) void {
             const alloc = self.alloc;
             var arena_state: std.heap.ArenaAllocator = .init(alloc);
             defer arena_state.deinit();
             const arena = arena_state.allocator();
+            const theme_value = "event-horizon.css";
 
             var b1: [4096]u8 = undefined;
             const store_path = std.fmt.bufPrint(&b1, "{s}/store/config.json", .{heroic_dir}) catch return;
@@ -1391,10 +1399,10 @@ pub const Applier = struct {
                 if (root == .object) {
                     const need = blk: {
                         const v = root.object.get("theme") orelse break :blk true;
-                        break :blk !(v == .string and std.mem.eql(u8, v.string, "event-horizon"));
+                        break :blk !(v == .string and std.mem.eql(u8, v.string, theme_value));
                     };
                     if (need) {
-                        root.object.put(arena, "theme", .{ .string = "event-horizon" }) catch return;
+                        root.object.put(arena, "theme", .{ .string = theme_value }) catch return;
                         writeJsonObject(arena, self.io, store_path, root);
                     }
                 }
@@ -2665,7 +2673,7 @@ test "apply: merge vesktop enables midnight.theme.css once" {
     try t.expectEqualStrings("{\"enabledThemes\": []}\n", g3);
 }
 
-test "apply: merge heroic flips store theme and seeds customThemesPath" {
+test "apply: merge heroic selects the css file and seeds customThemesPath" {
     const t = std.testing;
     const alloc = t.allocator;
     const io = t.io;
@@ -2689,7 +2697,7 @@ test "apply: merge heroic flips store theme and seeds customThemesPath" {
 
     const g1 = std.Io.Dir.cwd().readFileAlloc(io, store, alloc, .limited(1 << 20)) catch return error.MissingResult;
     defer alloc.free(g1);
-    try t.expect(std.mem.indexOf(u8, g1, "\"theme\": \"event-horizon\"") != null);
+    try t.expect(std.mem.indexOf(u8, g1, "\"theme\": \"event-horizon.css\"") != null);
 
     const g2 = std.Io.Dir.cwd().readFileAlloc(io, cfg, alloc, .limited(1 << 20)) catch return error.MissingResult;
     defer alloc.free(g2);
@@ -2698,6 +2706,15 @@ test "apply: merge heroic flips store theme and seeds customThemesPath" {
     try t.expect(std.mem.indexOf(u8, g2, want_path) != null);
     // Sibling keys survive the rewrite.
     try t.expect(std.mem.indexOf(u8, g2, "\"other\": 1") != null);
+
+    // Older Event Horizon builds wrote the bare body class. Heroic joins
+    // the stored value onto customThemesPath, so it must be repaired to
+    // the actual CSS file name or the custom stylesheet stays unloaded.
+    writeAll(io, store, "{\"theme\": \"event-horizon\"}\n");
+    ap.mergeHeroicPrefs(dir);
+    const g3 = std.Io.Dir.cwd().readFileAlloc(io, store, alloc, .limited(1 << 20)) catch return error.MissingResult;
+    defer alloc.free(g3);
+    try t.expect(std.mem.indexOf(u8, g3, "\"theme\": \"event-horizon.css\"") != null);
 
     // Already correct -> no rewrite (mtime loop guard).
     const mt1 = (try std.Io.Dir.cwd().statFile(io, store, .{})).mtime;

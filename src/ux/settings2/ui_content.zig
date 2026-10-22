@@ -20,6 +20,7 @@ const hyprland_tab = @import("hyprland_tab.zig");
 const hyprland_page = @import("hyprland_page.zig");
 const bluetooth_tab = @import("bluetooth_tab.zig");
 const sound_tab = @import("sound_tab.zig");
+const network_tab = @import("network_tab.zig");
 const templates_tab = @import("templates_tab.zig");
 const time_tab = @import("time_tab.zig");
 const accounts_tab = @import("accounts_tab.zig");
@@ -255,6 +256,10 @@ pub const Hit = union(enum) {
     /// `Win.onSoundAction`, which owns the over-amp toggle and the
     /// `audio/audio.toml` bookkeeping.
     sound: sound_tab.Action,
+    /// A Network-page press (Wi-Fi 17 / Wired 18 / VPN 28). The page applies
+    /// every backend write itself, so `applyHit` returns false and the window
+    /// only repaints.
+    network: network_tab.Action,
     /// An Icons-tab press (theme card / Apply / Cancel). Same shape again:
     /// `applyHit` returns false so the window routes it to
     /// `Win.onIconsAction`, which owns `Settings`.
@@ -324,6 +329,10 @@ pub const Content = struct {
     /// The Sound pages when they own tabs 8 / 81 / 82 / 83 (same delegation
     /// as `bt`): the Audio Center's four live pages.
     snd: ?*sound_tab.Page = null,
+    /// The Network page when Wi-Fi (17), Wired (18) or VPN (28) is active:
+    /// one self-painted page owning all three rail entries, the live D-Bus
+    /// snapshot, the VPN roster and both modals.
+    net: ?*network_tab.Page = null,
     /// The Time pages when one of their tabs (30 System Time / 84 World
     /// Clock) is active (same delegation as `bt`): the format / date /
     /// preview / network-time / timezone cards, or the shared World clocks
@@ -524,6 +533,30 @@ pub const Content = struct {
         };
     }
 
+    /// The Network page when one of its three rail entries is active, else
+    /// null. Same single-place check as `sndPage`; the page dispatches from
+    /// `Geo.tab` and gets the Wired child page from `activeSub`.
+    pub fn netPage(self: *const Content) ?*network_tab.Page {
+        const p = self.net orelse return null;
+        if (!network_tab.ownsTab(self.active_tab)) return null;
+        return p;
+    }
+
+    /// Content-column geometry for the Network page. Carries the scroll
+    /// offset (the modals undo the content translate) plus the active rail
+    /// tab and Wired child page.
+    pub fn netGeo(self: *const Content) network_tab.Geo {
+        return .{
+            .content_x = self.content_x,
+            .content_w = self.content_w,
+            .win_w = self.win_w,
+            .win_h = self.win_h,
+            .scroll_px = self.scroll_px,
+            .tab = self.active_tab,
+            .sub = self.activeSub(),
+        };
+    }
+
     /// The Icons page when it owns this tab, else null. Same single-place
     /// tab-id check as `wallPage`/`bingPage`.
     pub fn iconsPage(self: *const Content) ?*icons_themes_tab.Page {
@@ -630,6 +663,14 @@ pub const Content = struct {
         if (self.sndPage()) |sp| {
             self.placed_len = 0;
             self.total_h = sp.totalHeight(self.sndGeo());
+            return;
+        }
+        // Network pages: Wi-Fi / Wired / VPN, all self-painted; the page's
+        // bottom edge (which grows with the AP and VPN rosters) is the scroll
+        // extent.
+        if (self.netPage()) |np| {
+            self.placed_len = 0;
+            self.total_h = np.totalHeight(self.netGeo());
             return;
         }
         // Icons tab: likewise — the grid and its Apply/Cancel row are the
@@ -890,6 +931,14 @@ pub const Content = struct {
             }
             return .none;
         }
+        // Network pages: Wi-Fi rows / Wired Disconnect / VPN rows and verbs,
+        // all applied inline by the page.
+        if (self.netPage()) |np| {
+            if (np.hit(self.netGeo(), px, self.unscroll(py))) |act| {
+                return .{ .network = act };
+            }
+            return .none;
+        }
         // Icons tab: no placed rows either — the page's own hit test.
         if (self.iconsPage()) |ip| {
             if (ip.hit(self.iconsGeo(), px, self.unscroll(py))) |act| {
@@ -1120,6 +1169,9 @@ pub const Content = struct {
             // The Sound pages run their own PipeWire writes; the window owns
             // the over-amp toggle and the audio.toml bookkeeping.
             .sound => return false,
+            // The Network page runs every backend verb itself (D-Bus, nmcli,
+            // the picker); the window only repaints.
+            .network => return false,
             // The Icons page holds the theme grid, the preview cache and the
             // backup; the window owns `Settings`, so this routes there too.
             .icons => return false,
@@ -1459,6 +1511,31 @@ pub const Content = struct {
                 g_ov,
             );
             cairo_restore(c);
+            return;
+        }
+
+        // Network pages: the Wi-Fi card stack / Wired subpage / VPN roster
+        // (plus a window-space dialog while one is open).
+        if (self.netPage()) |np| {
+            np.paint(
+                c,
+                self.netGeo(),
+                self.pointer_x,
+                self.pointer_ly,
+                g_ov,
+            );
+            cairo_restore(c);
+            // Wired is the one Network page with a child bar; custom pages
+            // return before the shared bar paint below.
+            ui_subtab.paint(
+                c,
+                self.active_tab,
+                self.content_x,
+                self.content_w,
+                @intCast(self.activeSub()),
+                self.pointer_x,
+                self.pointer_y,
+            );
             return;
         }
 

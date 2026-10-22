@@ -28,6 +28,7 @@ const bing_tab = @import("bing_tab.zig");
 const icons_themes_tab = @import("icons_themes_tab.zig");
 const bluetooth_tab = @import("bluetooth_tab.zig");
 const sound_tab = @import("sound_tab.zig");
+const network_tab = @import("network_tab.zig");
 const templates_tab = @import("templates_tab.zig");
 const time_tab = @import("time_tab.zig");
 const accounts_tab = @import("accounts_tab.zig");
@@ -206,6 +207,10 @@ pub const Win = struct {
     /// The Sound rail's four pages (Devices 8 | Bluetooth 81 | Apps 82 |
     /// Engine 83) — self-painted from the live audio backend, like `bt`.
     snd: sound_tab.Page = .{},
+    /// The Network rail's three pages (Wi-Fi 17 | Wired 18 | VPN 28) — one
+    /// self-painted page owning the live D-Bus snapshot, the nmcli VPN roster
+    /// and both modals; `Content.net` borrows it while a Network tab is up.
+    net: network_tab.Page = .{},
     /// The Time tab's page (tab 30). Owns the live `timedatectl` reading,
     /// the throttled query, the two world-clock stores and the picker
     /// modal; `Content.tm` borrows it while the tab is up.
@@ -270,6 +275,11 @@ pub const Win = struct {
         self.content.bt = &self.bt;
         self.snd.init(self.gpa, self.io);
         self.content.snd = &self.snd;
+        // Network page: one instance for Wi-Fi / Wired / VPN. It queries the
+        // live D-Bus snapshot and the nmcli VPN roster lazily, on the first
+        // layout pass for one of its rail tabs.
+        self.net.init(self.gpa, self.io);
+        self.content.net = &self.net;
         // Time page: needs the allocator + io for the timedatectl reads and
         // the two world-clock stores.
         self.tm.init(self.gpa, self.io, &self.settings);
@@ -436,6 +446,7 @@ pub const Win = struct {
         self.icons.deinit();
         self.bt.deinit();
         self.snd.deinit();
+        self.net.deinit();
         self.tm.deinit();
         self.acc.deinit();
         self.tpl.deinit();
@@ -1781,7 +1792,10 @@ pub const Win = struct {
         // The Accounts tab keeps a slow tick alive for its throttled user
         // refresh and the transient toast.
         const acc_live = accounts_tab.ownsTab(self.content.active_tab);
-        if (!animating and !bt_live and !snd_live and !tm_live and !acc_live) return;
+        // The Network pages poll the D-Bus snapshot / VPN roster and animate
+        // the scan label on the same tick.
+        const net_live = network_tab.ownsTab(self.content.active_tab);
+        if (!animating and !bt_live and !snd_live and !tm_live and !acc_live and !net_live) return;
         if (self.timer_fd < 0) {
             const rc: isize = @bitCast(linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true }));
             if (rc < 0) return;
@@ -1878,6 +1892,13 @@ pub const Win = struct {
             self.repaint();
             return;
         }
+        // Network modals: the Wi-Fi password prompt and the VPN Add dialog
+        // track their buttons in window space.
+        if (self.content.netPage() != null and self.net.modalActive()) {
+            self.net.modalMotion(self.win_w, self.win_h, x, y);
+            self.repaint();
+            return;
+        }
         // Hyprland bezier handle drag + anim dropdown hover
         // (Hyprland section pages only).
         if (hyprland_tab.isSectionTab(self.content.active_tab)) {
@@ -1948,6 +1969,14 @@ pub const Win = struct {
             // runs its own system writes; the cancel just closes).
             if (self.content.accountsPage() != null and self.acc.modalActive()) {
                 if (self.acc.modalUp(self.win_w, self.win_h, self.ptr_x, self.ptr_y)) {
+                    self.repaint();
+                    return;
+                }
+            }
+            // Network modal release resolves the armed item (Wi-Fi Confirm
+            // dials; the VPN Add form spawns the create).
+            if (self.content.netPage() != null and self.net.modalActive()) {
+                if (self.net.modalUp(self.win_w, self.win_h, self.ptr_x, self.ptr_y)) {
                     self.repaint();
                     return;
                 }
@@ -2061,6 +2090,13 @@ pub const Win = struct {
         // 1c. Accounts modal (add user / change password): same deal.
         if (self.content.accountsPage() != null and self.acc.modalActive()) {
             if (self.acc.modalDown(self.win_w, self.win_h, x, y)) {
+                self.repaint();
+                return;
+            }
+        }
+        // 1d. Network modals (Wi-Fi password / VPN Add): eat every click.
+        if (self.content.netPage() != null and self.net.modalActive()) {
+            if (self.net.modalDown(self.win_w, self.win_h, x, y)) {
                 self.repaint();
                 return;
             }
@@ -2243,6 +2279,13 @@ pub const Win = struct {
                 self.onSoundAction(act);
                 return;
             },
+            .network => |act| {
+                // The page already applied the backend verb; the window only
+                // has to show the result.
+                _ = act;
+                self.repaint();
+                return;
+            },
             .templates => |act| {
                 self.onTemplatesAction(act);
                 return;
@@ -2337,6 +2380,13 @@ pub const Win = struct {
         // Accounts modal: the wheel is absorbed while it hovers the dialog.
         if (self.content.accountsPage() != null and self.acc.modalActive()) {
             if (self.acc.modalAxis(self.win_w, self.win_h, self.ptr_x, self.ptr_y, step)) {
+                self.repaint();
+                return;
+            }
+        }
+        // Network modal: same — absorb the wheel over the dialog.
+        if (self.content.netPage() != null and self.net.modalActive()) {
+            if (self.net.modalAxis(self.win_w, self.win_h, self.ptr_x, self.ptr_y, step)) {
                 self.repaint();
                 return;
             }
@@ -2445,6 +2495,12 @@ pub const Win = struct {
         // Accounts keys: the two dialog forms and the inline display-name /
         // hostname fields consume keys while they own focus.
         if (self.content.accountsPage() != null and self.acc.key(ev.sym, ev.utf8[0..ev.utf8_len])) {
+            self.repaint();
+            return;
+        }
+        // Network keys: the Wi-Fi password prompt and the VPN Add form own
+        // them while open (Tab cycles the VPN fields, Enter submits).
+        if (self.content.netPage() != null and self.net.key(ev.sym, ev.utf8[0..ev.utf8_len])) {
             self.repaint();
             return;
         }

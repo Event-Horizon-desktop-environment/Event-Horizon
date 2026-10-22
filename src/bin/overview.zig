@@ -41,6 +41,7 @@ const ov_capture = @import("../desktop_shell/overview/capture.zig");
 const hypr_ipc = @import("../backends/hyprland_ipc.zig");
 const ov_reveal = @import("../desktop_shell/overview/reveal.zig");
 const ov_shots = @import("../desktop_shell/overview/shots.zig");
+const ov_launch = @import("../desktop_shell/overview/launch.zig");
 const shot_cache = @import("../wl/capture/shot_cache.zig");
 
 fn getenvStr(key: [:0]const u8) ?[]const u8 {
@@ -986,22 +987,49 @@ fn uiScale(dock_scale: f64, shell_ui_scale: f64) f64 {
     return clampf(dock_scale, 0.5, 2.0) * clampf(shell_ui_scale, 0.5, 2.0);
 }
 
+/// Read the pid out of the lock file and SIGTERM that process. The caller
+/// has already established that the flock is held, so the pid belongs to the
+/// live overview. Failures are non-fatal: a close request with no readable
+/// pid just means there is nothing to signal.
+fn stopLockHolder(io: std.Io, gpa: std.mem.Allocator, path: []const u8) void {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32)) catch return;
+    defer gpa.free(bytes);
+    var end: usize = 0;
+    while (end < bytes.len and bytes[end] >= '0' and bytes[end] <= '9') : (end += 1) {}
+    if (end == 0) return;
+    const pid = std.fmt.parseInt(i32, bytes[0..end], 10) catch return;
+    if (pid <= 1 or pid == linux.getpid()) return;
+    std.posix.kill(pid, .TERM) catch return;
+    logz.log("overview: closed running pid={d}", .{pid});
+}
+
 pub fn main(init: std.process.Init) !u8 {
     _ = parent_guard.installGuard();
     config.setLeafOverride(config.leafForEnvFlag(init.environ_map.get(config.kIsolateEnv)));
     const gpa = init.gpa;
     const io = init.io;
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
+    const launch_mode = ov_launch.fromArgs(args);
 
     logz.init(io, init.environ_map.get("HOME"), "horizon-overview");
     defer logz.deinit();
     const t_boot = nowMs();
-    logz.log("boot: pid={d}", .{linux.getpid()});
+    logz.log("boot: pid={d} mode={s}", .{ linux.getpid(), @tagName(launch_mode) });
 
-    // One overview at a time, toggle semantics: a second launch signals the
-    // live copy off and exits (the clipstack picker's lock rule). The lock
-    // file carries the holder's pid; the kernel drops the flock when the
-    // holder dies, so the pid is only ever read while the lock is held.
+    // One overview at a time. The lock file carries the holder's pid; the
+    // kernel drops the flock when the holder dies, so the pid is only ever
+    // read while the lock is held.
+    //
+    //   toggle (default, dock/taskbar spawn): a live copy is signalled off,
+    //          otherwise this process becomes the surface.
+    //   open:  leave a live copy alone and exit; otherwise become it.
+    //   close: signal a live copy off and exit; otherwise just exit.
+    //
+    // The explicit modes are what the shell IPC and Super+Tab use, so
+    // `overview-open` is idempotent and `overview-close` never flashes a
+    // surface on the way out.
     var ov_lock: ?std.Io.File = null;
+    defer if (ov_lock) |file| file.close(io);
     if (init.environ_map.get("XDG_RUNTIME_DIR")) |rt| {
         var pbuf: [std.fs.max_path_bytes]u8 = undefined;
         const path = std.fmt.bufPrint(&pbuf, "{s}/event-horizon-overview.lock", .{rt}) catch "";
@@ -1010,18 +1038,15 @@ pub fn main(init: std.process.Init) !u8 {
                 const lrc = std.os.linux.flock(file.handle, std.posix.LOCK.EX | std.posix.LOCK.NB);
                 if (std.os.linux.errno(lrc) != .SUCCESS) {
                     file.close(io);
-                    if (std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32)) catch null) |bytes| {
-                        defer gpa.free(bytes);
-                        var end: usize = 0;
-                        while (end < bytes.len and bytes[end] >= '0' and bytes[end] <= '9') : (end += 1) {}
-                        if (end > 0) {
-                            const pid = std.fmt.parseInt(i32, bytes[0..end], 10) catch 0;
-                            if (pid > 1) {
-                                std.posix.kill(pid, .TERM) catch {};
-                                logz.log("overview: toggled out running pid={d}", .{pid});
-                            }
-                        }
+                    if (launch_mode == .open) {
+                        logz.log("overview: --open, already open", .{});
+                    } else {
+                        stopLockHolder(io, gpa, path);
                     }
+                    return 0;
+                }
+                if (launch_mode == .close) {
+                    file.close(io);
                     return 0;
                 }
                 var lbuf: [16]u8 = undefined;
@@ -1034,7 +1059,8 @@ pub fn main(init: std.process.Init) !u8 {
             }
         }
     }
-    defer if (ov_lock) |file| file.close(io);
+    // No lock path at all: `--close` still has nothing to do.
+    if (launch_mode == .close) return 0;
 
     var loaded = config.loadStacked(gpa, io, init.environ_map.get("XDG_CONFIG_HOME"), init.environ_map.get("HOME")) catch |e| {
         logz.err("init failed: {s}", .{@errorName(e)});

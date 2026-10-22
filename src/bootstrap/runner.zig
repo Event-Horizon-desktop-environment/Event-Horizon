@@ -15,6 +15,7 @@ const wl_conn = @import("../wl/connection.zig");
 const wl_pump = @import("../wl/pump.zig");
 const nightlight = @import("../wl/color/nightlight.zig");
 const gkbd = @import("../services/global_keyboard.zig");
+const ov_launch = @import("../desktop_shell/overview/launch.zig");
 const builtin = @import("builtin");
 
 /// `<spawn.h>` with GNU extensions so `POSIX_SPAWN_SETSID` is visible.
@@ -39,6 +40,17 @@ var g_supervisor: ?*supervisor_mod.Supervisor = null;
 /// zombies; the table is drained on every supervisor tick. Main loop
 /// thread only.
 var screenshot_pids: [8]std.posix.pid_t = .{0} ** 8;
+
+/// Overview children spawned by IPC or Super+Tab, reaped like screenshots.
+var overview_pids: [4]std.posix.pid_t = .{0} ** 4;
+
+/// Two triggers for one physical Win+Tab (our evdev path plus a leftover
+/// Hyprland `eh-ipc overview-toggle` bind) land milliseconds apart. The
+/// overview's lock toggles, so the second would close what the first opened.
+/// Collapse near-simultaneous toggles; explicit open/close are idempotent
+/// and never guarded.
+var last_overview_toggle_ms: i64 = 0;
+const overview_toggle_guard_ms: i64 = 250;
 
 const Shell = struct {
     sup: *supervisor_mod.Supervisor,
@@ -292,6 +304,7 @@ fn onTick(fd: i32, revents: i16, ctx: *anyopaque) void {
         applyNight(sh);
     }
     reapScreenshotChildren();
+    reapOverviewChildren();
     sh.sup.tick();
     sh.night.tick(supervisor_mod.nowMs());
     if (sh.ipc.running()) sh.ipc.pumpOnce(0);
@@ -342,6 +355,17 @@ fn runKeyAction(sh: *Shell, action: gkbd.Action) void {
                 logz.log("global-keyboard: all-monitors capture pid={d}", .{pid});
             } else {
                 logz.err("global-keyboard: all-monitors spawn failed errno={d}", .{-pid});
+            }
+        },
+        .overview => {
+            // Win+Tab: the same spawn path as `eh-ipc overview-toggle`,
+            // so the shell owns the combo even when no Hyprland bind is
+            // configured.
+            const pid = requestOverview(.toggle);
+            if (pid > 0) {
+                logz.log("global-keyboard: overview pid={d}", .{pid});
+            } else if (pid < 0) {
+                logz.err("global-keyboard: overview spawn failed errno={d}", .{-pid});
             }
         },
         // Existing topic/payload pair on the eh-ipc bus — the same one the
@@ -515,6 +539,109 @@ fn reapScreenshotChildren() void {
     }
 }
 
+/// Resolve the standalone overview beside this executable. The installed
+/// tree puts both binaries in `/usr/bin`; the build tree puts both in
+/// `zig-out/bin`, so the sibling always matches the supervisor that spawned
+/// it. A PATH fallback covers an exotic `/proc/self/exe` failure.
+fn chooseOverviewTarget(buf: *[eh_exe_buf]u8, self_exe: []const u8) [:0]const u8 {
+    const exe = stripDeletedMarker(self_exe);
+    if (exe.len > 0) {
+        if (std.fs.path.dirname(exe)) |dir| {
+            return std.fmt.bufPrintZ(buf, "{s}/horizon-overview", .{dir}) catch "horizon-overview";
+        }
+    }
+    return "horizon-overview";
+}
+
+/// Ask the standalone overview for `mode`. Returns its pid, 0 when the
+/// duplicate-toggle guard swallowed the request (or under test), or a
+/// negative errno. Main loop thread only — the guard timestamp is plain
+/// state, and every caller runs there.
+fn requestOverview(mode: ov_launch.Mode) i64 {
+    if (mode == .toggle and !builtin.is_test) {
+        const now = supervisor_mod.nowMs();
+        if (last_overview_toggle_ms != 0 and now - last_overview_toggle_ms < overview_toggle_guard_ms) {
+            logz.log("overview: duplicate toggle within {d}ms ignored", .{overview_toggle_guard_ms});
+            return 0;
+        }
+        const pid = spawnOverview(mode);
+        if (pid > 0) {
+            last_overview_toggle_ms = now;
+            trackOverviewPid(@intCast(pid));
+        }
+        return pid;
+    }
+    const pid = spawnOverview(mode);
+    if (pid > 0) trackOverviewPid(@intCast(pid));
+    return pid;
+}
+
+/// Spawn `horizon-overview --<mode>` detached in its own session.
+/// `posix_spawnp` with an argv array: no shell, and the mode is a literal
+/// flag chosen here, never IPC text.
+fn spawnOverview(mode: ov_launch.Mode) i64 {
+    var self_buf: [eh_exe_buf]u8 = undefined;
+    const self = resolveEventHorizon(&self_buf);
+    var ov_buf: [eh_exe_buf]u8 = undefined;
+    const bin = chooseOverviewTarget(&ov_buf, self);
+    const mode_flag = ov_launch.flag(mode);
+
+    var argv: [3][*c]u8 = undefined;
+    argv[0] = @constCast(bin.ptr);
+    argv[1] = @constCast(mode_flag.ptr);
+    argv[2] = null;
+
+    // Tests exercise the target/flag construction but must not exec a real
+    // overview surface.
+    if (builtin.is_test) return 0;
+
+    var pid: std.posix.pid_t = 0;
+    var rc: c_int = 0;
+    {
+        var attr: spawn_c.posix_spawnattr_t = undefined;
+        if (spawn_c.posix_spawnattr_init(&attr) != 0) {
+            rc = @intFromEnum(linux.E.NOMEM);
+        } else {
+            defer _ = spawn_c.posix_spawnattr_destroy(&attr);
+            if (spawn_c.posix_spawnattr_setflags(&attr, spawn_c.POSIX_SPAWN_SETSID) != 0) {
+                rc = @intFromEnum(linux.E.INVAL);
+            } else {
+                rc = spawn_c.posix_spawnp(&pid, bin.ptr, null, &attr, &argv, std.c.environ);
+                if (rc != 0) pid = 0; // posix_spawnp returns the errno, not a pid
+            }
+        }
+    }
+    if (rc != 0) return -@as(i64, rc);
+    return pid;
+}
+
+/// Remember an overview child so it can be reaped later. Reaps whatever
+/// already exited first, so the table rarely fills.
+fn trackOverviewPid(pid: std.posix.pid_t) void {
+    reapOverviewChildren();
+    for (&overview_pids) |*slot| {
+        if (slot.* == 0) {
+            slot.* = pid;
+            return;
+        }
+    }
+    logz.err("overview: {d} children already unreaped, dropping pid {d} tracking", .{ overview_pids.len, pid });
+}
+
+/// Non-blocking reap of the overview children (WNOHANG; a pid that is
+/// already gone also clears its slot).
+fn reapOverviewChildren() void {
+    for (overview_pids) |p| {
+        if (p != 0) break;
+    } else return;
+    for (&overview_pids) |*slot| {
+        if (slot.* == 0) continue;
+        var status: u32 = 0;
+        const rc: isize = @bitCast(linux.wait4(slot.*, &status, linux.W.NOHANG, null));
+        if (rc == slot.* or rc < 0) slot.* = 0; // reaped, or not ours anymore
+    }
+}
+
 /// Settings-dir change: reload the layered config and re-apply the bar
 /// gates. A newly-enabled bar spawns on the next tick; a newly-disabled
 /// one is SIGTERMed here. The same pass carries nightlight edits to the
@@ -588,6 +715,10 @@ fn registerHandlers(svc: *ipc_server.Service) void {
     svc.registerHandler("status", statusHandler) catch {};
     svc.registerHandler("help", helpHandler) catch {};
     svc.registerHandler("screenshot", screenshotHandler) catch {};
+    svc.registerHandler("overview", overviewHandler) catch {};
+    svc.registerHandler("overview-toggle", overviewToggleHandler) catch {};
+    svc.registerHandler("overview-open", overviewOpenHandler) catch {};
+    svc.registerHandler("overview-close", overviewCloseHandler) catch {};
 }
 
 fn pingHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
@@ -602,7 +733,7 @@ fn versionHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![
 
 fn helpHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
     _ = args;
-    return alloc.dupe(u8, "ok ping version status help screenshot");
+    return alloc.dupe(u8, "ok ping version status help screenshot overview overview-toggle overview-open overview-close");
 }
 
 /// `screenshot [args...]` → `EventHorizon --eh-screenshot <args...>`.
@@ -621,6 +752,47 @@ fn screenshotHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerro
     }
     logz.err("ipc: screenshot spawn failed errno={d}", .{-r});
     return std.fmt.allocPrint(alloc, "error screenshot spawn failed errno={d}", .{-r});
+}
+
+/// `overview [toggle|open|close]` plus the C++ shell's hyphenated aliases
+/// (`overview-toggle`, `overview-open`, `overview-close`). The standalone
+/// `horizon-overview` next to this executable owns the singleton lock, so
+/// this only has to spawn the requested mode and return immediately — the
+/// surface builds in the child, exactly like the screenshot handlers.
+fn overviewHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
+    if (args.len > 1) return alloc.dupe(u8, "error usage: overview [toggle|open|close]");
+    const mode: ov_launch.Mode = if (args.len == 0)
+        .toggle
+    else
+        ov_launch.fromWord(args[0]) orelse
+            return alloc.dupe(u8, "error usage: overview [toggle|open|close]");
+    return launchOverview(alloc, mode);
+}
+
+fn overviewToggleHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
+    _ = args;
+    return launchOverview(alloc, .toggle);
+}
+
+fn overviewOpenHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
+    _ = args;
+    return launchOverview(alloc, .open);
+}
+
+fn overviewCloseHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
+    _ = args;
+    return launchOverview(alloc, .close);
+}
+
+fn launchOverview(alloc: std.mem.Allocator, mode: ov_launch.Mode) anyerror![]u8 {
+    const pid = requestOverview(mode);
+    if (pid > 0) {
+        logz.log("ipc: overview {s} pid={d}", .{ @tagName(mode), pid });
+        return alloc.dupe(u8, "ok");
+    }
+    if (pid == 0) return alloc.dupe(u8, "ok"); // test mode or duplicate guard
+    logz.err("ipc: overview {s} spawn failed errno={d}", .{ @tagName(mode), -pid });
+    return std.fmt.allocPrint(alloc, "error overview spawn failed errno={d}", .{-pid});
 }
 
 fn statusHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
@@ -717,6 +889,37 @@ test "supervisor-run: deleted-marker strip only eats the kernel suffix" {
     try t.expectEqualStrings("/a/b/horizon", stripDeletedMarker("/a/b/horizon"));
     try t.expectEqualStrings("/a/b/(deleted) horizon", stripDeletedMarker("/a/b/(deleted) horizon"));
     try t.expectEqualStrings("", stripDeletedMarker(" (deleted)"));
+}
+
+test "supervisor-run: overview target is this executable's sibling" {
+    const t = std.testing;
+    var buf: [eh_exe_buf]u8 = undefined;
+    try t.expectEqualStrings("/opt/horizon/horizon-overview", chooseOverviewTarget(&buf, "/opt/horizon/horizon"));
+    // The rebuild marker must not reach posix_spawnp (same bug class as
+    // screenshots).
+    try t.expectEqualStrings("/opt/horizon/horizon-overview", chooseOverviewTarget(&buf, "/opt/horizon/horizon (deleted)"));
+    // No directory in the fallback name: let posix_spawnp use PATH.
+    try t.expectEqualStrings("horizon-overview", chooseOverviewTarget(&buf, "horizon"));
+    try t.expectEqualStrings("horizon-overview", chooseOverviewTarget(&buf, ""));
+}
+
+test "supervisor-run: overview IPC takes words and rejects junk" {
+    const t = std.testing;
+    const toggle = try overviewHandler(t.allocator, &.{});
+    defer t.allocator.free(toggle);
+    try t.expectEqualStrings("ok", toggle);
+    const open = try overviewHandler(t.allocator, &.{"open"});
+    defer t.allocator.free(open);
+    try t.expectEqualStrings("ok", open);
+    const close = try overviewHandler(t.allocator, &.{"close"});
+    defer t.allocator.free(close);
+    try t.expectEqualStrings("ok", close);
+    const bad = try overviewHandler(t.allocator, &.{"sideways"});
+    defer t.allocator.free(bad);
+    try t.expect(std.mem.startsWith(u8, bad, "error usage:"));
+    const extra = try overviewHandler(t.allocator, &.{ "open", "now" });
+    defer t.allocator.free(extra);
+    try t.expect(std.mem.startsWith(u8, extra, "error usage:"));
 }
 
 test "supervisor-run: screenshot argv dupes free at full sentinel size" {

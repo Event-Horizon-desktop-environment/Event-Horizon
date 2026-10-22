@@ -264,6 +264,9 @@ eh-ipc ping
 eh-ipc version
 eh-ipc status          # per-component state: running, idle, restarting, disabled
 eh-ipc help
+eh-ipc overview-toggle # toggle the overview (also bound to Super+Tab in the shell)
+eh-ipc overview-open   # idempotent open
+eh-ipc overview-close  # idempotent close
 eh-ipc screenshot --select shot.png
 ```
 

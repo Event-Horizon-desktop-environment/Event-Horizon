@@ -16,7 +16,7 @@ pub const usage =
     \\  --both               full shell
     \\  --dock               dock only
     \\  --eh-screenshot [f]  screenshot to PNG (see --help there)
-    \\  --ipc <cmd> [args]   one-shot IPC client (legacy line protocol)
+    \\  --ipc <cmd> [args]   one-shot IPC client (e.g. overview-toggle)
     \\  --version            print version
     \\  -h, --help           this text
     \\

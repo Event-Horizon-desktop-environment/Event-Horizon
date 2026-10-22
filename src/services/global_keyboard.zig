@@ -26,6 +26,7 @@ const KEY_MAX: u32 = 0x2ff;
 // Key codes we act on (`linux/input-event-codes.h`).
 const KEY_A: u32 = 30; // any ordinary key: proves another key cancels the tap
 const KEY_S: u32 = 31;
+const KEY_TAB: u32 = 15;
 
 const KEY_LEFTCTRL: u32 = 29;
 const KEY_RIGHTCTRL: u32 = 97;
@@ -148,6 +149,9 @@ pub fn findSuperKeyboard() ?[64]u8 {
 pub const Action = enum {
     /// Bare Super tap: toggle the app menu.
     menu,
+    /// Super+Tab: toggle the shell-owned overview. The C++ stage ignores
+    /// Tab, so this is the only evdev consumer of the combo.
+    overview,
     /// Super+S without shift held: toggle settings.
     settings,
     /// Super+Shift+S: the region picker with a live preview, the same flow
@@ -174,18 +178,20 @@ pub const Action = enum {
 /// Super release fires the menu only when nothing cancelled it; Super+S
 /// fires settings at most once per hold and never while shift is held.
 /// Added here (the C++ shell did neither, so nothing can double-fire):
-/// Super+Shift+S requests the region picker; bare PrtScr captures the
-/// cursor's monitor (Super- or Ctrl-held Print stays null so the Hyprland
-/// SUPER+Print / CTRL+Print binds do not double-fire); Alt+PrtScr captures
-/// all monitors. Autorepeat (value 2) never fires an action, and shift,
-/// alt and ctrl are each tracked from either key so the combos stay
-/// distinguishable.
+/// Super+Tab toggles the overview; Super+Shift+S requests the region picker;
+/// bare PrtScr captures the cursor's monitor (Super- or Ctrl-held Print
+/// stays null so the Hyprland SUPER+Print / CTRL+Print binds do not
+/// double-fire); Alt+PrtScr captures all monitors. Autorepeat (value 2)
+/// never fires an action, and shift, alt and ctrl are each tracked from
+/// either key so the combos stay distinguishable.
 pub const Machine = struct {
     super_down: bool = false,
     /// Another key was pressed during the Super hold: no menu on release.
     cancel: bool = false,
     /// Super+S already fired during this Super hold.
     super_s_fired: bool = false,
+    /// Super+Tab already fired during this Super hold.
+    super_tab_fired: bool = false,
     shift_down: bool = false,
     /// Either Alt key down: Alt+PrtScr means "every monitor". Tracked from
     /// both keys the same way shift is; AltGr (right alt) along with Print
@@ -204,11 +210,13 @@ pub const Machine = struct {
                 self.super_down = true;
                 self.cancel = false;
                 self.super_s_fired = false;
+                self.super_tab_fired = false;
             } else if (value == 0) {
-                const bare_tap = self.super_down and !self.cancel and !self.super_s_fired;
+                const bare_tap = self.super_down and !self.cancel and !self.super_s_fired and !self.super_tab_fired;
                 self.super_down = false;
                 self.cancel = false;
                 self.super_s_fired = false;
+                self.super_tab_fired = false;
                 if (bare_tap) return .menu;
             }
             // value 2 on a modifier: nothing to do.
@@ -232,6 +240,18 @@ pub const Machine = struct {
         // must run even when Super is up, so a stray press before a tap
         // cannot leak a menu either.
         self.cancel = true;
+        if (self.super_down and code == KEY_TAB) {
+            // Win+Tab now belongs to the shell: the combo is consumed here
+            // and never reaches a Hyprland overview bind. Shift/Ctrl/Alt
+            // variants stay free for other bindings (Shift+Tab inside the
+            // overview is handled by that surface's own keyboard, not this
+            // machine).
+            if (self.shift_down or self.ctrl_down or self.alt_down) return null;
+            if (!self.super_tab_fired) {
+                self.super_tab_fired = true;
+                return .overview;
+            }
+        }
         if (code == KEY_SYSRQ or code == KEY_SCREENSHOT) {
             // Super-held and Ctrl-held Print belong to the Hyprland binds
             // (SUPER+Print previews a fixed path; CTRL+Print grabs the
@@ -553,6 +573,54 @@ test "kbd: super+shift+s fires screenshot instead of settings" {
     // Plain shift+s without Super is ordinary typing: nothing fires.
     try t.expectEqual(@as(?Action, null), m.feed(KEY_S, 1));
     _ = m.feed(KEY_S, 0);
+}
+
+test "kbd: super+tab toggles overview once per hold" {
+    const t = std.testing;
+    var m = Machine{};
+    _ = m.feed(KEY_LEFTMETA, 1);
+    try t.expectEqual(@as(?Action, .overview), m.feed(KEY_TAB, 1));
+    // Autorepeat and release never fire again.
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 2));
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 0));
+    // A second press in the same hold is still the same toggle.
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 1));
+    _ = m.feed(KEY_TAB, 0);
+    // The Tab press cancelled the bare Super menu.
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_LEFTMETA, 0));
+    // A fresh hold fires again.
+    _ = m.feed(KEY_LEFTMETA, 1);
+    try t.expectEqual(@as(?Action, .overview), m.feed(KEY_TAB, 1));
+    _ = m.feed(KEY_TAB, 0);
+    _ = m.feed(KEY_LEFTMETA, 0);
+}
+
+test "kbd: tab without super and modified super+tab stay quiet" {
+    const t = std.testing;
+    var m = Machine{};
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 1)); // no Super
+    _ = m.feed(KEY_TAB, 0);
+
+    _ = m.feed(KEY_LEFTMETA, 1);
+    _ = m.feed(KEY_LEFTSHIFT, 1);
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 1));
+    _ = m.feed(KEY_TAB, 0);
+    _ = m.feed(KEY_LEFTSHIFT, 0);
+
+    _ = m.feed(KEY_LEFTCTRL, 1);
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 1));
+    _ = m.feed(KEY_TAB, 0);
+    _ = m.feed(KEY_LEFTCTRL, 0);
+
+    _ = m.feed(KEY_LEFTALT, 1);
+    try t.expectEqual(@as(?Action, null), m.feed(KEY_TAB, 1));
+    _ = m.feed(KEY_TAB, 0);
+    _ = m.feed(KEY_LEFTALT, 0);
+
+    // A plain Win+Tab still works in the same hold once modifiers are up.
+    try t.expectEqual(@as(?Action, .overview), m.feed(KEY_TAB, 1));
+    _ = m.feed(KEY_TAB, 0);
+    _ = m.feed(KEY_LEFTMETA, 0);
 }
 
 test "kbd: bare print captures the cursor's monitor, alt+print captures all" {

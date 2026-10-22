@@ -26,7 +26,8 @@ pub fn barFor(tab: i32) ?Bar {
         // Power — Sleep & Power | Performance (centered, 150 wide, gap 6)
         32 => .{ .labels = &.{ "Sleep & Power", "Performance" }, .tab_w = 150, .gap = 6, .centered = true },
         // Wired — Status | IPv4 | IPv6 | Ethernet | Security | Advanced
-        18 => .{ .labels = &.{ "Status", "IPv4", "IPv6", "Ethernet", "Security", "Advanced" }, .gap = 4, .centered = true },
+        // (six tabs must fit the 482px strip: 6*75 + 5*4 = 470).
+        18 => .{ .labels = &.{ "Status", "IPv4", "IPv6", "Ethernet", "Security", "Advanced" }, .tab_w = 75, .gap = 4, .centered = true },
         else => null,
     };
 }
