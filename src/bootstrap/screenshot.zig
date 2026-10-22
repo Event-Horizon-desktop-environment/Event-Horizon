@@ -24,6 +24,7 @@
 //! behind the first and stayed open after the top one finished.
 
 const std = @import("std");
+extern fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
 const wl = @import("../wl/c.zig").wl;
 const conn_mod = @import("../wl/connection.zig");
 const shot = @import("../wl/capture/shot.zig");
@@ -141,19 +142,19 @@ fn slurpLine(alloc: Allocator, io: std.Io) ?[]u8 {
 /// executable (audit F-5: never a hardcoded /usr/bin path) and falling back
 /// to a PATH lookup. The daemon outlives this process — the screenshot mode
 /// exits as soon as the file is written.
-fn handoffClipboard(io: std.Io, self_exe: []const u8, png_path: []const u8) void {
+fn handoffClipboard(io: std.Io, self_exe: []const u8, png_path: []const u8, temporary: bool) bool {
     if (std.fs.path.dirname(self_exe)) |dir| {
         if (std.fs.path.join(std.heap.page_allocator, &.{ dir, clipboard_daemon_name }) catch null) |sibling| {
             defer std.heap.page_allocator.free(sibling);
-            if (spawnDaemon(io, sibling, png_path)) return;
+            if (spawnDaemon(io, sibling, png_path, temporary)) return true;
         }
     }
-    _ = spawnDaemon(io, clipboard_daemon_name, png_path);
+    return spawnDaemon(io, clipboard_daemon_name, png_path, temporary);
 }
 
-fn spawnDaemon(io: std.Io, bin: []const u8, png_path: []const u8) bool {
+fn spawnDaemon(io: std.Io, bin: []const u8, png_path: []const u8, temporary: bool) bool {
     var child = std.process.spawn(io, .{
-        .argv = &.{ bin, png_path },
+        .argv = if (temporary) &.{ bin, png_path, "--remove-after-read" } else &.{ bin, png_path },
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
@@ -391,15 +392,18 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
         return 1;
     }
 
-    // Where the PNG goes: a real path when asked for, otherwise a temp file
-    // the clipboard daemon can read.
+    // mkdtemp creates an unpredictable 0700 directory atomically, even with
+    // umask 022. The writer opens its file with 0600 and O_NOFOLLOW.
+    var tmp_dir = "/tmp/eh-screenshot-XXXXXX".* ++ [_:0]u8{0};
     var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var handed_off = false;
     const out_path: []const u8 = f.file orelse blk: {
-        const p = std.fmt.bufPrint(&tmp_buf, "/tmp/eh-screenshot-{d}.png", .{std.os.linux.getpid()}) catch {
-            rep.err("screenshot: temp path too long.\n", .{});
-            return 1;
-        };
-        break :blk p;
+        if (mkdtemp(&tmp_dir) == null) return 1;
+        break :blk std.fmt.bufPrint(&tmp_buf, "{s}/capture.png", .{std.mem.sliceTo(&tmp_dir, 0)}) catch return 1;
+    };
+    defer if (f.file == null and !handed_off) {
+        std.Io.Dir.cwd().deleteFile(io, out_path) catch {};
+        std.Io.Dir.cwd().deleteDir(io, std.mem.sliceTo(&tmp_dir, 0)) catch {};
     };
 
     const view = region.View{
@@ -445,11 +449,11 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         defer img.deinit(alloc);
-        shot.writePng(out_path, &img) catch |e| {
+        shot.writePng(out_path, &img, f.file == null) catch |e| {
             rep.err("screenshot: writing {s} failed ({s}).\n", .{ out_path, @errorName(e) });
             return 1;
         };
-        if (f.clipboard or f.preview) handoffClipboard(io, argv0, out_path);
+        if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
         return 0;
     }
 
@@ -519,11 +523,11 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         defer all.deinit(alloc);
-        shot.writePng(out_path, &all) catch |e| {
+        shot.writePng(out_path, &all, f.file == null) catch |e| {
             rep.err("screenshot: writing {s} failed ({s}).\n", .{ out_path, @errorName(e) });
             return 1;
         };
-        if (f.clipboard or f.preview) handoffClipboard(io, argv0, out_path);
+        if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
         return 0;
     }
 
@@ -569,7 +573,7 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         defer cropped.deinit(alloc);
-        shot.writePng(out_path, &cropped) catch |e| {
+        shot.writePng(out_path, &cropped, f.file == null) catch |e| {
             rep.err("screenshot: writing {s} failed ({s}).\n", .{ out_path, @errorName(e) });
             return 1;
         };
@@ -588,7 +592,7 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         defer img.deinit(alloc);
-        shot.writePng(out_path, &img) catch |e| {
+        shot.writePng(out_path, &img, f.file == null) catch |e| {
             rep.err("screenshot: writing {s} failed ({s}).\n", .{ out_path, @errorName(e) });
             return 1;
         };
@@ -598,13 +602,13 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         defer img.deinit(alloc);
-        shot.writePng(out_path, &img) catch |e| {
+        shot.writePng(out_path, &img, f.file == null) catch |e| {
             rep.err("screenshot: writing {s} failed ({s}).\n", .{ out_path, @errorName(e) });
             return 1;
         };
     }
 
-    if (f.clipboard or f.preview) handoffClipboard(io, argv0, out_path);
+    if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
     return 0;
 }
 

@@ -1035,7 +1035,7 @@ static int stbi__mad3sizes_valid(int a, int b, int c, int add)
 }
 
 // returns 1 if "a*b*c*d + add" has no negative terms/factors and doesn't overflow
-#if !defined(STBI_NO_LINEAR) || !defined(STBI_NO_HDR) || !defined(STBI_NO_PNM)
+#if !defined(STBI_NO_LINEAR) || !defined(STBI_NO_HDR) || !defined(STBI_NO_PNM) || !defined(STBI_NO_PNG) || !defined(STBI_NO_PSD)
 static int stbi__mad4sizes_valid(int a, int b, int c, int d, int add)
 {
    return stbi__mul2sizes_valid(a, b) && stbi__mul2sizes_valid(a*b, c) &&
@@ -1058,7 +1058,7 @@ static void *stbi__malloc_mad3(int a, int b, int c, int add)
    return stbi__malloc(a*b*c + add);
 }
 
-#if !defined(STBI_NO_LINEAR) || !defined(STBI_NO_HDR) || !defined(STBI_NO_PNM)
+#if !defined(STBI_NO_LINEAR) || !defined(STBI_NO_HDR) || !defined(STBI_NO_PNM) || !defined(STBI_NO_PNG) || !defined(STBI_NO_PSD)
 static void *stbi__malloc_mad4(int a, int b, int c, int d, int add)
 {
    if (!stbi__mad4sizes_valid(a, b, c, d, add)) return NULL;
@@ -1817,7 +1817,7 @@ static stbi__uint16 *stbi__convert_format16(stbi__uint16 *data, int img_n, int r
    if (req_comp == img_n) return data;
    STBI_ASSERT(req_comp >= 1 && req_comp <= 4);
 
-   good = (stbi__uint16 *) stbi__malloc(req_comp * x * y * 2);
+   good = (stbi__uint16 *) stbi__malloc_mad4(req_comp, x, y, 2, 0);
    if (good == NULL) {
       STBI_FREE(data);
       return (stbi__uint16 *) stbi__errpuc("outofmem", "Out of memory");
@@ -5197,15 +5197,34 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
          }
 
          case STBI__PNG_TYPE('I','E','N','D'): {
-            stbi__uint32 raw_len, bpl;
+            stbi__uint32 raw_len;
             if (first) return stbi__err("first not IHDR", "Corrupt PNG");
             if (scan != STBI__SCAN_load) return 1;
             if (z->idata == NULL) return stbi__err("no IDAT","Corrupt PNG");
-            // initial guess for decoded data size to avoid unnecessary reallocs
-            bpl = (s->img_x * z->depth + 7) / 8; // bytes per line, per component
-            raw_len = bpl * s->img_y * s->img_n /* pixels */ + s->img_y /* filter mode per row */;
-            z->expanded = (stbi_uc *) stbi_zlib_decode_malloc_guesssize_headerflag((char *) z->idata, ioff, raw_len, (int *) &raw_len, !is_iphone);
-            if (z->expanded == NULL) return 0; // zlib should set error
+            // Bound inflation to the exact raster, including all Adam7 passes.
+            // A tiny IHDR must not authorize an arbitrarily large zlib tail.
+            stbi__zbuf inflater;
+            unsigned long long expected = 0;
+            int pass;
+            for (pass = 0; pass < (interlace ? 7 : 1); ++pass) {
+               static const unsigned int xo[] = {0,4,0,2,0,1,0}, yo[] = {0,0,4,0,2,0,1};
+               static const unsigned int xs[] = {8,8,4,4,2,2,1}, ys[] = {8,8,8,4,4,2,2};
+               unsigned int w = s->img_x, h = s->img_y;
+               if (interlace) {
+                  w = w > xo[pass] ? (w - xo[pass] + xs[pass]-1)/xs[pass] : 0;
+                  h = h > yo[pass] ? (h - yo[pass] + ys[pass]-1)/ys[pass] : 0;
+               }
+               if (w && h) expected += (((unsigned long long)w * s->img_n * z->depth + 7)/8 + 1)*h;
+            }
+            if (expected > INT_MAX) return stbi__err("too large", "PNG raster too large");
+            raw_len = (stbi__uint32)expected;
+            z->expanded = (stbi_uc *)stbi__malloc(raw_len);
+            if (!z->expanded) return stbi__err("outofmem", "Out of memory");
+            inflater.zbuffer = z->idata;
+            inflater.zbuffer_end = z->idata + ioff;
+            if (!stbi__do_zlib(&inflater, (char *)z->expanded, raw_len, 0, !is_iphone)) return 0;
+            if (inflater.zout - inflater.zout_start != raw_len)
+               return stbi__err("bad raster length", "Corrupt PNG");
             STBI_FREE(z->idata); z->idata = NULL;
             if ((req_comp == s->img_n+1 && req_comp != 3 && !pal_img_n) || has_trans)
                s->img_out_n = s->img_n+1;

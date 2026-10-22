@@ -40,6 +40,7 @@ extern fn stbi_load_from_memory(
     channels: [*c]c_int,
     req_channels: c_int,
 ) ?[*]u8;
+extern fn stbi_info_from_memory(buffer: [*c]const u8, len: c_int, x: *c_int, y: *c_int, channels: *c_int) c_int;
 extern fn stbi_image_free(data: ?*anyopaque) void;
 // WebP is beyond what the vendored stb decoder reads, and it is exactly the
 // format the thumbnail stores hand out; libwebp is already linked for the
@@ -234,6 +235,8 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) ?Cover {
     var w: c_int = 0;
     var h: c_int = 0;
     var ch: c_int = 0;
+    if (stbi_info_from_memory(bytes.ptr, @intCast(bytes.len), &w, &h, &ch) == 0) return null;
+    if (w <= 0 or h <= 0 or @as(i64, w) * @as(i64, h) > max_pixels) return null;
     const data = stbi_load_from_memory(bytes.ptr, @intCast(bytes.len), &w, &h, &ch, 4) orelse return null;
     defer stbi_image_free(data);
     if (w <= 0 or h <= 0) return null;
