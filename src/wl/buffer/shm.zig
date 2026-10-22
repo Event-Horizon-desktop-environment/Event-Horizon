@@ -12,6 +12,10 @@ pub const ShmBuffer = struct {
     height: i32 = 0,
     stride: i32 = 0,
     busy: bool = false,
+    /// A buffer attached for the first time must be damaged in full: the
+    /// compositor has no previous surface content to combine a partial
+    /// damage rect with.
+    ever_attached: bool = false,
     buffer: ?*wl.wl_buffer = null,
     cairo_surface: ?*cairo.cairo_surface_t = null,
     cr: ?*cairo.cairo_t = null,
@@ -135,6 +139,7 @@ pub const ShmBuffer = struct {
         self.height = 0;
         self.stride = 0;
         self.busy = false;
+        self.ever_attached = false;
     }
 
     pub fn markBusy(self: *ShmBuffer) void {
@@ -190,11 +195,24 @@ pub const ShmPair = struct {
     /// compositor still holds it. null when the compositor holds them all —
     /// that frame is dropped, and the next event puts it out instead.
     pub fn acquire(self: *Self) ?*ShmBuffer {
+        const got = self.acquireIndexed() orelse return null;
+        return got.buf;
+    }
+
+    pub const Acquired = struct {
+        index: usize,
+        buf: *ShmBuffer,
+    };
+
+    /// Same rotation as `acquire`, but also returns the pool slot. Incremental
+    /// paint paths keep per-buffer damage state so a buffer that was last
+    /// painted two frames ago is repaired from its own pixels, not the newest.
+    pub fn acquireIndexed(self: *Self) ?Acquired {
         for (0..self.count) |step| {
             const i = (self.next + step) % self.count;
             if (self.bufs[i].busy) continue;
             self.next = (i + 1) % self.count;
-            return &self.bufs[i];
+            return .{ .index = i, .buf = &self.bufs[i] };
         }
         return null;
     }

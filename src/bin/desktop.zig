@@ -30,6 +30,7 @@ const desktop_entries = eh.desktop_entries;
 const desktop_menu = eh.desktop_menu;
 const desktop_icon_menu = eh.desktop_icon_menu;
 const desktop_marquee = eh.desktop_marquee;
+const desktop_pointer = eh.desktop_pointer;
 const desktop_paint = eh.desktop_paint;
 const desktop_app = eh.desktop_app_state;
 const desktop_xdg = eh.desktop_xdg_ops;
@@ -141,6 +142,50 @@ const Layers = packed struct {
     menu: bool = false,
 };
 
+/// Drag diagnosis. One gesture is active at a time; counters reset on press
+/// and are emitted every 500ms (plus once on release) so a normal drag leaves
+/// a compact record of exactly which surfaces/layers were touched. This is
+/// separate from the 5s window counters because a drag can straddle a reset.
+const DragKind = enum { none, icon, marquee };
+
+/// One icon in a rigid multi-icon drag: its press-time cell origin and model
+/// index. Motion adds the anchor's delta to every entry.
+const GroupDragItem = struct { idx: usize, x: f64, y: f64 };
+
+const max_group_icons: usize = 256;
+
+const DragDiag = struct {
+    kind: DragKind = .none,
+    surf: usize = 0,
+    start_ns: u64 = 0,
+    last_log_ns: u64 = 0,
+    motions: u64 = 0,
+    motion_ns: u64 = 0,
+    motion_max_ns: u64 = 0,
+    repaints: u64 = 0,
+    repaint_ns: u64 = 0,
+    repaint_max_ns: u64 = 0,
+    /// Icon-layer frame split: the incremental old/new-cell repair versus a
+    /// full layer clear. Proves the hot path stays in the partial branch.
+    partial_frames: u64 = 0,
+    partial_ns: u64 = 0,
+    partial_max_ns: u64 = 0,
+    full_frames: u64 = 0,
+    full_ns: u64 = 0,
+    full_max_ns: u64 = 0,
+    damage_px: f64 = 0,
+    /// Selected icons moving in this gesture (1 = ordinary single-icon drag).
+    group_icons: u64 = 0,
+    icon_surfs: u64 = 0,
+    other_icon_surfs: u64 = 0,
+    marquee_surfs: u64 = 0,
+    other_marquee_surfs: u64 = 0,
+    widget_surfs: u64 = 0,
+    menu_surfs: u64 = 0,
+    skipped_surfs: u64 = 0,
+    drops: u64 = 0,
+};
+
 const Perf = struct {
     enabled: bool = false,
     cb: PerfCb = .none,
@@ -191,6 +236,9 @@ const Perf = struct {
     buttons: u64 = 0,
     button_ns: u64 = 0,
     button_max_ns: u64 = 0,
+
+    /// Gesture-scoped surface counts (not reset by the 5s window).
+    drag: DragDiag = .{},
 
     last_summary_ns: u64 = 0,
     slow_repaint_log_ns: u64 = 0,
@@ -264,6 +312,10 @@ const Perf = struct {
 const Surf = struct {
     // Icon layer: event-horizon-desktop-shell (blur off in user rules).
     surface: layer.Surface = .{},
+    /// Per-pool-slot incremental drag baselines. Buffers rotate, so the slot
+    /// painted two frames ago still holds the icon at its position from then —
+    /// repair has to start from that slot's pixels, not the newest frame's.
+    icon_damage: desktop_app.IconDragBuffers = .{},
     // Pooled buffers: painting into a buffer the compositor still holds
     // shows up as flicker. Heap-pinned: the wl_buffer release listener
     // captures the ShmBuffer address, so the pair must never move.
@@ -301,6 +353,8 @@ const Surf = struct {
 };
 
 const Desktop = struct {
+    const Point = struct { x: f64, y: f64 };
+
     a: *app_mod.App,
     surfs: std.ArrayList(Surf) = .empty,
     prefs_state: desktop_prefs.Prefs = .{},
@@ -367,9 +421,23 @@ const Desktop = struct {
     udisks_refresh_ticks: u8 = 0,
     selected: i32 = -1,
     press_idx: i32 = -1,
+    /// Surface the pressed icon lives on: drag motion updates that layer's
+    /// coordinates even when the pointer crosses onto another display.
+    press_layer: usize = 0,
     press_x: f64 = 0,
     press_y: f64 = 0,
+    /// Pointer-to-cell offset at press, so grabbing an icon does not snap its
+    /// centre under the cursor the moment the drag threshold is crossed.
+    press_off_x: f64 = 0,
+    press_off_y: f64 = 0,
     press_moved: bool = false,
+    /// A press on an icon already inside a multi-icon marquee selection drags
+    /// the whole selection rigidly. `group_start` holds each icon's press-time
+    /// cell origin; `group_anchor_*` is the grabbed icon's origin.
+    group_drag: bool = false,
+    group_start: std.ArrayList(GroupDragItem) = .empty,
+    group_anchor_x: f64 = 0,
+    group_anchor_y: f64 = 0,
     last_click_ms: i64 = -10000,
     last_click_idx: i32 = -1,
     // Embedded widget layer (C++ DesktopApp.widgetHost): widgets live on
@@ -405,6 +473,9 @@ const Desktop = struct {
     /// it after reload so they paint/hit on one display only).
     widget_output: []const u8 = "",
     marquee_sel: std.ArrayList(usize) = .empty,
+    /// Identity hash of `marquee_sel` (path+name in selection order). Index
+    /// lists are invalidated by rescans that add/remove/reorder icons.
+    marquee_sig: u64 = 0,
     undo_paths: std.ArrayList([]const u8) = .empty,
     // Resolved icon art (themed walk, owned bytes + surfaces).
     icons_map: std.StringHashMap(IconArt) = undefined,
@@ -442,6 +513,7 @@ const Desktop = struct {
         self.icon_action_names.deinit(self.a.gpa);
         self.icons.deinit(self.a.gpa);
         self.marquee_sel.deinit(self.a.gpa);
+        self.group_start.deinit(self.a.gpa);
         for (self.undo_paths.items) |p| self.a.gpa.free(p);
         self.undo_paths.deinit(self.a.gpa);
         if (self.widget_output.len > 0) self.a.gpa.free(self.widget_output);
@@ -1466,26 +1538,179 @@ const Desktop = struct {
     }
 
     fn commitSurf(surf: *layer.Surface, shm: *shm_mod.ShmBuffer, w: i32, h: i32) void {
+        commitSurfDamage(surf, shm, w, h, null);
+    }
+
+    /// Commit one icon frame, optionally damaging only the repaired slice.
+    /// The compositor keeps the rest of the attached buffer (shm contents
+    /// persist), so a partial damage rect avoids re-uploading 14.7MB when one
+    /// icon cell moved.
+    fn commitSurfDamageRects(surf: *layer.Surface, shm: *shm_mod.ShmBuffer, w: i32, h: i32, rects: []const desktop_app.DamageRect) void {
         cairo.cairo_surface_flush(shm.cairo_surface.?);
         surf.attach(shm.wlBuffer(), 0, 0);
         surf.setBufferScale(surf.scale);
-        surf.damage(0, 0, w, h);
+        var damaged = false;
+        if (shm.ever_attached) {
+            for (rects) |r| {
+                const x0: i32 = @intFromFloat(@floor(@max(0.0, r.x0)));
+                const y0: i32 = @intFromFloat(@floor(@max(0.0, r.y0)));
+                const x1: i32 = @intFromFloat(@ceil(@min(@as(f64, @floatFromInt(w)), r.x1)));
+                const y1: i32 = @intFromFloat(@ceil(@min(@as(f64, @floatFromInt(h)), r.y1)));
+                if (x1 <= x0 or y1 <= y0) continue;
+                surf.damage(x0, y0, x1 - x0, y1 - y0);
+                damaged = true;
+            }
+        }
+        if (!damaged) surf.damage(0, 0, w, h);
+        shm.ever_attached = true;
         shm.markBusy();
         surf.commit();
+    }
+
+    fn commitSurfDamage(surf: *layer.Surface, shm: *shm_mod.ShmBuffer, w: i32, h: i32, damage: ?desktop_app.DamageRect) void {
+        if (damage) |r| {
+            var one = [_]desktop_app.DamageRect{r};
+            commitSurfDamageRects(surf, shm, w, h, &one);
+        } else {
+            commitSurfDamageRects(surf, shm, w, h, &.{});
+        }
+    }
+
+    /// Clear one logical-pixel rectangle while keeping the current
+    /// identity*scale transform used by every icon paint site.
+    fn clearRegion(cr: ?*cairo.cairo_t, r: desktop_app.DamageRect) void {
+        const c = cr orelse return;
+        cairo.cairo_save(c);
+        cairo.cairo_set_operator(c, cairo.CAIRO_OPERATOR_CLEAR);
+        cairo.cairo_rectangle(c, r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+        cairo.cairo_fill(c);
+        cairo.cairo_restore(c);
     }
 
     /// Full repaint: all three layers, every output. Hot paths (hover,
     /// marquee frames, menu hover) call `repaintLayers` with just the layer
     /// that changed.
     fn repaint(self: *Desktop) void {
-        self.repaintLayers(.{ .icons = true, .widgets = true, .menu = true });
+        self.repaintLayers(.{ .icons = true, .widgets = true, .menu = true }, null);
+    }
+
+    /// Repaint the icon layer of one surface only. Pointer hot paths use this:
+    /// dragging an icon or drawing a marquee changes nothing on the other
+    /// outputs or on the widget/menu layers, and repainting them was the
+    /// motion-storm cost.
+    fn repaintIconsOn(self: *Desktop, surf_idx: usize) void {
+        if (surf_idx >= self.surfs.items.len) return;
+        self.repaintLayers(.{ .icons = true }, surf_idx);
+    }
+
+    /// Icon cells are fully painted inside their rectangle; the pad covers
+    /// antialiasing and label text that can overshoot by a fraction of a pixel.
+    const icon_damage_bleed: f64 = 4.0;
+
+    /// Two padded cells per moving icon. The marquee selection is capped at
+    /// 256 icons, so one stack array covers a whole group without allocating
+    /// on the motion path.
+    const max_drag_damage_rects: usize = max_group_icons * 2;
+
+    /// True only for a motion frame that can be repaired by moving icon cells:
+    /// icon-only targeted repaint, drag past threshold, same start surface,
+    /// that surface's pool slot already contains this drag's previous frame.
+    fn iconDragPartialEligible(self: *Desktop, si: usize, want: Layers, only_surf: ?usize, bufs: desktop_app.IconDragBuffers, slot: usize) bool {
+        if (!want.icons or want.widgets or want.menu) return false;
+        if (only_surf == null or only_surf.? != si) return false;
+        if (!self.ui.icon_dragging or !self.press_moved or self.ui.marquee_dragging) return false;
+        if (self.press_idx < 0 or self.press_idx >= self.icons.items.len) return false;
+        if (self.press_layer != si or !self.iconsShown()) return false;
+        if (!bufs.eligible(slot, self.press_idx)) return false;
+        if (self.group_drag and self.group_start.items.len > max_group_icons) return false;
+        if (si >= self.surfs.items.len) return false;
+        return self.icons.items[@intCast(self.press_idx)].layer == @as(i32, @intCast(self.surfs.items[si].output));
+    }
+
+    fn addDragDamage(rects: []desktop_app.DamageRect, n: *usize, dirty: *?desktop_app.DamageRect, maybe: ?desktop_app.DamageRect) void {
+        const r = maybe orelse return;
+        if (n.* >= rects.len) return;
+        rects[n.*] = r;
+        n.* += 1;
+        dirty.* = if (dirty.*) |u| desktop_app.damageRectUnion(u, r) else r;
+    }
+
+    /// Collect the old and new padded cells for every icon moving in this
+    /// gesture. In a group drag the slot baseline stores the anchor's last
+    /// painted position; subtracting the press-time anchor origin recovers
+    /// where the rest of the rigid block was painted. Returns the number of
+    /// rects (0 when every cell is off-surface).
+    fn collectDragDamage(self: *Desktop, s: *const Surf, m: desktop_prefs.Metrics, st: desktop_app.IconDragSlot, rects: []desktop_app.DamageRect, dirty: *?desktop_app.DamageRect) usize {
+        var n: usize = 0;
+        dirty.* = null;
+        if (self.group_drag and self.group_start.items.len > 1) {
+            const old_dx = st.drag_x - self.group_anchor_x;
+            const old_dy = st.drag_y - self.group_anchor_y;
+            for (self.group_start.items) |g| {
+                if (g.idx >= self.icons.items.len) continue;
+                const ic = self.icons.items[g.idx];
+                Desktop.addDragDamage(rects, &n, dirty, desktop_app.damageCell(g.x + old_dx, g.y + old_dy, m.cell_w, m.cell_h, icon_damage_bleed, s.w, s.h));
+                Desktop.addDragDamage(rects, &n, dirty, desktop_app.damageCell(ic.cell_x, ic.cell_y, m.cell_w, m.cell_h, icon_damage_bleed, s.w, s.h));
+            }
+            return n;
+        }
+        const ic = self.icons.items[@intCast(self.press_idx)];
+        Desktop.addDragDamage(rects, &n, dirty, desktop_app.damageCell(st.drag_x, st.drag_y, m.cell_w, m.cell_h, icon_damage_bleed, s.w, s.h));
+        Desktop.addDragDamage(rects, &n, dirty, desktop_app.damageCell(ic.cell_x, ic.cell_y, m.cell_w, m.cell_h, icon_damage_bleed, s.w, s.h));
+        return n;
+    }
+
+    /// Repaint the icons whose cells touch either damaged rectangle. Icons
+    /// outside both keep the pixels already in this pooled buffer.
+    fn paintIconsInDamage(self: *Desktop, cr: ?*cairo.cairo_t, s: *const Surf, m: desktop_prefs.Metrics, rects: []const desktop_app.DamageRect) void {
+        for (self.icons.items, 0..) |ic, i| {
+            if (ic.layer != @as(i32, @intCast(s.output))) continue;
+            const cell = desktop_app.damageCell(ic.cell_x, ic.cell_y, m.cell_w, m.cell_h, icon_damage_bleed, s.w, s.h) orelse continue;
+            for (rects) |r| {
+                if (desktop_app.damageRectsOverlap(cell, r)) {
+                    self.paintIcon(cr, ic, i, m);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Paint the press scene into every free icon pool slot, without
+    /// attaching or marking them busy. The first motion frame then finds a
+    /// warm baseline in any free slot instead of paying a full-layer catch-up
+    /// inside the motion handler. The slots' first real attach still damages
+    /// the whole surface (`ShmBuffer.ever_attached`).
+    fn prewarmIconBuffers(self: *Desktop, surf_idx: usize) void {
+        if (surf_idx >= self.surfs.items.len) return;
+        if (!self.ui.icon_dragging or self.press_idx < 0 or self.press_idx >= self.icons.items.len) return;
+        if (self.press_layer != surf_idx or !self.iconsShown()) return;
+        const s = &self.surfs.items[surf_idx];
+        if (s.w <= 0 or s.h <= 0) return;
+        const m = self.metricsFit(fitForH(s.h));
+        const pressed = self.icons.items[@intCast(self.press_idx)];
+        var tried: usize = 0;
+        while (tried < s.shm.count) : (tried += 1) {
+            const got = s.shm.acquireIndexed() orelse return;
+            // Rotation wrapped onto a slot the press repaint already made
+            // current: every free slot has been warmed.
+            if (s.icon_damage.eligible(got.index, self.press_idx)) return;
+            const cr = got.buf.cr orelse return;
+            clearPass(cr, s.surface.scale);
+            for (self.icons.items, 0..) |ic, i| {
+                if (ic.layer != @as(i32, @intCast(s.output))) continue;
+                self.paintIcon(cr, ic, i, m);
+            }
+            s.icon_damage.recordPartial(got.index, self.press_idx, pressed.cell_x, pressed.cell_y);
+        }
     }
 
     /// Three layer surfaces per output, like the C++ (separate namespaces so
     /// Hyprland blur rules match): icons+marquee, widgets, menus. Each pass
     /// draws into a free pooled buffer and drops the frame when the
     /// compositor holds them all, instead of painting under the screen.
-    fn repaintLayers(self: *Desktop, want: Layers) void {
+    /// `only_surf` limits the pass to one entry of `surfs` (surface index, not
+    /// output index) for the pointer hot paths; null paints every output.
+    fn repaintLayers(self: *Desktop, want: Layers, only_surf: ?usize) void {
         const P = &self.perf;
         const t_repaint = perfNowNs();
         // Phase sums live in locals: `perfSummary` below resets the shared
@@ -1505,6 +1730,11 @@ const Desktop = struct {
                 if (gap > P.repaint_gap_max_ns) P.repaint_gap_max_ns = gap;
             }
             P.last_repaint_ns = t_repaint;
+            if (P.drag.kind != .none) {
+                P.drag.repaints += 1;
+                P.drag.repaint_ns += dt;
+                if (dt > P.drag.repaint_max_ns) P.drag.repaint_max_ns = dt;
+            }
             if (dt >= Perf.slow_repaint_ns and Perf.slowLogAllowed(&P.slow_repaint_log_ns, t_repaint)) {
                 logz.log(
                     "perf: repaint {d:.1}ms cb={s} icons={d:.1}ms widgets={d:.1}ms menu={d:.1}ms drops={d}",
@@ -1520,39 +1750,134 @@ const Desktop = struct {
             }
             self.perfSummary(t_repaint);
         }
-        for (self.surfs.items) |*s| {
+        for (self.surfs.items, 0..) |*s, si| {
+            if (!desktop_app.surfaceSelected(only_surf, si)) {
+                if (P.drag.kind != .none) P.drag.skipped_surfs += 1;
+                continue;
+            }
             if (s.w <= 0 or s.h <= 0) continue;
             // Per-output fit: this surface's cells match its own resolution.
             const m = self.metricsFit(fitForH(s.h));
             // Icon layer.
             if (want.icons) {
+                if (P.drag.kind != .none) {
+                    P.drag.icon_surfs += 1;
+                    if (si != P.drag.surf) P.drag.other_icon_surfs += 1;
+                }
                 const t = perfNowNs();
-                if (s.shm.acquire()) |buf| {
+                var icon_full = true;
+                // A full paint during an active drag only warms that one pool
+                // slot. Any other full paint (press, hover, rescan, release)
+                // changes the scene and invalidates every slot, even if the
+                // buffer acquire below drops the frame.
+                const drag_catch_up = only_surf != null and only_surf.? == si and
+                    self.ui.icon_dragging and self.press_moved and
+                    self.press_idx >= 0 and self.press_idx < self.icons.items.len and
+                    self.press_layer == si and self.iconsShown();
+                if (s.shm.acquireIndexed()) |got| {
+                    const buf = got.buf;
                     if (buf.cr) |cr| {
-                        clearPass(cr, s.surface.scale);
-                        // Icon cells with glyphs + labels (skipped when hidden,
-                        // like C++ icons_visible).
-                        if (self.iconsShown()) {
-                            for (self.icons.items, 0..) |ic, i| {
-                                if (ic.layer != @as(i32, @intCast(s.output))) continue;
-                                self.paintIcon(cr, ic, i, m);
+                        // Hot path: the moving cells, and this pool slot
+                        // already holds that same drag's previous frame.
+                        // Clear only the old/new padded cells and repaint the
+                        // icons touching them; the other ~3.6M pixels stay.
+                        if (self.iconDragPartialEligible(si, want, only_surf, s.icon_damage, got.index)) {
+                            const st = s.icon_damage.get(got.index);
+                            var rects: [max_drag_damage_rects]desktop_app.DamageRect = undefined;
+                            var dirty: ?desktop_app.DamageRect = null;
+                            const n = self.collectDragDamage(s, m, st, &rects, &dirty);
+                            const anchor = self.icons.items[@intCast(self.press_idx)];
+                            if (dirty) |u| {
+                                // Clear each cell rect, not their union: even a
+                                // fast flick across the screen only touches the
+                                // old and new cells. The union is used solely
+                                // as the compositor damage hint.
+                                for (rects[0..n]) |r| clearRegion(cr, r);
+                                self.paintIconsInDamage(cr, s, m, rects[0..n]);
+                                // Group cells can be spread across the screen;
+                                // damage each cell rather than their bounding
+                                // box. A single icon keeps the old one-rect
+                                // commit path.
+                                if (self.group_drag and self.group_start.items.len > 1) {
+                                    commitSurfDamageRects(&s.surface, buf, s.w, s.h, rects[0..n]);
+                                } else {
+                                    commitSurfDamage(&s.surface, buf, s.w, s.h, u);
+                                }
+                                s.icon_damage.recordPartial(got.index, self.press_idx, anchor.cell_x, anchor.cell_y);
+                                if (P.drag.kind != .none) P.drag.damage_px += desktop_app.damageRectArea(u);
+                                icon_full = false;
+                            } else {
+                                // Every position is off-surface: nothing to
+                                // draw, but remember the slot's new anchor.
+                                s.icon_damage.recordPartial(got.index, self.press_idx, anchor.cell_x, anchor.cell_y);
+                                icon_full = false;
                             }
                         }
-                        // Marquee.
-                        if (self.ui.marquee_dragging) desktop_paint.paintMarquee(cr, self.marquee);
-                        commitSurf(&s.surface, buf, s.w, s.h);
+                        if (icon_full) {
+                            clearPass(cr, s.surface.scale);
+                            // Icon cells with glyphs + labels (skipped when hidden,
+                            // like C++ icons_visible).
+                            if (self.iconsShown()) {
+                                for (self.icons.items, 0..) |ic, i| {
+                                    if (ic.layer != @as(i32, @intCast(s.output))) continue;
+                                    self.paintIcon(cr, ic, i, m);
+                                }
+                            }
+                            // Marquee: only on the surface the drag started on.
+                            // Painting it on every output duplicated the
+                            // rubber-band across monitors.
+                            if (desktop_app.marqueeOnSurface(self.ui.marquee_dragging, self.ui.marquee_layer, si)) {
+                                desktop_paint.paintMarquee(cr, self.marquee);
+                                if (P.drag.kind != .none) {
+                                    P.drag.marquee_surfs += 1;
+                                    if (si != P.drag.surf) P.drag.other_marquee_surfs += 1;
+                                }
+                            }
+                            commitSurf(&s.surface, buf, s.w, s.h);
+                            // A full paint is the new baseline for every pool
+                            // slot when the scene changed (press/hover/rescan).
+                            // During a drag, a slot that was never painted since
+                            // the press catches up on its own; invalidating the
+                            // already-good slots would make every later frame
+                            // full-paint again and defeat the incremental path.
+                            if (!drag_catch_up) s.icon_damage.reset();
+                            if (self.ui.icon_dragging and self.press_idx >= 0 and
+                                self.press_idx < self.icons.items.len and self.press_layer == si and self.iconsShown())
+                            {
+                                const ic = self.icons.items[@intCast(self.press_idx)];
+                                s.icon_damage.recordPartial(got.index, self.press_idx, ic.cell_x, ic.cell_y);
+                            }
+                        }
+                    } else if (!drag_catch_up) {
+                        // The scene changed but this slot has no drawable
+                        // context yet; its baseline is still stale.
+                        s.icon_damage.reset();
                     }
                 } else {
+                    if (!drag_catch_up) s.icon_damage.reset();
                     P.busy_drops += 1;
                     sum_drops += 1;
+                    if (P.drag.kind != .none) P.drag.drops += 1;
                 }
                 const d = perfNowNs() -% t;
                 P.icons_ns += d;
                 sum_icons += d;
                 if (d > P.icons_max_ns) P.icons_max_ns = d;
+                if (P.drag.kind != .none) {
+                    if (icon_full) {
+                        P.drag.full_frames += 1;
+                        P.drag.full_ns += d;
+                        if (d > P.drag.full_max_ns) P.drag.full_max_ns = d;
+                    } else {
+                        P.drag.partial_frames += 1;
+                        P.drag.partial_ns += d;
+                        if (d > P.drag.partial_max_ns) P.drag.partial_max_ns = d;
+                    }
+                }
             }
             // Widget layer: instances from settings, movable by drag.
             if (want.widgets and self.w_inited) {
+                if (P.drag.kind != .none) P.drag.widget_surfs += 1;
                 const t = perfNowNs();
                 if (s.wshm.acquire()) |wbuf| {
                     if (wbuf.cr) |wcr| {
@@ -1564,6 +1889,7 @@ const Desktop = struct {
                 } else {
                     P.busy_drops += 1;
                     sum_drops += 1;
+                    if (P.drag.kind != .none) P.drag.drops += 1;
                     const now_ms: i64 = @intCast(wctx.monotonicMs());
                     if (now_ms - self.widget_drop_ms > 1000) {
                         self.widget_drop_ms = now_ms;
@@ -1578,6 +1904,7 @@ const Desktop = struct {
             // Menu layer: painted only while a menu is open on this output;
             // otherwise a single empty commit (C++ detaches — same effect).
             if (want.menu and s.output == self.menu_layer) {
+                if (P.drag.kind != .none) P.drag.menu_surfs += 1;
                 const t = perfNowNs();
                 const want_menu = self.ui.desktop_menu_open or self.ui.icon_menu_open or self.ui.mount_dialog_open;
                 if (want_menu) {
@@ -1607,6 +1934,79 @@ const Desktop = struct {
             }
         }
         _ = self.a.conn.flush();
+    }
+
+    fn beginDragDiag(self: *Desktop, kind: DragKind, surf_idx: usize, px: f64, py: f64) void {
+        const now = perfNowNs();
+        self.perf.drag = .{
+            .kind = kind,
+            .surf = surf_idx,
+            .start_ns = now,
+            .last_log_ns = now,
+        };
+        const output = if (surf_idx < self.surfs.items.len)
+            self.surfs.items[surf_idx].output_name
+        else
+            "?";
+        logz.log("drag: begin kind={s} surf={d} output={s} pointer=({d:.1},{d:.1})", .{
+            @tagName(kind), surf_idx, output, px, py,
+        });
+    }
+
+    /// Emit the gesture counters every 500ms and on release. The important
+    /// invariants are `other_icon_surfs=0`, `other_marquee_surfs=0`,
+    /// `widget_surfs=0`, `menu_surfs=0`: pointer moves touched exactly one
+    /// icon surface even though three outputs exist.
+    fn traceDrag(self: *Desktop, final: bool) void {
+        const d = &self.perf.drag;
+        if (d.kind == .none) return;
+        const now = perfNowNs();
+        if (!final and now -% d.last_log_ns < 500 * std.time.ns_per_ms) return;
+        const elapsed_ns = now -% d.start_ns;
+        const secs = @max(perfMs(elapsed_ns) / 1000.0, 0.001);
+        const output = if (d.surf < self.surfs.items.len)
+            self.surfs.items[d.surf].output_name
+        else
+            "?";
+        const motion_rate: f64 = @as(f64, @floatFromInt(d.motions)) / secs;
+        const repaint_rate: f64 = @as(f64, @floatFromInt(d.repaints)) / secs;
+        const damage_avg: f64 = d.damage_px / @as(f64, @floatFromInt(@max(d.partial_frames, 1)));
+        logz.log(
+            "drag: {s} kind={s} group={d} surf={d} output={s} motions={d} ({d:.1}/s) motion_avg={d:.2}ms motion_max={d:.1}ms repaints={d} ({d:.1}/s) repaint_avg={d:.2}ms repaint_max={d:.1}ms partial={d} partial_avg={d:.2}ms partial_max={d:.1}ms full={d} full_avg={d:.2}ms full_max={d:.1}ms dmg_avg={d:.0}px icon_surfs={d} other_icon_surfs={d} marquee_surfs={d} other_marquee_surfs={d} widget_surfs={d} menu_surfs={d} skipped_surfs={d} drops={d} elapsed={d:.2}s",
+            .{
+                if (final) "end" else "trace",
+                @tagName(d.kind),
+                d.group_icons,
+                d.surf,
+                output,
+                d.motions,
+                motion_rate,
+                perfAvgNs(d.motion_ns, d.motions),
+                perfMs(d.motion_max_ns),
+                d.repaints,
+                repaint_rate,
+                perfAvgNs(d.repaint_ns, d.repaints),
+                perfMs(d.repaint_max_ns),
+                d.partial_frames,
+                perfAvgNs(d.partial_ns, d.partial_frames),
+                perfMs(d.partial_max_ns),
+                d.full_frames,
+                perfAvgNs(d.full_ns, d.full_frames),
+                perfMs(d.full_max_ns),
+                damage_avg,
+                d.icon_surfs,
+                d.other_icon_surfs,
+                d.marquee_surfs,
+                d.other_marquee_surfs,
+                d.widget_surfs,
+                d.menu_surfs,
+                d.skipped_surfs,
+                d.drops,
+                secs,
+            },
+        );
+        d.last_log_ns = now;
+        if (final) d.kind = .none;
     }
 
     /// Emit the window summary when due. Called from `repaint`'s defer, so
@@ -1766,14 +2166,23 @@ const Desktop = struct {
         // Icons repaint only when the scan (or the art the scan resolved)
         // actually changed something; `want.icons` says whether this caller
         // cares at all. `was_selected` repaints the cleared highlight.
+        // A marquee index is only meaningful while that identity sits at the
+        // same list position. Compare the selected paths/names rather than the
+        // paint signature: thumbnail/art caches change the latter every time a
+        // new preview is loaded, and that must not drop a selection.
+        const selection_stale = self.marquee_sel.items.len > 0 and self.marquee_sig != self.marqueeSignature();
+        if (selection_stale) {
+            self.marquee_sel.clearRetainingCapacity();
+            self.marquee_sig = 0;
+        }
         const sig = self.iconsSignature();
-        const icons_changed = sig != self.icons_sig or was_selected;
+        const icons_changed = sig != self.icons_sig or was_selected or selection_stale;
         self.icons_sig = sig;
         self.repaintLayers(.{
             .icons = want.icons and icons_changed,
             .widgets = want.widgets,
             .menu = want.menu,
-        });
+        }, null);
         const dt = perfNowNs() -% t_rescan;
         P.rescan_ns += dt;
         if (dt > P.rescan_max_ns) P.rescan_max_ns = dt;
@@ -2488,6 +2897,45 @@ const Desktop = struct {
         return "";
     }
 
+    /// Global logical origin of one desktop surface's output.
+    fn outputBounds(self: *Desktop, surf_idx: usize) ?desktop_pointer.OutputBounds {
+        if (surf_idx >= self.surfs.items.len) return null;
+        const oi = self.surfs.items[surf_idx].output;
+        if (oi >= self.a.bound.outputs.items.len) return null;
+        const r = self.a.bound.outputs.items[oi].rect();
+        return .{ .global_x = r.x, .global_y = r.y };
+    }
+
+    /// Translate the live pointer position (local to the surface under the
+    /// cursor) into `want_surf`'s local coordinates. A drag or marquee is
+    /// anchored to the display it started on, so crossing onto another display
+    /// must clamp at that display's edge instead of teleporting.
+    fn pointerLocal(self: *Desktop, x: f64, y: f64, want_surf: usize) ?Point {
+        const from = self.outputBounds(self.menu_layer) orelse return null;
+        const to = self.outputBounds(want_surf) orelse return null;
+        const p = desktop_pointer.convertBetweenLayers(x, y, from, to) orelse return null;
+        return .{ .x = p.x, .y = p.y };
+    }
+
+    /// Icon model layer for a surface index. Icons store the output index
+    /// (`Surf.output`), which normally equals the `surfs` index but is looked
+    /// up rather than assumed.
+    fn iconLayerFor(self: *Desktop, surf_idx: usize) i32 {
+        if (surf_idx < self.surfs.items.len) return @intCast(self.surfs.items[surf_idx].output);
+        return @intCast(surf_idx);
+    }
+
+    /// Surface that paints an icon model layer. Used when a global highlight
+    /// (`selected` / `hover_idx`) moves to an icon on another display: the old
+    /// layer needs a targeted repaint or its highlight would stick now that
+    /// motion no longer repaints every output.
+    fn surfaceForIconLayer(self: *Desktop, icon_layer: i32) ?usize {
+        for (self.surfs.items, 0..) |s, i| {
+            if (s.output == icon_layer) return i;
+        }
+        return null;
+    }
+
     fn onMotion(ctx: *anyopaque, x: f64, y: f64) void {
         const self: *Desktop = @ptrCast(@alignCast(ctx));
         const P = &self.perf;
@@ -2500,6 +2948,11 @@ const Desktop = struct {
             const dt = perfNowNs() -% t_motion;
             P.motion_ns += dt;
             if (dt > P.motion_max_ns) P.motion_max_ns = dt;
+            if (P.drag.kind != .none) {
+                P.drag.motions += 1;
+                P.drag.motion_ns += dt;
+                if (dt > P.drag.motion_max_ns) P.drag.motion_max_ns = dt;
+            }
             if (dt >= Perf.slow_motion_ns and Perf.slowLogAllowed(&P.slow_motion_log_ns, t_motion)) {
                 logz.log("perf: motion {d:.1}ms", .{perfMs(dt)});
             }
@@ -2520,7 +2973,7 @@ const Desktop = struct {
             };
             if (hit != self.mount_hover_item) {
                 self.mount_hover_item = hit;
-                self.repaint();
+                self.repaintLayers(.{ .menu = true }, self.mount_dlg_layer);
             }
             return;
         }
@@ -2552,7 +3005,7 @@ const Desktop = struct {
                 self.menu_press.hover_sub = -1;
             }
             if (prev_main != self.menu_press.hover_main or prev_sub != self.menu_press.hover_sub or prev_cascade != self.menu_cascade) {
-                self.repaint();
+                self.repaintLayers(.{ .menu = true }, self.menu_layer);
             }
             return;
         }
@@ -2577,44 +3030,176 @@ const Desktop = struct {
             self.icon_press.motion(main_row, sub_row, self.icon_menu_rows);
             if (self.icon_press.cascade_open and !was_open) self.layoutIconCascade();
             if (prev_main != self.icon_press.hover_main or prev_comp != self.icon_press.hover_compress or was_open != self.icon_press.cascade_open) {
-                self.repaint();
+                self.repaintLayers(.{ .menu = true }, self.menu_layer);
             }
             return;
         }
         // Icon drag with a 6 px threshold (icon_item.drag_threshold_px).
         if (self.ui.icon_dragging and self.press_idx >= 0) {
-            const dx = x - self.press_x;
-            const dy = y - self.press_y;
-            if (!self.press_moved and dx * dx + dy * dy >= 36.0) self.press_moved = true;
+            const p = self.pointerLocal(x, y, self.press_layer) orelse Point{ .x = x, .y = y };
+            const dx = p.x - self.press_x;
+            const dy = p.y - self.press_y;
+            if (!self.press_moved and dx * dx + dy * dy >= desktop_icons.drag_threshold_px * desktop_icons.drag_threshold_px)
+                self.press_moved = true;
             if (self.press_moved and self.press_idx < self.icons.items.len) {
-                const m = self.metrics();
-                const ic = &self.icons.items[@intCast(self.press_idx)];
-                ic.cell_x = x - m.cell_w / 2.0;
-                ic.cell_y = y - m.cell_h / 2.0;
-                self.repaint();
+                const nx = p.x - self.press_off_x;
+                const ny = p.y - self.press_off_y;
+                if (self.group_drag and self.group_start.items.len > 1) {
+                    // Move the block by the grabbed icon's delta. Every frame
+                    // starts from press-time origins, so rounding never
+                    // accumulates and the relative layout is exact.
+                    const gdx = nx - self.group_anchor_x;
+                    const gdy = ny - self.group_anchor_y;
+                    for (self.group_start.items) |g| {
+                        if (g.idx >= self.icons.items.len) continue;
+                        self.icons.items[g.idx].cell_x = g.x + gdx;
+                        self.icons.items[g.idx].cell_y = g.y + gdy;
+                    }
+                } else {
+                    const ic = &self.icons.items[@intCast(self.press_idx)];
+                    ic.cell_x = nx;
+                    ic.cell_y = ny;
+                }
+                self.repaintIconsOn(self.press_layer);
             }
+            self.traceDrag(false);
             return;
         }
         if (self.ui.marquee_dragging) {
-            self.marquee.x1 = x;
-            self.marquee.y1 = y;
-            self.repaint();
+            const p = self.pointerLocal(x, y, self.ui.marquee_layer) orelse Point{ .x = x, .y = y };
+            if (self.ui.marquee_layer < self.surfs.items.len) {
+                const s = self.surfs.items[self.ui.marquee_layer];
+                self.marquee.x1 = desktop_marquee.clampDragEnd(p.x, s.w);
+                self.marquee.y1 = desktop_marquee.clampDragEnd(p.y, s.h);
+            } else {
+                self.marquee.x1 = p.x;
+                self.marquee.y1 = p.y;
+            }
+            self.repaintIconsOn(self.ui.marquee_layer);
+            self.traceDrag(false);
             return;
         }
         // Plain hover: highlight the icon under the pointer (no buttons,
         // no menus — mirrors desktop_icons_pointer_motion).
         if (self.press_idx < 0 and self.iconsShown()) {
             const m = self.metrics();
-            const layer_idx: i32 = @intCast(self.menu_layer);
+            const layer_idx = self.iconLayerFor(self.menu_layer);
             var hit: i32 = -1;
             if (desktop_icons.hitIndex(self.icons.items, layer_idx, x, y, m)) |idx| {
                 hit = @intCast(idx);
             }
             if (hit != self.hover_idx) {
+                const prev_hover = self.hover_idx;
                 self.hover_idx = hit;
-                self.repaint();
+                if (prev_hover >= 0 and prev_hover < self.icons.items.len) {
+                    const prev_layer = self.icons.items[@intCast(prev_hover)].layer;
+                    if (self.surfaceForIconLayer(prev_layer)) |ps| {
+                        if (ps != self.menu_layer) self.repaintIconsOn(ps);
+                    }
+                }
+                self.repaintIconsOn(self.menu_layer);
             }
         }
+    }
+
+    /// Settle a dragged icon on release: snap/swap on the display it is being
+    /// dropped on. Dropping across displays converts the cell position into the
+    /// target layer's coordinates and moves the icon there (C++
+    /// `finish_icon_drag` keyed on the pointer layer).
+    fn settleIconDrag(self: *Desktop, idx: usize) void {
+        if (idx >= self.icons.items.len or self.press_layer >= self.surfs.items.len) return;
+        var target = self.press_layer;
+        if (self.menu_layer < self.surfs.items.len and self.menu_layer != self.press_layer) {
+            if (self.outputBounds(self.press_layer)) |src_b| {
+                if (self.outputBounds(self.menu_layer)) |dst_b| {
+                    const ic = &self.icons.items[idx];
+                    if (desktop_pointer.convertBetweenLayers(ic.cell_x, ic.cell_y, src_b, dst_b)) |p| {
+                        ic.cell_x = p.x;
+                        ic.cell_y = p.y;
+                        ic.layer = @intCast(self.surfs.items[self.menu_layer].output);
+                        target = self.menu_layer;
+                    }
+                }
+            }
+        }
+        const s = self.surfs.items[target];
+        const m = self.metricsFit(fitForH(s.h));
+        _ = desktop_icons.finishSingleDrag(self.icons.items, idx, s.w, m, @intCast(s.output), s.h, 0, 0);
+    }
+
+    /// Settle a rigid multi-icon drag. The anchor chooses the target slot;
+    /// every selected icon keeps its press-time grid offset. Dropping on
+    /// another output translates the whole block before it snaps, so relative
+    /// positions survive a cross-display move. Returns false when there is no
+    /// group to settle.
+    fn settleGroupDrag(self: *Desktop, anchor_idx: usize) bool {
+        if (!self.group_drag or self.group_start.items.len < 2) return false;
+        if (anchor_idx >= self.icons.items.len or self.press_layer >= self.surfs.items.len) return false;
+        var target = self.press_layer;
+        const anchor = &self.icons.items[anchor_idx];
+        if (self.menu_layer < self.surfs.items.len and self.menu_layer != self.press_layer) {
+            if (self.outputBounds(self.press_layer)) |src_b| {
+                if (self.outputBounds(self.menu_layer)) |dst_b| {
+                    if (desktop_pointer.convertBetweenLayers(anchor.cell_x, anchor.cell_y, src_b, dst_b)) |p| {
+                        const dx = p.x - anchor.cell_x;
+                        const dy = p.y - anchor.cell_y;
+                        const dest_layer: i32 = @intCast(self.surfs.items[self.menu_layer].output);
+                        for (self.group_start.items) |g| {
+                            if (g.idx >= self.icons.items.len) continue;
+                            self.icons.items[g.idx].cell_x += dx;
+                            self.icons.items[g.idx].cell_y += dy;
+                            self.icons.items[g.idx].layer = dest_layer;
+                        }
+                        target = self.menu_layer;
+                    }
+                }
+            }
+        }
+        const s = &self.surfs.items[target];
+        const m = self.metricsFit(fitForH(s.h));
+        var idx_buf: [max_group_icons]usize = undefined;
+        var n: usize = 0;
+        for (self.group_start.items) |g| {
+            if (g.idx >= self.icons.items.len) continue;
+            if (n >= idx_buf.len) break;
+            idx_buf[n] = g.idx;
+            n += 1;
+        }
+        if (n == 0) return false;
+        if (!desktop_icons.finishGroupDrag(self.icons.items, idx_buf[0..n], anchor_idx, s.w, m, @intCast(s.output), s.h, 0, 0)) {
+            // Unexpected layout state: fall back to snapping each icon on its
+            // own rather than leaving the block floating between slots.
+            for (idx_buf[0..n]) |idx| {
+                _ = desktop_icons.finishSingleDrag(self.icons.items, idx, s.w, m, @intCast(s.output), s.h, 0, 0);
+            }
+        }
+        return true;
+    }
+
+    /// Finalize a marquee in the layer the drag started on. Pointer positions
+    /// on other displays are translated back into that layer's coordinates and
+    /// clamped, so the selection can never span two outputs.
+    fn settleMarqueeDrag(self: *Desktop, px: f64, py: f64) void {
+        const drag_layer = self.ui.marquee_layer;
+        self.ui.marquee_dragging = false;
+        self.marquee_sel.clearRetainingCapacity();
+        self.marquee_sig = 0;
+        if (drag_layer >= self.surfs.items.len) return;
+        const s = self.surfs.items[drag_layer];
+        if (self.pointerLocal(px, py, drag_layer)) |p| {
+            self.marquee.x1 = desktop_marquee.clampDragEnd(p.x, s.w);
+            self.marquee.y1 = desktop_marquee.clampDragEnd(p.y, s.h);
+        }
+        var fx0 = @min(self.marquee.x0, self.marquee.x1);
+        var fy0 = @min(self.marquee.y0, self.marquee.y1);
+        var fx1 = @max(self.marquee.x0, self.marquee.x1);
+        var fy1 = @max(self.marquee.y0, self.marquee.y1);
+        desktop_marquee.normalizeFinalRect(&fx0, &fy0, &fx1, &fy1, s.w, s.h);
+        const m = self.metricsFit(fitForH(s.h));
+        var buf: [256]usize = undefined;
+        const n = desktop_icons.selectInRect(self.icons.items, @intCast(s.output), fx0, fy0, fx1, fy1, m, &buf);
+        for (buf[0..n]) |mi| self.marquee_sel.append(self.a.gpa, mi) catch break;
+        self.marquee_sig = self.marqueeSignature();
     }
 
     /// Launch an icon: `.desktop` exec, folder/drive/file via xdg-open,
@@ -2690,6 +3275,60 @@ const Desktop = struct {
         const res = std.process.run(self.a.gpa, self.a.io, .{ .argv = argv }) catch return null;
         defer self.a.gpa.free(res.stderr);
         return res.stdout;
+    }
+
+    fn marqueeContains(self: *const Desktop, idx: usize) bool {
+        for (self.marquee_sel.items) |mi| {
+            if (mi == idx) return true;
+        }
+        return false;
+    }
+
+    /// Hash the identities behind the current marquee indices, in order.
+    /// Paths and names survive art/thumbnail cache updates but not a rescan
+    /// that inserts, removes, renames, or reorders icons.
+    fn marqueeSignature(self: *const Desktop) u64 {
+        var h: u64 = 0x6a09e667f3bcc909;
+        for (self.marquee_sel.items) |mi| {
+            if (mi >= self.icons.items.len) {
+                h = std.hash.Wyhash.hash(h, "@missing");
+                continue;
+            }
+            const ic = self.icons.items[mi];
+            h = std.hash.Wyhash.hash(h, ic.desktop_path);
+            h = std.hash.Wyhash.hash(h, ic.name);
+        }
+        return h;
+    }
+
+    /// Arm a rigid drag for the current marquee selection. The grabbed icon is
+    /// always the first entry; only icons on its layer participate. Returns
+    /// false (and leaves single-drag state alone) when there is no multi-icon
+    /// selection to move.
+    fn startGroupDrag(self: *Desktop, idx: usize) bool {
+        self.group_drag = false;
+        self.group_start.clearRetainingCapacity();
+        if (idx >= self.icons.items.len or self.marquee_sel.items.len < 2) return false;
+        if (self.marquee_sel.items.len > max_group_icons) return false;
+        const anchor = self.icons.items[idx];
+        self.group_start.append(self.a.gpa, .{ .idx = idx, .x = anchor.cell_x, .y = anchor.cell_y }) catch return false;
+        for (self.marquee_sel.items) |mi| {
+            if (mi == idx or mi >= self.icons.items.len) continue;
+            const ic = self.icons.items[mi];
+            if (ic.layer != anchor.layer) continue;
+            self.group_start.append(self.a.gpa, .{ .idx = mi, .x = ic.cell_x, .y = ic.cell_y }) catch {
+                self.group_start.clearRetainingCapacity();
+                return false;
+            };
+        }
+        if (self.group_start.items.len < 2) {
+            self.group_start.clearRetainingCapacity();
+            return false;
+        }
+        self.group_drag = true;
+        self.group_anchor_x = anchor.cell_x;
+        self.group_anchor_y = anchor.cell_y;
+        return true;
     }
 
     fn iconSelection(self: *Desktop, target: usize, buf: []usize) []usize {
@@ -3898,7 +4537,7 @@ const Desktop = struct {
                     return;
                 }
                 const m = self.metrics();
-                const layer_idx: i32 = @intCast(self.menu_layer);
+                const layer_idx = self.iconLayerFor(self.menu_layer);
                 // Widgets get first refusal on press (click/drag arm).
                 if (self.w_inited) {
                     if (self.wlayer.press(px, py, self.pointerOutput(), false, self.a.gpa) != .ignored) {
@@ -3910,22 +4549,62 @@ const Desktop = struct {
                     desktop_icons.hitIndex(self.icons.items, layer_idx, px, py, m)
                 else
                     null;
+                const prev_sel = self.selected;
+                const had_marquee_sel = self.marquee_sel.items.len > 0;
+                if (self.marquee_sel.items.len > 0 and self.marquee_sig != self.marqueeSignature()) {
+                    self.marquee_sel.clearRetainingCapacity();
+                    self.marquee_sig = 0;
+                }
+                self.group_drag = false;
+                self.group_start.clearRetainingCapacity();
                 if (hit_opt) |idx| {
+                    const ic = self.icons.items[idx];
+                    // Clicking outside the selection replaces it. Pressing a
+                    // selected icon keeps the marquee and arms a group drag.
+                    if (!self.marqueeContains(idx)) {
+                        self.marquee_sel.clearRetainingCapacity();
+                        self.marquee_sig = 0;
+                    }
                     self.selected = @intCast(idx);
                     self.press_idx = @intCast(idx);
+                    self.press_layer = self.menu_layer;
                     self.press_x = px;
                     self.press_y = py;
+                    self.press_off_x = px - ic.cell_x;
+                    self.press_off_y = py - ic.cell_y;
                     self.press_moved = false;
                     self.ui.icon_dragging = true;
-                    self.repaint();
+                    _ = self.startGroupDrag(@intCast(idx));
+                    self.beginDragDiag(.icon, self.press_layer, px, py);
+                    self.perf.drag.group_icons = if (self.group_drag) @intCast(self.group_start.items.len) else 1;
                 } else {
                     self.selected = -1;
                     self.last_click_idx = -1;
                     self.marquee_sel.clearRetainingCapacity();
+                    self.marquee_sig = 0;
                     self.ui.marquee_dragging = true;
+                    self.ui.marquee_layer = self.menu_layer;
                     self.marquee = .{ .x0 = px, .y0 = py, .x1 = px, .y1 = py };
-                    self.repaint();
+                    self.beginDragDiag(.marquee, self.ui.marquee_layer, px, py);
                 }
+                // Motion repaints only the active output now, so clear the
+                // previous highlight/selection explicitly when the click
+                // lands on another display.
+                if (had_marquee_sel) {
+                    self.repaintLayers(.{ .icons = true }, null);
+                } else {
+                    if (prev_sel >= 0 and prev_sel < self.icons.items.len) {
+                        const prev_layer = self.icons.items[@intCast(prev_sel)].layer;
+                        if (self.surfaceForIconLayer(prev_layer)) |ps| {
+                            if (ps != self.menu_layer) self.repaintIconsOn(ps);
+                        }
+                    }
+                    self.repaintIconsOn(self.menu_layer);
+                }
+                // Warm the remaining free icon buffers with this exact
+                // pressed scene, so the drag motion frames are all
+                // incremental even on the first pass through the pool.
+                if (hit_opt != null) self.prewarmIconBuffers(self.menu_layer);
             } else {
                 // Mount dialog release comes first (C++ release priority:
                 // open_with/world_clock aside, it precedes every menu). Press
@@ -4058,38 +4737,22 @@ const Desktop = struct {
                     }
                 }
                 if (self.ui.icon_dragging and self.press_moved and self.press_idx >= 0) {
-                    // Settle the dragged icon: snap, swap with any occupant,
-                    // resolve collisions, then persist the grid.
+                    // Settle the drag: the whole marquee block when the press
+                    // grabbed a selected icon, otherwise just the one icon.
                     const idx: usize = @intCast(self.press_idx);
-                    if (idx < self.icons.items.len) {
-                        const m = self.metrics();
-                        const w = if (self.surfs.items.len > 0) self.surfs.items[0].w else 1920;
-                        const h = if (self.surfs.items.len > 0) self.surfs.items[0].h else 1080;
-                        const layer_idx: i32 = @intCast(self.menu_layer);
-                        _ = desktop_icons.finishSingleDrag(self.icons.items, idx, w, m, layer_idx, h, 0, 0);
-                    }
+                    if (!self.settleGroupDrag(idx)) self.settleIconDrag(idx);
                     self.savePrefs();
                 }
-                if (self.ui.marquee_dragging) {
-                    self.ui.marquee_dragging = false;
-                    var fx0 = @min(self.marquee.x0, self.marquee.x1);
-                    var fy0 = @min(self.marquee.y0, self.marquee.y1);
-                    var fx1 = @max(self.marquee.x0, self.marquee.x1);
-                    var fy1 = @max(self.marquee.y0, self.marquee.y1);
-                    const w = if (self.surfs.items.len > 0) self.surfs.items[0].w else 1920;
-                    const h = if (self.surfs.items.len > 0) self.surfs.items[0].h else 1080;
-                    desktop_marquee.normalizeFinalRect(&fx0, &fy0, &fx1, &fy1, w, h);
-                    // Persist the rubber-band selection for copy/delete.
-                    self.marquee_sel.clearRetainingCapacity();
-                    const m = self.metrics();
-                    const layer_idx: i32 = @intCast(self.menu_layer);
-                    var buf: [256]usize = undefined;
-                    const n = desktop_icons.selectInRect(self.icons.items, layer_idx, fx0, fy0, fx1, fy1, m, &buf);
-                    for (buf[0..n]) |mi| self.marquee_sel.append(self.a.gpa, mi) catch break;
-                }
+                if (self.ui.marquee_dragging) self.settleMarqueeDrag(px, py);
+                // Log totals before clearing the gesture: the release repaint
+                // below is a full repaint and must not be counted as a drag
+                // motion frame.
+                self.traceDrag(true);
                 self.ui.icon_dragging = false;
                 self.press_idx = -1;
                 self.press_moved = false;
+                self.group_drag = false;
+                self.group_start.clearRetainingCapacity();
                 self.repaint();
             }
         } else if (button == 0x111 and pressed) { // right
@@ -4101,7 +4764,7 @@ const Desktop = struct {
                 }
             }
             const m = self.metrics();
-            const layer_idx: i32 = @intCast(self.menu_layer);
+            const layer_idx = self.iconLayerFor(self.menu_layer);
             const rhit = if (self.iconsShown())
                 desktop_icons.hitIndex(self.icons.items, layer_idx, px, py, m)
             else
@@ -4387,6 +5050,8 @@ fn onReconfTick(fd: i32, revents: i16, ctx: *anyopaque) void {
         if (!s.shm.ensure(self.a.bound.shm, "eh-desktop", s.w * rsc, s.h * rsc)) continue;
         if (!s.wshm.ensure(self.a.bound.shm, "eh-desktop-widgets", s.w * rsc, s.h * rsc)) continue;
         if (!s.mshm.ensure(self.a.bound.shm, "eh-desktop-menus", s.w * rsc, s.h * rsc)) continue;
+        // New buffer dimensions discard every pool slot's pixel baseline.
+        s.icon_damage.reset();
         const m = self.metricsFit(Desktop.fitForH(s.h));
         desktop_icons.relayout(
             self.icons.items,

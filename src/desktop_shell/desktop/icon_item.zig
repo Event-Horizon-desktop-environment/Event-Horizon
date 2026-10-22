@@ -8,7 +8,6 @@ const et = @import("entry_types.zig");
 /// scan filtering, sorting
 /// and the grid assign/collide/apply + auto /
 /// align / stacked-left / stacked-right relayouts (`:274-495`).
-
 pub const IconKind = enum(u8) {
     application = 0,
     file = 1,
@@ -184,7 +183,7 @@ fn lessByType(a: IconItem, b: IconItem) bool {
 /// `sort_icons` (`:363-382`).
 pub fn sortIcons(items: []IconItem, mode: prefs.Sort) void {
     switch (mode) {
-        .@"type" => std.mem.sort(IconItem, items, {}, struct {
+        .type => std.mem.sort(IconItem, items, {}, struct {
             fn lt(_: void, a: IconItem, b: IconItem) bool {
                 return lessByType(a, b);
             }
@@ -500,6 +499,136 @@ pub fn finishSingleDrag(items: []IconItem, idx: usize, w: i32, m: prefs.Metrics,
     return swapped;
 }
 
+fn inSelection(selected: []const usize, idx: usize) bool {
+    for (selected) |si| {
+        if (si == idx) return true;
+    }
+    return false;
+}
+
+fn addSlot(occ_cols: *[1024]i32, occ_rows: *[1024]i32, occ_n: *usize, col: i32, row: i32) void {
+    if (occ_n.* >= occ_cols.len) return;
+    occ_cols[occ_n.*] = col;
+    occ_rows[occ_n.*] = row;
+    occ_n.* += 1;
+}
+
+/// Multi-icon drag finish: translate the selection as one rigid block,
+/// preserving the relative grid slots captured at press. Anchor snapping
+/// chooses the translation, clamped so the whole block stays on the grid.
+/// Unselected occupants of the target slots move to the nearest free slots;
+/// the rest of the desktop stays put. Returns false when the selection cannot
+/// be translated, so the caller can fall back to per-icon settling.
+pub fn finishGroupDrag(
+    items: []IconItem,
+    selected: []const usize,
+    anchor_idx: usize,
+    w: i32,
+    m: prefs.Metrics,
+    layer_idx: i32,
+    h: i32,
+    dock_reserve: i32,
+    taskbar_reserve: i32,
+) bool {
+    if (selected.len == 0 or anchor_idx >= items.len or items.len > 1024) return false;
+    const cols = gridCols(m.cell_w, w);
+    const max_row = availableRows(m.cell_h, h, dock_reserve, taskbar_reserve) - 1;
+    if (items[anchor_idx].layer != layer_idx) return false;
+
+    var anchor_in_group = false;
+    var min_c: i32 = std.math.maxInt(i32);
+    var min_r: i32 = std.math.maxInt(i32);
+    var max_c: i32 = std.math.minInt(i32);
+    var max_r: i32 = std.math.minInt(i32);
+    for (selected, 0..) |idx, k| {
+        if (idx >= items.len or inSelection(selected[0..k], idx)) return false;
+        const ic = items[idx];
+        if (ic.layer != layer_idx) return false;
+        if (ic.grid_col < 0 or ic.grid_row < 0 or ic.grid_col >= cols or ic.grid_row > max_row) return false;
+        if (idx == anchor_idx) anchor_in_group = true;
+        min_c = @min(min_c, ic.grid_col);
+        min_r = @min(min_r, ic.grid_row);
+        max_c = @max(max_c, ic.grid_col);
+        max_r = @max(max_r, ic.grid_row);
+    }
+    if (!anchor_in_group) return false;
+
+    // Snap the grabbed icon, then translate every selected slot by the same
+    // grid delta. Clamp the delta instead of each icon so spacing survives a
+    // drag against an edge.
+    const s = snapToGrid(items[anchor_idx].cell_x, items[anchor_idx].cell_y, m, cols);
+    var dcol = s.col - items[anchor_idx].grid_col;
+    var drow = s.row - items[anchor_idx].grid_row;
+    dcol = std.math.clamp(dcol, -min_c, cols - 1 - max_c);
+    drow = std.math.clamp(drow, -min_r, max_row - max_r);
+    for (selected) |idx| {
+        items[idx].grid_col += dcol;
+        items[idx].grid_row += drow;
+    }
+
+    // Reserve the group's target slots, then identify unselected icons that
+    // would overlap the block. Their old slots are free to reuse.
+    var occ_cols: [1024]i32 = undefined;
+    var occ_rows: [1024]i32 = undefined;
+    var occ_n: usize = 0;
+    for (selected) |idx| {
+        addSlot(&occ_cols, &occ_rows, &occ_n, items[idx].grid_col, items[idx].grid_row);
+    }
+    var displaced: [1024]usize = undefined;
+    var displaced_n: usize = 0;
+    for (items, 0..) |ic, idx| {
+        if (ic.layer != layer_idx or inSelection(selected, idx)) continue;
+        if (ic.grid_col < 0 or ic.grid_row < 0 or
+            occupied(&occ_cols, &occ_rows, occ_n, ic.grid_col, ic.grid_row))
+        {
+            displaced[displaced_n] = idx;
+            displaced_n += 1;
+        } else {
+            addSlot(&occ_cols, &occ_rows, &occ_n, ic.grid_col, ic.grid_row);
+        }
+    }
+
+    // Nearest-free placement keeps displaced icons near where they started.
+    // Row-major order breaks distance ties deterministically.
+    for (displaced[0..displaced_n]) |idx| {
+        const old_c = items[idx].grid_col;
+        const old_r = items[idx].grid_row;
+        var best_c: i32 = 0;
+        var best_r: i32 = 0;
+        var best_d: i64 = std.math.maxInt(i64);
+        var found = false;
+        var row: i32 = 0;
+        while (row <= max_row) : (row += 1) {
+            var col: i32 = 0;
+            while (col < cols) : (col += 1) {
+                if (occupied(&occ_cols, &occ_rows, occ_n, col, row)) continue;
+                const dc: i64 = @as(i64, col) - @as(i64, old_c);
+                const dr: i64 = @as(i64, row) - @as(i64, old_r);
+                const d = dc * dc + dr * dr;
+                if (!found or d < best_d) {
+                    found = true;
+                    best_c = col;
+                    best_r = row;
+                    best_d = d;
+                }
+            }
+        }
+        if (found) {
+            items[idx].grid_col = best_c;
+            items[idx].grid_row = best_r;
+            addSlot(&occ_cols, &occ_rows, &occ_n, best_c, best_r);
+        } else {
+            // Grid is full: retain a valid slot; perfect packing is not
+            // possible with more icons than cells.
+            items[idx].grid_col = std.math.clamp(old_c, 0, cols - 1);
+            items[idx].grid_row = std.math.clamp(old_r, 0, max_row);
+        }
+    }
+
+    applyGridPixels(items, layer_idx, m);
+    return true;
+}
+
 /// "New Text Document.txt" / "New Folder" unique-name builder
 /// (`desktop_icons_create_new_*`, `:1132-1173`).
 pub fn uniqueNewName(alloc: std.mem.Allocator, dir: []const u8, base: []const u8, exists: *const fn ([]const u8) bool) ![]u8 {
@@ -551,7 +680,7 @@ test "icon_item: sort + grid + hit" {
     };
     sortIcons(&items, .name);
     try t.expectEqualStrings("a", items[0].name);
-    sortIcons(&items, .@"type");
+    sortIcons(&items, .type);
     try t.expectEqual(IconKind.file, items[0].kind);
     const m = prefs.metricsFor(.medium);
     try t.expectEqual(@as(i32, 18), gridCols(m.cell_w, 1920));
@@ -624,6 +753,69 @@ test "icon_item: relayout auto/align/stacked + collisions + drag + select + defe
     var kick = DeferState{};
     kick.arm(0, kick_window_ms);
     try t.expect(kick.poll(50));
+}
+
+test "icon_item: group drag translates rigidly and displaces occupants" {
+    const t = std.testing;
+    const m = prefs.metricsFor(.medium);
+    var items = [_]IconItem{
+        .{ .name = "a", .layer = 0, .grid_col = 0, .grid_row = 0 },
+        .{ .name = "b", .layer = 0, .grid_col = 1, .grid_row = 0 },
+        .{ .name = "c", .layer = 0, .grid_col = 0, .grid_row = 1 },
+        .{ .name = "d", .layer = 0, .grid_col = 4, .grid_row = 2 },
+    };
+    applyGridPixels(&items, 0, m);
+
+    // Drag a and c to (4,2), where d sits. The grabbed anchor's cell is a few
+    // pixels past the slot; c keeps its one-row offset from a.
+    const dest = cellPos(4, 2, m);
+    items[0].cell_x = dest.x + 7;
+    items[0].cell_y = dest.y + 5;
+    items[2].cell_x = items[0].cell_x;
+    items[2].cell_y = items[0].cell_y + m.cell_h;
+    try t.expect(finishGroupDrag(&items, &[_]usize{ 0, 2 }, 0, 1920, m, 0, 1080, 0, 0));
+
+    try t.expectEqual(@as(i32, 4), items[0].grid_col);
+    try t.expectEqual(@as(i32, 2), items[0].grid_row);
+    try t.expectEqual(@as(i32, 4), items[2].grid_col);
+    try t.expectEqual(@as(i32, 3), items[2].grid_row);
+    try t.expectEqual(dest.x, items[0].cell_x);
+    try t.expectEqual(dest.y, items[0].cell_y);
+    try t.expectEqual(dest.x, items[2].cell_x);
+    try t.expectEqual(dest.y + m.cell_h, items[2].cell_y);
+
+    // b was outside the block and stays put. d was displaced from its slot and
+    // lands in the nearest free cell, which is (4,1).
+    try t.expectEqual(@as(i32, 1), items[1].grid_col);
+    try t.expectEqual(@as(i32, 0), items[1].grid_row);
+    try t.expectEqual(@as(i32, 4), items[3].grid_col);
+    try t.expectEqual(@as(i32, 1), items[3].grid_row);
+    const dcell = cellPos(4, 1, m);
+    try t.expectEqual(dcell.x, items[3].cell_x);
+    try t.expectEqual(dcell.y, items[3].cell_y);
+
+    // Every icon still owns a distinct grid slot.
+    for (items, 0..) |a, i| {
+        for (items[i + 1 ..]) |b| {
+            try t.expect(a.grid_col != b.grid_col or a.grid_row != b.grid_row);
+        }
+    }
+
+    // A block already touching the right edge clamps as a whole instead of
+    // letting its rightmost icon wrap or collapse onto its neighbour.
+    var edge = [_]IconItem{
+        .{ .name = "a", .layer = 0, .grid_col = 16, .grid_row = 0 },
+        .{ .name = "b", .layer = 0, .grid_col = 17, .grid_row = 0 },
+    };
+    applyGridPixels(&edge, 0, m);
+    edge[0].cell_x = cellPos(17, 0, m).x + 500;
+    edge[1].cell_x = edge[0].cell_x + m.cell_w;
+    try t.expect(finishGroupDrag(&edge, &[_]usize{ 0, 1 }, 0, 1920, m, 0, 1080, 0, 0));
+    try t.expectEqual(@as(i32, 16), edge[0].grid_col);
+    try t.expectEqual(@as(i32, 17), edge[1].grid_col);
+
+    // The anchor must belong to the selection.
+    try t.expect(!finishGroupDrag(&edge, &[_]usize{1}, 0, 1920, m, 0, 1080, 0, 0));
 }
 
 /// `/proc/mounts` drive filter (`add_drive_icons`, `:545-630`).
