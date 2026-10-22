@@ -489,6 +489,7 @@ build_shell() {
     "$ZIG_BIN" "${args[@]}"
 }
 
+# Install binaries and shared assets with administrator ownership and fixed modes.
 install_system() {
     local stage
     log "Installing ${#INSTALL_BINARIES[@]} binaries to $PREFIX/bin"
@@ -505,6 +506,7 @@ install_system() {
 
     # Stage icons without root, then copy the tree in one privileged step.
     stage="$(mktemp -d)"
+    # Remove the unprivileged icon staging tree on exit.
     cleanup_stage() { rm -rf "$stage"; }
     trap cleanup_stage EXIT
     "$ZIG_BIN" build install-icons --prefix "$stage" >/dev/null
@@ -514,6 +516,7 @@ install_system() {
             set -e
             stage=$1
             prefix=$2
+            test ! -L "$prefix/share"
             # Repair only the shared directories and files used by our icons.
             # install replaces existing files instead of preserving their owner.
             for dir in "$prefix/share/icons" "$prefix/share/icons/hicolor" \
@@ -532,11 +535,13 @@ install_system() {
             set -e
             source_dir=$1
             prefix=$2
+            test ! -L "$prefix/share"
             # Prepare a root-owned tree privately, then replace the old tree.
             # This also repairs installs whose directories belonged to the builder.
             install -d "$prefix/share"
             dest="$prefix/share/event-horizon"
             staging=$(mktemp -d "$prefix/share/.event-horizon.XXXXXX")
+            # Remove a staging tree left behind by a failed installation.
             cleanup_staging() { rm -rf "$staging"; }
             trap cleanup_staging EXIT
             cp -R --no-preserve=ownership,mode "$source_dir/." "$staging/"

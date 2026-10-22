@@ -11,10 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def chunk(kind, data):
+    """Build a PNG chunk with its length and CRC."""
     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
 
 
 def png(w, h, depth, color, raw, interlace=0):
+    """Wrap synthetic scanlines in a PNG with the requested geometry."""
     return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, depth, color, 0, 0, interlace))
             + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
 
@@ -60,6 +62,7 @@ int main(int argc, char **argv) {
 
 
 def main():
+    """Compile the sanitizer harness and validate valid and malicious PNGs."""
     with tempfile.TemporaryDirectory(prefix='eh-image-tests-') as directory:
         work = Path(directory)
         (work / 'test.c').write_text(HARNESS)

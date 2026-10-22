@@ -1036,6 +1036,7 @@ static int stbi__mad3sizes_valid(int a, int b, int c, int add)
 
 // returns 1 if "a*b*c*d + add" has no negative terms/factors and doesn't overflow
 #if !defined(STBI_NO_LINEAR) || !defined(STBI_NO_HDR) || !defined(STBI_NO_PNM) || !defined(STBI_NO_PNG) || !defined(STBI_NO_PSD)
+/** Check four allocation factors and an addend against the signed size limit. */
 static int stbi__mad4sizes_valid(int a, int b, int c, int d, int add)
 {
    return stbi__mul2sizes_valid(a, b) && stbi__mul2sizes_valid(a*b, c) &&
@@ -1059,6 +1060,7 @@ static void *stbi__malloc_mad3(int a, int b, int c, int add)
 }
 
 #if !defined(STBI_NO_LINEAR) || !defined(STBI_NO_HDR) || !defined(STBI_NO_PNM) || !defined(STBI_NO_PNG) || !defined(STBI_NO_PSD)
+/** Allocate a four-factor buffer only when its complete size is representable. */
 static void *stbi__malloc_mad4(int a, int b, int c, int d, int add)
 {
    if (!stbi__mad4sizes_valid(a, b, c, d, add)) return NULL;
@@ -1809,6 +1811,7 @@ static stbi__uint16 stbi__compute_y_16(int r, int g, int b)
 #if defined(STBI_NO_PNG) && defined(STBI_NO_PSD)
 // nothing
 #else
+/** Convert 16-bit channels with a checked destination size; consume the input. */
 static stbi__uint16 *stbi__convert_format16(stbi__uint16 *data, int img_n, int req_comp, unsigned int x, unsigned int y)
 {
    int i,j;
@@ -5075,6 +5078,7 @@ static void stbi__de_iphone(stbi__png *z)
 
 #define STBI__PNG_TYPE(a,b,c,d)  (((unsigned) (a) << 24) + ((unsigned) (b) << 16) + ((unsigned) (c) << 8) + (unsigned) (d))
 
+/** Parse PNG chunks and require inflation to match the declared scanline size. */
 static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
 {
    stbi_uc palette[1024], pal_img_n=0;

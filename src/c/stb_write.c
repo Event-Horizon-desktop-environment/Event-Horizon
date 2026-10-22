@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <errno.h>
 typedef struct { int fd; int failed; } eh_png_sink;
+/** Write an encoded chunk completely, recording failures for the caller. */
 static void eh_png_write(void *context, void *data, int size)
 {
     eh_png_sink *sink = context;
@@ -26,6 +27,7 @@ static void eh_png_write(void *context, void *data, int size)
         size -= (int)n;
     }
 }
+/** Encode RGBA pixels to a private file; exclusive mode refuses existing paths. */
 int eh_write_png(const char *path, int w, int h, const void *data, int stride, int exclusive)
 {
     int fd = open(path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (exclusive ? O_EXCL : O_TRUNC), 0600);

@@ -92,7 +92,7 @@ fn printUsage(rep: *Reporter, argv0: []const u8) void {
         \\  --around-mouse WxH    Capture a WxH region centered on the current cursor
         \\  --all-monitors        Capture every output as one stitched panoramic frame
         \\  --slurp               Pick a region with the external `slurp` tool
-        \\  --no-clipboard        Do not hand the PNG to the clipboard daemon
+        \\  --no-clipboard        Save only to a named file (required)
         \\  --clipboard           Same, spelled out (this is already the default)
         \\  --preview             Hand the PNG to the clipboard daemon for the preview
         \\                        card. There is no GUI for it yet: behaves as --clipboard
@@ -152,6 +152,7 @@ fn handoffClipboard(io: std.Io, self_exe: []const u8, png_path: []const u8, temp
     return spawnDaemon(io, clipboard_daemon_name, png_path, temporary);
 }
 
+/// Start the clipboard owner; false means no child accepted the handoff.
 fn spawnDaemon(io: std.Io, bin: []const u8, png_path: []const u8, temporary: bool) bool {
     var child = std.process.spawn(io, .{
         .argv = if (temporary) &.{ bin, png_path, "--remove-after-read" } else &.{ bin, png_path },
@@ -314,6 +315,18 @@ fn acquirePickerLock(io: std.Io, xdg_runtime: ?[]const u8) PickerLock {
     return .{ .file = file };
 }
 
+/// Report failure if a requested clipboard handoff could not start, even if
+/// an explicitly named file was saved. Temporary output is cleaned by run.
+fn captureStatus(rep: *Reporter, f: flags_mod.Flags, handed_off: bool) u8 {
+    if ((f.clipboard or f.preview) and !handed_off) {
+        rep.err("screenshot: failed to start clipboard daemon.\n", .{});
+        return 1;
+    }
+    return 0;
+}
+
+/// Validate capture options, save a PNG, and transfer temporary-file ownership
+/// only after successfully starting the clipboard daemon.
 pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: ?[]const u8) !u8 {
     var rep = Reporter{ .io = io };
     const argv0: []const u8 = if (args.len > 0) args[0] else "horizon";
@@ -325,6 +338,10 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
         return 2;
     }
     const f = parsed.flags;
+    if (!f.list_windows and !f.clipboard and f.file == null) {
+        rep.err("screenshot: --no-clipboard requires an output filename.\n", .{});
+        return 2;
+    }
     if (f.wantsUsage()) {
         printUsage(&rep, argv0);
         return 2;
@@ -454,7 +471,7 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
-        return 0;
+        return captureStatus(&rep, f, handed_off);
     }
 
     // --- list windows ---------------------------------------------------
@@ -528,7 +545,7 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
             return 1;
         };
         if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
-        return 0;
+        return captureStatus(&rep, f, handed_off);
     }
 
     // --- capture --------------------------------------------------------
@@ -609,7 +626,7 @@ pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: 
     }
 
     if (f.clipboard or f.preview) handed_off = handoffClipboard(io, argv0, out_path, f.file == null);
-    return 0;
+    return captureStatus(&rep, f, handed_off);
 }
 
 // tests
@@ -674,4 +691,23 @@ test "bootstrap-screenshot: overlap and containment" {
     // The C++ overlap test: touching edges do not count.
     try t.expect(!o.overlaps(.{ .w = 10, .h = 10, .x = 1910, .y = 0 }));
     try t.expect(o.overlaps(.{ .w = 10, .h = 10, .x = 1915, .y = 0 }));
+}
+
+test "bootstrap-screenshot: no clipboard requires a named output before capture" {
+    const t = std.testing;
+    try t.expectEqual(@as(u8, 2), try run(t.io, t.allocator, &.{ "horizon", "--no-clipboard" }, null));
+    try t.expectEqual(@as(u8, 2), try run(t.io, t.allocator, &.{ "horizon", "--select", "--no-clipboard" }, null));
+    try t.expectEqual(@as(u8, 2), try run(t.io, t.allocator, &.{ "horizon", "--preview", "--no-clipboard" }, null));
+}
+
+test "bootstrap-screenshot: failed clipboard spawn reports failure for temporary and named captures" {
+    const t = std.testing;
+    var rep = Reporter{ .io = t.io };
+    const started = spawnDaemon(t.io, "/nonexistent-eh-test/clipboard", "/nonexistent-eh-test/capture.png", true);
+    try t.expect(!started);
+    try t.expectEqual(@as(u8, 1), captureStatus(&rep, .{}, started));
+    try t.expectEqual(@as(u8, 1), captureStatus(&rep, .{ .file = "capture.png" }, started));
+    try t.expectEqual(@as(u8, 1), captureStatus(&rep, .{ .file = "capture.png", .clipboard = false, .preview = true }, started));
+    try t.expectEqual(@as(u8, 0), captureStatus(&rep, .{}, true));
+    try t.expectEqual(@as(u8, 0), captureStatus(&rep, .{ .file = "capture.png", .clipboard = false }, false));
 }

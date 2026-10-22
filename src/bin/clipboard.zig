@@ -24,6 +24,7 @@ const wl = eh.wl_c.wl;
 const core = eh.clipboard_daemon;
 const clipboard = eh.clipboard;
 
+/// Load and optionally remove a temporary PNG, then hold the Wayland selection.
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     const io = init.io;

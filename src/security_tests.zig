@@ -2,6 +2,7 @@
 //! Run with: zig build test -Dtest-root=src/security_tests.zig
 
 test {
+    _ = @import("bootstrap/screenshot.zig");
     _ = @import("wallpaper/decode.zig");
     _ = @import("services/mpris_art.zig");
     _ = @import("wl/capture/shot.zig");

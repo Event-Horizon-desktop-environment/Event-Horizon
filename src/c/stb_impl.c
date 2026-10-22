@@ -8,6 +8,7 @@
 #define EH_ALLOCATION_LIMIT ((size_t)128 * 1024 * 1024)
 typedef union { max_align_t alignment; size_t size; } eh_alloc_header;
 static _Atomic size_t eh_decode_bytes;
+/** Reserve decoder budget and allocate an aligned, size-tagged buffer. */
 static void *eh_image_malloc(size_t size)
 {
     if (size > EH_ALLOCATION_LIMIT) return NULL;
@@ -20,6 +21,7 @@ static void *eh_image_malloc(size_t size)
     h->size = size;
     return h + 1;
 }
+/** Release a decoder buffer and return its reserved bytes to the budget. */
 static void eh_image_free(void *ptr)
 {
     if (!ptr) return;
@@ -27,6 +29,7 @@ static void eh_image_free(void *ptr)
     atomic_fetch_sub(&eh_decode_bytes, h->size);
     free(h);
 }
+/** Resize within the budget, preserving the original buffer on failure. */
 static void *eh_image_realloc(void *ptr, size_t size)
 {
     if (!ptr) return eh_image_malloc(size);
