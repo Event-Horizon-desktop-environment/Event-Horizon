@@ -187,6 +187,7 @@ pub const Connection = struct {
         foreign_toplevel_list: ?*wl.ext_foreign_toplevel_list_v1 = null,
         foreign_toplevel_manager: ?*wl.zwlr_foreign_toplevel_manager_v1 = null,
         toplevel_export: ?*wl.hyprland_toplevel_export_manager_v1 = null,
+        focus_grab_manager: ?*wl.hyprland_focus_grab_manager_v1 = null,
         screencopy: ?*wl.zwlr_screencopy_manager_v1 = null,
         ext_image_copy_capture: ?*wl.ext_image_copy_capture_manager_v1 = null,
         ext_output_capture_source: ?*wl.ext_output_image_capture_source_manager_v1 = null,
@@ -300,6 +301,10 @@ pub const Connection = struct {
             } else if (std.mem.eql(u8, g.interface, "hyprland_toplevel_export_manager_v1")) {
                 if (bound.toplevel_export == null) {
                     bound.toplevel_export = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.hyprland_toplevel_export_manager_v1_interface, @min(g.version, 2)));
+                }
+            } else if (std.mem.eql(u8, g.interface, "hyprland_focus_grab_manager_v1")) {
+                if (bound.focus_grab_manager == null) {
+                    bound.focus_grab_manager = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.hyprland_focus_grab_manager_v1_interface, 1));
                 }
             } else if (std.mem.eql(u8, g.interface, "zwlr_screencopy_manager_v1")) {
                 if (bound.screencopy == null) {

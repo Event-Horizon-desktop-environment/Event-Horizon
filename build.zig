@@ -30,6 +30,7 @@ const protocols = [_]Protocol{
     .{ .name = "wlr-foreign-toplevel-management-unstable-v1", .xml = "protocols/wlr-foreign-toplevel-management-unstable-v1.xml" },
     .{ .name = "dwl-ipc-unstable-v2", .xml = "protocols/dwl-ipc-unstable-v2.xml" },
     .{ .name = "hyprland-toplevel-export-v1", .xml = "protocols/hyprland-toplevel-export-v1.xml" },
+    .{ .name = "hyprland-focus-grab-v1", .xml = "protocols/hyprland-focus-grab-v1.xml" },
     .{ .name = "wlr-screencopy-unstable-v1", .xml = "protocols/wlr-screencopy-unstable-v1.xml" },
 };
 

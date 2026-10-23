@@ -33,12 +33,22 @@ pub const Seat = struct {
     on_pointer_motion: ?*const fn (ctx: *anyopaque, x: f64, y: f64) void = null,
     on_pointer_button: ?*const fn (ctx: *anyopaque, button: u32, state: u32) void = null,
     on_pointer_axis: ?*const fn (ctx: *anyopaque, delta_px: f64) void = null,
+    /// Detailed wheel event: raw axis value plus the physical detent count
+    /// when the compositor reports one (axis_discrete / axis_value120).
+    /// Clients that need one card per notch use this instead of the raw
+    /// `on_pointer_axis` callback, whose axis units are compositor-defined.
+    on_pointer_axis_detail: ?*const fn (ctx: *anyopaque, axis: u32, delta: f64, steps: i32) void = null,
     /// Finger-release (and wheel-stop) notifications. Added for trackpad
     /// 1:1 scrolling; the discrete `on_pointer_axis` path is untouched.
     on_pointer_axis_stop: ?*const fn (ctx: *anyopaque, axis: u32) void = null,
     /// Last `axis_source` seen (wheel/finger/continuous/tilt): lets the
     /// axis callback tell a finger glide from a wheel notch.
     axis_source: u32 = 0,
+    /// Pending discrete count for the axis event in this frame. The
+    /// protocol pairs every axis_discrete / axis_value120 with one axis
+    /// event, so `ptrAxis` carries the count through and clears it.
+    axis_steps: i32 = 0,
+    axis_steps_pending: bool = false,
     on_pointer_leave: ?*const fn (ctx: *anyopaque) void = null,
     on_pointer_enter: ?*const fn (ctx: *anyopaque, x: f64, y: f64) void = null,
     on_key: ?*const fn (ctx: *anyopaque, ev: *const KeyEvent) void = null,
@@ -115,15 +125,45 @@ pub const Seat = struct {
     fn ptrAxis(data: ?*anyopaque, ptr: ?*wl.wl_pointer, time: u32, axis: u32, value: wl.wl_fixed_t) callconv(.c) void {
         _ = ptr;
         _ = time;
+        const self: *Self = @ptrCast(@alignCast(data orelse return));
+        const steps = if (self.axis_steps_pending) self.axis_steps else 0;
+        self.axis_steps = 0;
+        self.axis_steps_pending = false;
+        if (self.on_pointer_axis_detail) |h| {
+            h(self.cb_ctx, axis, wl.wl_fixed_to_double(value), steps);
+        } else if (self.on_pointer_axis) |h| {
+            h(self.cb_ctx, wl.wl_fixed_to_double(value));
+        }
+    }
+
+    fn noteSteps(self: *Self, steps: i32) void {
+        if (steps == 0) return;
+        // One detent count for the axis event in this frame. A compositor
+        // may send both axis_discrete and axis_value120 for the same notch;
+        // they carry the same count, so overwriting is deliberate.
+        self.axis_steps = steps;
+        self.axis_steps_pending = true;
+    }
+
+    fn ptrAxisDiscrete(data: ?*anyopaque, ptr: ?*wl.wl_pointer, axis: u32, discrete: i32) callconv(.c) void {
+        _ = ptr;
         _ = axis;
         const self: *Self = @ptrCast(@alignCast(data orelse return));
-        if (self.on_pointer_axis) |h| h(self.cb_ctx, wl.wl_fixed_to_double(value));
+        self.noteSteps(discrete);
+    }
+
+    fn ptrAxisValue120(data: ?*anyopaque, ptr: ?*wl.wl_pointer, axis: u32, value120: i32) callconv(.c) void {
+        _ = ptr;
+        _ = axis;
+        const self: *Self = @ptrCast(@alignCast(data orelse return));
+        // 120 units is one physical detent. High-resolution deltas below
+        // one detent fall back to the raw axis path.
+        self.noteSteps(@divTrunc(value120, 120));
     }
 
     fn noopPtr(_: ?*anyopaque, _: ?*wl.wl_pointer) callconv(.c) void {}
     fn noopPtrU(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32) callconv(.c) void {}
     fn noopPtrUU(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: u32) callconv(.c) void {}
-    fn noopPtrI(_: ?*anyopaque, _: ?*wl.wl_pointer, _: u32, _: i32) callconv(.c) void {}
 
     fn ptrAxisSource(data: ?*anyopaque, ptr: ?*wl.wl_pointer, axis_source: u32) callconv(.c) void {
         _ = ptr;
@@ -147,8 +187,8 @@ pub const Seat = struct {
         .frame = noopPtr,
         .axis_source = ptrAxisSource,
         .axis_stop = ptrAxisStop,
-        .axis_discrete = noopPtrI,
-        .axis_value120 = noopPtrI,
+        .axis_discrete = ptrAxisDiscrete,
+        .axis_value120 = ptrAxisValue120,
         .axis_relative_direction = noopPtrUU,
     };
 

@@ -64,6 +64,7 @@ pub fn paintStrip(
     scroll: f64,
     selected: i32,
     hovered_qs: i32,
+    drop_qs: i32,
     alpha: f64,
 ) void {
     const c = cr orelse return;
@@ -76,7 +77,7 @@ pub fn paintStrip(
         // strip, and cairo already clips anything past the surface.
         if (r.x + r.w < s.x or r.x > s.x + s.w) continue;
         if (r.y + r.h < s.y or r.y > s.y + s.h) continue;
-        paintThumb(c, cache, s, ui, colors, th, frames, r, i == hovered_qs, i == selected, alpha);
+        paintThumb(c, cache, s, ui, colors, th, frames, r, i == hovered_qs, i == drop_qs, i == selected, alpha);
     }
     const add = pick.stripAddRect(s, n, scroll);
     if (add.x + add.w >= s.x and add.x <= s.x + s.w and add.y + add.h >= s.y and add.y <= s.y + s.h) {
@@ -152,6 +153,7 @@ fn paintThumb(
     frames: ?tiles.FrameLookup,
     thumb: types.Rect,
     hovered: bool,
+    drop: bool,
     selected: bool,
     alpha: f64,
 ) void {
@@ -199,6 +201,13 @@ fn paintThumb(
         cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.12 * alpha);
         cairo_helpers.roundedRect(c, tx, ty, s.thumb_w, s.thumb_h, s.radius);
         cairo.cairo_fill(c);
+    }
+    if (drop) {
+        const acc = colors.accent;
+        cairo.cairo_set_source_rgba(c, acc[0], acc[1], acc[2], alpha);
+        cairo.cairo_set_line_width(c, 2.5 * ui);
+        cairo_helpers.roundedRect(c, tx, ty, s.thumb_w, s.thumb_h, s.radius);
+        cairo.cairo_stroke(c);
     }
     if (selected or th.active) {
         const acc = colors.accent;
@@ -266,7 +275,8 @@ test "overview-strip: rail paints without error" {
     };
     var cache = tiles.ScaledCache.init(t.allocator);
     defer cache.deinit();
-    paintStrip(cr, &cache, &l.strip, 1.0, .{}, &thumbs, null, 0.0, 0, 1, 1.0);
-    paintStrip(cr, &cache, &l.strip, 1.0, .{}, &thumbs, null, 0.0, 0, types.strip_add_idx, 1.0);
+    paintStrip(cr, &cache, &l.strip, 1.0, .{}, &thumbs, null, 0.0, 0, 1, -1, 1.0);
+    paintStrip(cr, &cache, &l.strip, 1.0, .{}, &thumbs, null, 0.0, 0, types.strip_add_idx, -1, 1.0);
+    paintStrip(cr, &cache, &l.strip, 1.0, .{}, &thumbs, null, 0.0, 0, 1, 1, 1.0);
     try t.expectEqual(cairo.cairo_status(cr), cairo.CAIRO_STATUS_SUCCESS);
 }

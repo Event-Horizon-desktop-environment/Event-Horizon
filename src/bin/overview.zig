@@ -80,6 +80,10 @@ const Ov = struct {
     theme: []const u8 = "hicolor",
     app_dirs: [][]const u8 = &.{},
     anim_fd: i32 = -1,
+    /// Hyprland input focus whitelist: while this exists, only the overview
+    /// surface receives pointer/keyboard events, so a game holding pointer
+    /// lock or relative motion cannot keep driving from behind the overlay.
+    focus_grab: ?*wl.hyprland_focus_grab_v1 = null,
     /// Last frame-callback timestamp, for scroll-glide dt.
     last_frame_ms: u32 = 0,
     /// Display refresh for the pulse: detected from the output we're on,
@@ -94,6 +98,7 @@ const Ov = struct {
     const Self = @This();
 
     fn deinit(self: *Self) void {
+        self.dropFocusGrab();
         if (self.anim_fd >= 0) _ = linux.close(self.anim_fd);
         if (self.ev_fd >= 0) _ = linux.close(self.ev_fd);
         if (self.capture) |*cap| cap.deinit();
@@ -102,6 +107,43 @@ const Ov = struct {
         if (self.app_dirs.len > 0) app_launch.freeDirs(self.gpa, self.app_dirs);
         self.host.deinit();
     }
+
+    /// Restrict compositor input focus to the overview. Hyprland-only; on
+    /// other compositors the full-screen overlay already takes pointer focus
+    /// normally. The protocol clears the grab if input lands on a surface
+    /// outside the whitelist (for example another monitor); the next pointer
+    /// enter re-arms it.
+    fn takeInputFocus(self: *Self) void {
+        if (self.focus_grab != null) return;
+        const mgr = self.bound.focus_grab_manager orelse return;
+        const surf = self.host.surface.wl_surface orelse return;
+        const grab = wl.hyprland_focus_grab_manager_v1_create_grab(mgr) orelse return;
+        wl.hyprland_focus_grab_v1_add_surface(grab, surf);
+        _ = wl.hyprland_focus_grab_v1_add_listener(grab, &focus_grab_listener, self);
+        wl.hyprland_focus_grab_v1_commit(grab);
+        self.focus_grab = grab;
+        logz.log("overview: input focus grabbed", .{});
+    }
+
+    fn dropFocusGrab(self: *Self) void {
+        if (self.focus_grab) |grab| {
+            wl.hyprland_focus_grab_v1_destroy(grab);
+            self.focus_grab = null;
+        }
+    }
+
+    fn onFocusGrabCleared(ctx: ?*anyopaque, grab: ?*wl.hyprland_focus_grab_v1) callconv(.c) void {
+        _ = grab;
+        const self: *Self = @ptrCast(@alignCast(ctx orelse return));
+        // The compositor makes the object inert; drop our handle so the next
+        // pointer enter can create a fresh grab.
+        self.dropFocusGrab();
+        logz.log("overview: input focus grab cleared", .{});
+    }
+
+    const focus_grab_listener = wl.hyprland_focus_grab_v1_listener{
+        .cleared = onFocusGrabCleared,
+    };
 
     /// Theme icon pixels for a window app id, through the shared grid
     /// cache: one disk-backed store for windows and grid alike, so a
@@ -828,6 +870,7 @@ const Ov = struct {
         const dt_s: f64 = @min(0.1, @as(f64, @floatFromInt(time_ms -| self.last_frame_ms)) / 1000.0);
         self.last_frame_ms = time_ms;
         // A scroll glide settles through this same cadence.
+        if (self.host.edgeScrollTick(dt_s)) paint = true;
         if (self.host.scrollTick(@max(dt_s, 1.0 / 480.0))) paint = true;
         // A lifted finger glide snaps to the nearest card once its
         // settle delay passes — unless motion already cancelled it.
@@ -882,7 +925,12 @@ const Ov = struct {
         return .{ seat.pointer_x, seat.pointer_y };
     }
 
-    fn onEnter(_: *anyopaque, _: f64, _: f64) void {}
+    fn onEnter(ctx: *anyopaque, _: f64, _: f64) void {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        // A grab that was cleared (input visited another surface) comes back
+        // as soon as the pointer re-enters the overview.
+        self.takeInputFocus();
+    }
 
     fn onLeave(ctx: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ctx));
@@ -912,7 +960,8 @@ const Ov = struct {
         return xkb.xkb_state_mod_name_is_active(st, xkb.XKB_MOD_NAME_CTRL, xkb.XKB_STATE_MODS_EFFECTIVE) == 1;
     }
 
-    fn onAxis(ctx: *anyopaque, delta: f64) void {
+    fn onAxis(ctx: *anyopaque, axis: u32, delta: f64, steps: i32) void {
+        _ = axis;
         const self: *Self = @ptrCast(@alignCast(ctx));
         if (!self.onSurface()) return;
         const seat = self.bound.seat_obj orelse return;
@@ -931,11 +980,15 @@ const Ov = struct {
             }
             return;
         }
+        // Prefer the compositor's physical detent count: one wheel notch is
+        // one card no matter what raw axis unit the compositor uses.
         if (over_rail) {
-            if (self.host.wheelRail(delta)) self.refresh();
+            const moved = if (steps != 0) self.host.wheelRailSteps(steps) else self.host.wheelRail(delta);
+            if (moved) self.refresh();
             return;
         }
-        if (self.host.wheel(delta)) {
+        const moved = if (steps != 0) self.host.wheelSteps(steps) else self.host.wheel(delta);
+        if (moved) {
             // Live mode streams the on-screen cards, so a scroll that
             // brings new ones into view asks the stream for them.
             self.syncCapture();
@@ -972,6 +1025,7 @@ const Ov = struct {
     fn noteClosed(ctx: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         logz.log("overview: closed by the compositor", .{});
+        self.dropFocusGrab();
         self.host.reset();
         loop_mod.Loop.requestStop();
     }
@@ -1247,13 +1301,17 @@ pub fn main(init: std.process.Init) !u8 {
     ov.host.surface.on_configure = Ov.onConfigure;
     ov.host.surface.on_closed = Ov.noteClosed;
     ov.host.surface.ctx = &ov;
+    // Grab input immediately, before the first frame is configured: a game
+    // under the overlay must not keep receiving motion/clicks during the
+    // ~60ms open path.
+    ov.takeInputFocus();
 
     if (bound.seat_obj) |seat| {
         seat.on_pointer_enter = Ov.onEnter;
         seat.on_pointer_leave = Ov.onLeave;
         seat.on_pointer_motion = Ov.onMotion;
         seat.on_pointer_button = Ov.onButton;
-        seat.on_pointer_axis = Ov.onAxis;
+        seat.on_pointer_axis_detail = Ov.onAxis;
         seat.on_pointer_axis_stop = Ov.onAxisStop;
         seat.on_key = Ov.onKey;
         seat.cb_ctx = &ov;

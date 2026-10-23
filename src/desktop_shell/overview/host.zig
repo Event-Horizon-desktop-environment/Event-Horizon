@@ -40,6 +40,12 @@ fn ms(us: u64) f64 {
     return @as(f64, @floatFromInt(us)) / 1000.0;
 }
 
+/// How close to the screen edge a dragged window must get before the strip
+/// starts advancing (scaled by the shell UI scale), and the peak speed in
+/// cards per second once the pointer is hard against the edge.
+const drag_edge_zone: f64 = 64.0;
+const drag_edge_cards_per_s: f64 = 2.2;
+
 const Layout = types.Layout;
 const Colors = types.Colors;
 
@@ -211,6 +217,13 @@ pub const Host = struct {
     /// Ctrl held at press: the one gesture that still makes a new folder
     /// from an app-onto-app drop (plain drops only reorder or move in).
     drop_ctrl: bool = false,
+    /// Drag edge auto-scroll: while a window drag hovers near the strip's
+    /// leading/trailing screen edge, the strip keeps advancing so off-screen
+    /// workspaces stay reachable without releasing the tile. `drag_edge_dir`
+    /// is -1 toward earlier cards, +1 toward later; `drag_edge_t` is 0..1
+    /// penetration into the edge zone and drives the speed ramp.
+    drag_edge_dir: i32 = 0,
+    drag_edge_t: f64 = 0,
     hovered_search: bool = false,
     hovered_apps_btn: bool = false,
     /// Shuffle snapshot: pre-drop cell origins by item key + start ms.
@@ -285,6 +298,8 @@ pub const Host = struct {
         self.drop_win = -1;
         self.drop_add = false;
         self.drop_cell = -1;
+        self.drag_edge_dir = 0;
+        self.drag_edge_t = 0;
         self.clearShuffle();
         self.show_apps = false;
         self.apps_wheel_accum = 0;
@@ -574,15 +589,21 @@ pub const Host = struct {
     /// Wheel notch over the rail: one thumb per notch onto the rail
     /// target. No-op while everything fits (scroll_max is zero).
     pub fn wheelRail(self: *Self, delta: f64) bool {
-        const max = self.layout.strip.scroll_max;
-        if (!self.open or max <= 0.0) return false;
         self.qs_wheel_accum += delta / 15.0;
         const steps: i32 = @intFromFloat(@trunc(self.qs_wheel_accum));
         if (steps == 0) return false;
         self.qs_wheel_accum = @min(2.0, @max(-2.0, self.qs_wheel_accum - @as(f64, @floatFromInt(steps))));
+        return self.wheelRailSteps(steps);
+    }
+
+    /// Discrete wheel detents over the rail, bypassing axis-unit guessing.
+    pub fn wheelRailSteps(self: *Self, steps: i32) bool {
+        const max = self.layout.strip.scroll_max;
+        if (!self.open or max <= 0.0 or steps == 0) return false;
         const st = self.layout.strip;
         const step = (if (st.horizontal) st.thumb_w else st.thumb_h) + st.gap;
-        const next = @min(max, @max(0.0, self.qs_scroll_target + @as(f64, @floatFromInt(steps)) * step));
+        const n = @min(2, @max(-2, steps));
+        const next = @min(max, @max(0.0, self.qs_scroll_target + @as(f64, @floatFromInt(n)) * step));
         if (next == self.qs_scroll_target) return false;
         self.qs_scroll_target = next;
         return true;
@@ -604,12 +625,21 @@ pub const Host = struct {
     /// never bank more than two cards ahead. Steps land on the scroll
     /// target and the positions glide after it (see `scrollTick`).
     pub fn wheel(self: *Self, delta: f64) bool {
-        if (!self.open or self.cards.len == 0 or self.layout.pitch <= 0.0) return false;
+        if (!self.open) return false;
+        self.wheel_accum += delta / 15.0;
+        const steps: i32 = @intFromFloat(@trunc(self.wheel_accum));
+        if (steps == 0) return false;
+        self.wheel_accum = @min(2.0, @max(-2.0, self.wheel_accum - @as(f64, @floatFromInt(steps))));
+        return self.wheelSteps(steps);
+    }
+
+    /// Discrete wheel detents: one physical notch equals one step, with no
+    /// dependence on the compositor's axis-unit scale. A fling still never
+    /// banks more than two cards ahead.
+    pub fn wheelSteps(self: *Self, steps: i32) bool {
+        if (!self.open or steps == 0) return false;
         if (self.show_apps) {
-            self.apps_wheel_accum += delta / 15.0;
-            const rows: i32 = @intFromFloat(@trunc(self.apps_wheel_accum));
-            if (rows == 0) return false;
-            self.apps_wheel_accum = @min(2.0, @max(-2.0, self.apps_wheel_accum - @as(f64, @floatFromInt(rows))));
+            const rows = @min(2, @max(-2, steps));
             // An open folder scrolls its own modal grid. Steps queue onto
             // the target so a second tick mid-glide extends the glide.
             const g = if (self.apps.modalOpen()) &self.layout.modal else &self.layout.grid;
@@ -619,15 +649,12 @@ pub const Host = struct {
             sc.* = next;
             return true;
         }
-        self.wheel_accum += delta / 15.0;
-        const steps: i32 = @intFromFloat(@trunc(self.wheel_accum));
-        if (steps == 0) return false;
-        self.wheel_accum = @min(2.0, @max(-2.0, self.wheel_accum - @as(f64, @floatFromInt(steps))));
+        if (self.cards.len == 0 or self.layout.pitch <= 0.0) return false;
         const n: i32 = @intCast(self.cards.len);
         // Steps queue onto the target, never onto the live position, so a
         // second tick mid-glide extends the glide instead of jumping it.
         const from: i32 = @as(i32, @intFromFloat(@round(self.scroll_target / self.layout.pitch)));
-        const sel = @min(n - 1, @max(0, from + steps));
+        const sel = @min(n - 1, @max(0, from + @min(2, @max(-2, steps))));
         const next = @as(f64, @floatFromInt(sel)) * self.layout.pitch;
         if (next == self.scroll_target) return false;
         self.scroll_target = next;
@@ -706,6 +733,91 @@ pub const Host = struct {
         self.shuffle_start_ms = nowMs();
     }
 
+    /// Recompute the workspace/tile/add-slot under a dragged window using
+    /// the live scroll. Called on motion and again while edge auto-scroll
+    /// slides the strip under a stationary pointer.
+    fn updateWindowDrop(self: *Self) void {
+        const mx = self.drop_px;
+        const my = self.drop_py;
+        // Window drag targets: another card, another tile on the same card,
+        // a quick-select thumb, or the strip's add slot (which wins over all).
+        const n: i32 = @intCast(self.cards.len);
+        self.hovered_qs = -1;
+        self.drop_ws = -1;
+        self.drop_win = -1;
+        self.drop_add = pick.pickStripAdd(&self.layout.strip, n, mx, my, self.qs_scroll);
+        if (self.drop_add) {
+            self.hovered_qs = types.strip_add_idx;
+            return;
+        }
+        // The quick-select thumbs are workspace targets too: dropping a
+        // window straight onto one moves it there without scrolling the
+        // main strip to hunt for the card.
+        const qs = pick.pickStrip(&self.layout.strip, n, mx, my, self.qs_scroll);
+        if (qs >= 0) {
+            self.hovered_qs = qs;
+            if (qs != self.press_ws) self.drop_ws = qs;
+            return;
+        }
+        self.drop_ws = pick.pickWorkspace(&self.layout, n, mx, my, self.scroll);
+        if (self.drop_ws == self.press_ws) self.drop_ws = -1;
+        if (self.drop_ws < 0 and self.press_ws >= 0) {
+            const ci: usize = @intCast(self.press_ws);
+            if (ci < self.cards.len) {
+                for (0..self.cards[ci].wins.len) |j| {
+                    if (!self.tileAt(ci, j).contains(mx, my)) continue;
+                    var f: usize = 0;
+                    var k: usize = 0;
+                    while (k < ci) : (k += 1) f += self.cards[k].wins.len;
+                    const flat: i32 = @intCast(f + j);
+                    if (flat != self.press_win) self.drop_win = flat;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Arm edge auto-scroll when a dragged window reaches the end of the
+    /// strip axis. Direction follows the strip, not the pointer: the bottom
+    /// edge advances a vertical strip, the right edge a horizontal one.
+    fn updateDragEdge(self: *Self, mx: f64, my: f64) void {
+        self.drag_edge_dir = 0;
+        self.drag_edge_t = 0;
+        if (!self.drag_active or self.show_apps or self.press_win < 0) return;
+        if (self.cards.len < 2 or self.layout.pitch <= 0.0) return;
+        if (mx < 0.0 or my < 0.0) return;
+        const zone = @min(120.0, drag_edge_zone * self.layout.ui);
+        const vertical = self.layout.axis == .vertical;
+        const pos = if (vertical) my else mx;
+        const extent: f64 = @floatFromInt(if (vertical) self.buf_h else self.buf_w);
+        if (extent <= zone * 2.0) return;
+        if (pos < zone) {
+            self.drag_edge_dir = -1;
+            self.drag_edge_t = @min(1.0, (zone - pos) / zone);
+        } else if (pos > extent - zone) {
+            self.drag_edge_dir = 1;
+            self.drag_edge_t = @min(1.0, (pos - (extent - zone)) / zone);
+        }
+    }
+
+    /// Advance the strip while a window drag sits in an edge zone. The
+    /// pointer can stay still: the live scroll glides after the target and
+    /// the drop hit-test follows it, so releasing drops into whichever
+    /// workspace is under the pointer at that moment.
+    pub fn edgeScrollTick(self: *Self, dt_s: f64) bool {
+        if (!self.open or !self.drag_active or self.drag_edge_dir == 0) return false;
+        if (self.show_apps or self.cards.len < 2 or self.layout.pitch <= 0.0) return false;
+        const speed = drag_edge_cards_per_s * (0.25 + 0.75 * @min(1.0, @max(0.0, self.drag_edge_t)));
+        const step = @as(f64, @floatFromInt(self.drag_edge_dir)) * speed * self.layout.pitch * @max(0.0, dt_s);
+        const max = self.maxScroll();
+        const next = @min(max, @max(0.0, self.scroll_target + step));
+        if (next == self.scroll_target) return false;
+        self.scroll_target = next;
+        // The pointer has not moved, but the card under it has.
+        self.updateWindowDrop();
+        return true;
+    }
+
     /// Pointer moved; true when pixels changed.
     pub fn motion(self: *Self, mx: f64, my: f64) bool {
         if (!self.open) return false;
@@ -736,6 +848,12 @@ pub const Host = struct {
                         self.drag_grab_dx = 0;
                         self.drag_grab_dy = 0;
                     }
+                    // A drag that crosses the threshold already at the edge
+                    // must arm auto-scroll now; no further motion may come.
+                    self.drop_px = mx;
+                    self.drop_py = my;
+                    self.updateDragEdge(mx, my);
+                    self.updateWindowDrop();
                 }
                 return true;
             }
@@ -743,6 +861,7 @@ pub const Host = struct {
         if (self.drag_active) {
             self.drop_px = mx;
             self.drop_py = my;
+            self.updateDragEdge(mx, my);
             if (self.show_apps and self.press_app >= 0) {
                 const modal = self.press_app_modal;
                 const g = if (modal) &self.layout.modal else &self.layout.grid;
@@ -758,34 +877,7 @@ pub const Host = struct {
                 self.drop_cell = dst;
                 return true;
             }
-            // Window drag targets: another card, another tile on the same
-            // card, or the strip's add slot (which wins over both).
-            const n: i32 = @intCast(self.cards.len);
-            self.drop_ws = pick.pickWorkspace(&self.layout, n, mx, my, self.scroll);
-            if (self.drop_ws == self.press_ws) self.drop_ws = -1;
-            self.drop_win = -1;
-            if (self.drop_ws < 0 and self.press_ws >= 0) {
-                const ci: usize = @intCast(self.press_ws);
-                if (ci < self.cards.len) {
-                    for (0..self.cards[ci].wins.len) |j| {
-                        if (!self.tileAt(ci, j).contains(mx, my)) continue;
-                        var f: usize = 0;
-                        var k: usize = 0;
-                        while (k < ci) : (k += 1) f += self.cards[k].wins.len;
-                        const flat: i32 = @intCast(f + j);
-                        if (flat != self.press_win) self.drop_win = flat;
-                        break;
-                    }
-                }
-            }
-            self.drop_add = pick.pickStripAdd(&self.layout.strip, @intCast(self.cards.len), mx, my, self.qs_scroll);
-            if (self.drop_add) {
-                self.drop_ws = -1;
-                self.drop_win = -1;
-                self.hovered_qs = types.strip_add_idx;
-            } else if (self.hovered_qs == types.strip_add_idx) {
-                self.hovered_qs = -1;
-            }
+            self.updateWindowDrop();
             return true;
         }
         // Context menu hover wins while open.
@@ -965,6 +1057,13 @@ pub const Host = struct {
         defer self.clearPress();
         if (self.drag_active) {
             self.drag_active = false;
+            // Edge auto-scroll may have slid the strip since the last motion
+            // event; hit-test the drop one final time against where the
+            // pointer is now, then settle between cards.
+            if (!self.show_apps) {
+                self.updateWindowDrop();
+                _ = self.snapTargets();
+            }
             if (self.show_apps and self.press_app >= 0) {
                 if (self.press_app_modal) {
                     // Modal drag: outside the box removes the app from the
@@ -1043,6 +1142,8 @@ pub const Host = struct {
         self.drop_win = -1;
         self.drop_add = false;
         self.drop_cell = -1;
+        self.drag_edge_dir = 0;
+        self.drag_edge_t = 0;
     }
 
     /// Recompute the apps grids after a folder mutation (reorder already
@@ -1783,7 +1884,8 @@ pub const Host = struct {
             used += m;
         }
         const frames: ?tiles.FrameLookup = if (self.frames) |f| .{ .ctx = f.ctx, .call = f.call } else null;
-        strip.paintStrip(cr, &self.scaled, &self.layout.strip, self.ui, self.colors, thumbs[0..n], frames, self.qs_scroll, self.selected(), self.hovered_qs, 1.0);
+        const drop_qs: i32 = if (self.drag_active and !self.show_apps and self.drop_ws >= 0 and self.hovered_qs == self.drop_ws) self.hovered_qs else -1;
+        strip.paintStrip(cr, &self.scaled, &self.layout.strip, self.ui, self.colors, thumbs[0..n], frames, self.qs_scroll, self.selected(), self.hovered_qs, drop_qs, 1.0);
     }
 };
 
@@ -1863,6 +1965,83 @@ test "overview-host: press maps tiles, gaps select, outside dismisses" {
     switch (h.key(seat_mod.xkb.XKB_KEY_Escape, true, "")) {
         .dismiss => {},
         else => return error.TestUnexpectedResult,
+    }
+}
+
+test "overview-host: dragging a window to the edge scrolls the strip" {
+    const t = std.testing;
+    var h = Host.init(t.allocator, t.io);
+    defer h.deinit();
+    h.buf_w = 1920;
+    h.buf_h = 1080;
+    const wins = [_]Win{.{ .app_id = "a", .title = "one" }};
+    const cards = [_]Card{
+        .{ .id = 1, .label = "1", .active = true, .wins = @constCast(&wins) },
+        .{ .id = 2, .label = "2", .wins = &.{} },
+        .{ .id = 3, .label = "3", .wins = &.{} },
+    };
+    h.setCards(&cards);
+    h.open = true;
+    // Grab the tile on card 0, then drag straight to the bottom edge in one
+    // motion: the threshold branch must arm auto-scroll without another move.
+    const tile = h.tileAt(0, 0);
+    try t.expect(h.press(tile.x + 2, tile.y + 2, 0x110, true) == .none);
+    _ = h.motion(tile.x + 2, 1075);
+    try t.expect(h.drag_active);
+    try t.expectEqual(@as(i32, 1), h.drag_edge_dir);
+    const before = h.scroll_target;
+    try t.expect(h.edgeScrollTick(0.1));
+    try t.expect(h.scroll_target > before);
+    // Keeping the pointer parked at the edge keeps advancing until the last
+    // workspace is centered.
+    for (0..120) |_| {
+        _ = h.edgeScrollTick(0.1);
+        _ = h.scrollTick(0.1);
+    }
+    try t.expectEqual(@as(i32, 2), h.selected());
+    // Top edge runs the other way.
+    _ = h.motion(tile.x + 2, 2);
+    try t.expectEqual(@as(i32, -1), h.drag_edge_dir);
+    const back = h.scroll_target;
+    try t.expect(h.edgeScrollTick(0.1));
+    try t.expect(h.scroll_target < back);
+}
+
+test "overview-host: dropping a window on a quick-select thumb moves it" {
+    const t = std.testing;
+    const wins = [_]Win{.{ .app_id = "a", .title = "one" }};
+    const cards = [_]Card{
+        .{ .id = 1, .label = "1", .active = true, .wins = @constCast(&wins) },
+        .{ .id = 2, .label = "2", .wins = &.{} },
+        .{ .id = 3, .label = "3", .wins = &.{} },
+    };
+    // The strip sits at the bottom for a horizontal layout and on the left
+    // for a vertical one; both must accept the drop.
+    for ([_]types.Axis{ .horizontal, .vertical }) |axis| {
+        var h = Host.init(t.allocator, t.io);
+        defer h.deinit();
+        h.buf_w = 1920;
+        h.buf_h = 1080;
+        h.axis = axis;
+        h.setCards(&cards);
+        h.open = true;
+        const tile = h.tileAt(0, 0);
+        try t.expect(h.press(tile.x + 2, tile.y + 2, 0x110, true) == .none);
+        // Drag straight to the third workspace's thumb.
+        const thumb = pick.stripThumb(&h.layout.strip, 3, 2, h.qs_scroll);
+        const tx = thumb.x + thumb.w * 0.5;
+        const ty = thumb.y + thumb.h * 0.5;
+        _ = h.motion(tx, ty);
+        try t.expect(h.drag_active);
+        try t.expectEqual(@as(i32, 2), h.drop_ws);
+        try t.expectEqual(@as(i32, 2), h.hovered_qs);
+        switch (h.press(tx, ty, 0x110, false)) {
+            .move_win => |m| {
+                try t.expectEqual(@as(usize, 0), m.flat);
+                try t.expectEqual(@as(i32, 2), m.ws);
+            },
+            else => return error.TestUnexpectedResult,
+        }
     }
 }
 

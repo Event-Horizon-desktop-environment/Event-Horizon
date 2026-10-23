@@ -16,6 +16,7 @@ pub const wl = @cImport({
     @cInclude("ext-workspace-v1-client-protocol.h");
     @cInclude("dwl-ipc-unstable-v2-client-protocol.h");
     @cInclude("hyprland-toplevel-export-v1-client-protocol.h");
+    @cInclude("hyprland-focus-grab-v1-client-protocol.h");
     @cInclude("wlr-screencopy-unstable-v1-client-protocol.h");
     @cInclude("ext-image-copy-capture-v1-client-protocol.h");
     @cInclude("ext-image-capture-source-v1-client-protocol.h");
