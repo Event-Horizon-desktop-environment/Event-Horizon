@@ -49,8 +49,8 @@ dependencies, picks a CPU target, builds with `ReleaseFast`, and installs the
 shell system-wide:
 
 ```bash
-git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon-Shell.git
-cd Event-Horizon-Shell
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
+cd Event-Horizon
 ./build.sh
 ```
 
