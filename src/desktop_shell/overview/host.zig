@@ -1385,10 +1385,13 @@ pub const Host = struct {
         self.surface.damage(0, 0, self.buf_w, self.buf_h);
         buf.markBusy();
         self.frame_buf = null;
-        self.surface.commit();
         // Pace the pulse off the compositor: the frame callback fires at
         // vsync, so animations track the display instead of a fixed tick.
+        // Request it before the commit it belongs to — requested after,
+        // it waits for the *next* commit and the chain idles until some
+        // unrelated event (pointer motion) paints again.
         self.requestFrame();
+        self.surface.commit();
     }
 
     /// Owner hook for the vsync pulse: runs in the frame callback with the
