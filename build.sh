@@ -489,6 +489,7 @@ build_shell() {
     "$ZIG_BIN" "${args[@]}"
 }
 
+# Install binaries and shared assets with administrator ownership and fixed modes.
 install_system() {
     local stage
     log "Installing ${#INSTALL_BINARIES[@]} binaries to $PREFIX/bin"
@@ -505,6 +506,7 @@ install_system() {
 
     # Stage icons without root, then copy the tree in one privileged step.
     stage="$(mktemp -d)"
+    # Remove the unprivileged icon staging tree on exit.
     cleanup_stage() { rm -rf "$stage"; }
     trap cleanup_stage EXIT
     "$ZIG_BIN" build install-icons --prefix "$stage" >/dev/null
@@ -514,8 +516,16 @@ install_system() {
             set -e
             stage=$1
             prefix=$2
-            install -d "$prefix/share/icons"
-            cp -a "$stage/icons/." "$prefix/share/icons/"
+            test ! -L "$prefix/share"
+            # Repair only the shared directories and files used by our icons.
+            # install replaces existing files instead of preserving their owner.
+            for dir in "$prefix/share/icons" "$prefix/share/icons/hicolor" \
+                       "$prefix/share/icons/hicolor/scalable" "$prefix/share/icons/hicolor/scalable/apps"; do
+                test ! -L "$dir"
+                install -d -o 0 -g 0 -m755 "$dir"
+            done
+            find "$stage/icons/hicolor/scalable/apps" -type f -exec \
+                install -o 0 -g 0 -m644 -t "$prefix/share/icons/hicolor/scalable/apps" {} +
         ' sh "$stage" "$PREFIX"
     fi
 
@@ -525,8 +535,22 @@ install_system() {
             set -e
             source_dir=$1
             prefix=$2
-            install -d "$prefix/share/event-horizon"
-            cp -a "$source_dir/." "$prefix/share/event-horizon/"
+            test ! -L "$prefix/share"
+            # Prepare a root-owned tree privately, then replace the old tree.
+            # This also repairs installs whose directories belonged to the builder.
+            install -d "$prefix/share"
+            dest="$prefix/share/event-horizon"
+            staging=$(mktemp -d "$prefix/share/.event-horizon.XXXXXX")
+            # Remove a staging tree left behind by a failed installation.
+            cleanup_staging() { rm -rf "$staging"; }
+            trap cleanup_staging EXIT
+            cp -R --no-preserve=ownership,mode "$source_dir/." "$staging/"
+            test -z "$(find "$staging" -type l -print -quit)"
+            chown -R 0:0 "$staging"
+            find "$staging" -type d -exec chmod 755 {} +
+            find "$staging" -type f -exec chmod 644 {} +
+            rm -rf "$dest"
+            mv "$staging" "$dest"
         ' sh "$SCRIPT_DIR/zig-out/share/event-horizon" "$PREFIX"
     fi
 

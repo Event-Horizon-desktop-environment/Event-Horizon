@@ -366,6 +366,19 @@ zig build test
 zig build test -Doptimize=ReleaseSafe
 ```
 
+Security regressions for the vendored image decoder and screenshot writer:
+
+```bash
+python3 scripts/test_image_security.py  # C compiler with ASan/UBSan required
+zig build test -Dtest-root=src/security_tests.zig
+```
+
+Image loading limits cover art to 4 megapixels (4 × 1024²) and wallpapers to
+16 megapixels. The stb decoder also limits individual allocations to 128 MiB
+and all simultaneous decoder allocations to 256 MiB. Images exceeding these
+limits are rejected before display. PNG inflation must match the declared
+raster exactly, including interlaced passes.
+
 The default test root is `src/tests.zig`. A different root can be selected
 with `-Dtest-root=path/to/root.zig`. Tests build the same protocol bindings
 and native libraries as the shell, including PipeWire.

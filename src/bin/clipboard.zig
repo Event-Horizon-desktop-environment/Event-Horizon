@@ -24,6 +24,7 @@ const wl = eh.wl_c.wl;
 const core = eh.clipboard_daemon;
 const clipboard = eh.clipboard;
 
+/// Load and optionally remove a temporary PNG, then hold the Wayland selection.
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     const io = init.io;
@@ -42,12 +43,18 @@ pub fn main(init: std.process.Init) !u8 {
     }
     const png_path = args[1];
 
-    const png = core.loadPng(io, gpa, png_path) catch |e| {
-        // The C++ prints "Failed to open: <path>" when the ifstream cannot
-        // open and "Failed to read: <path>" on a bad read; one line with
-        // the error name covers both.
-        eh.logz.err("Failed to open: {s} ({s})", .{ png_path, @errorName(e) });
-        return 1;
+    const remove_after_read = args.len == 3 and std.mem.eql(u8, args[2], "--remove-after-read");
+    // Cleanup also runs on read failure; the screenshot process transfers
+    // ownership only for its private, automatically created temporary file.
+    const png = blk: {
+        defer if (remove_after_read) {
+            std.Io.Dir.cwd().deleteFile(io, png_path) catch {};
+            if (std.fs.path.dirname(png_path)) |dir| std.Io.Dir.cwd().deleteDir(io, dir) catch {};
+        };
+        break :blk core.loadPng(io, gpa, png_path) catch |e| {
+            eh.logz.err("Failed to open: {s} ({s})", .{ png_path, @errorName(e) });
+            return 1;
+        };
     };
     defer gpa.free(png);
 

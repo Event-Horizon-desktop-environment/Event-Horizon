@@ -28,7 +28,7 @@ const stream = @import("toplevel_stream.zig");
 /// stb_image_write: declarations from the header, implementation in
 /// `src/c/stb_write.c` — its own translation unit so the writer symbols
 /// stay extern and linkable from Zig.
-const stbi = @cImport(@cInclude("stb_image_write.h"));
+extern fn eh_write_png(path: [*:0]const u8, w: c_int, h: c_int, data: [*]const u8, stride: c_int, exclusive: c_int) c_int;
 
 /// One attempt per backend. Long enough for a busy compositor, short enough
 /// that a dead one fails the screenshot instead of wedging the shell.
@@ -143,19 +143,20 @@ pub fn captureToplevel(
 }
 
 /// Write an 8-bit RGBA PNG. The path is copied into a fixed buffer because
-/// the stb call takes a NUL-terminated one.
-pub fn writePng(path: []const u8, img: *const Image) !void {
+/// the C writer takes a NUL-terminated one. Temporary captures use exclusive
+/// creation; explicitly named destinations can be overwritten.
+pub fn writePng(path: []const u8, img: *const Image, exclusive: bool) !void {
     if (img.width <= 0 or img.height <= 0 or img.rgba.len == 0) return error.BadDimensions;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len >= buf.len) return error.PathTooLong;
     const zpath = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.PathTooLong;
-    const rc = stbi.stbi_write_png(
+    const rc = eh_write_png(
         zpath.ptr,
         @intCast(img.width),
         @intCast(img.height),
-        4,
         img.rgba.ptr,
         @intCast(img.width * 4),
+        @intFromBool(exclusive),
     );
     if (rc == 0) return error.WriteFailed;
 }
