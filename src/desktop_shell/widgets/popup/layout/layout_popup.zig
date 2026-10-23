@@ -145,7 +145,7 @@ fn setFont(cr: ?*cairo.cairo_t, size_px: f64, bold: bool) void {
 }
 
 fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     cairo.cairo_move_to(cr, x, y);
@@ -189,7 +189,7 @@ pub fn truncateToWidth(
 
 fn cairoAdvance(ctx: *anyopaque, s: []const u8) f64 {
     const cr: ?*cairo.cairo_t = @ptrCast(ctx);
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     var ex: cairo.cairo_text_extents_t = undefined;
@@ -357,7 +357,7 @@ pub fn paint(cr: ?*cairo.cairo_t, sc: *const schema.ShellConfig, pointer: ?[2]f6
                 c,
             );
             var te: cairo.cairo_text_extents_t = undefined;
-            var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+            var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
             const n = @min(shown.len, 1023);
             @memcpy(zbuf[0..n], shown[0..n]);
             cairo.cairo_text_extents(c, &zbuf, &te);

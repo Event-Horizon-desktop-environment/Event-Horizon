@@ -436,6 +436,6 @@ test "paint: masked bullets and echo truncation" {
     // Multi-byte characters count once.
     try testing.expectEqualStrings("••", maskedInto(&buf, "é✓"));
     // Cap enforced.
-    const long = "x" ** 200;
-    try testing.expectEqual(k_field_chars * 3, maskedInto(&buf, long).len);
+    const long = @as([200:0]u8, @splat('x'));
+    try testing.expectEqual(k_field_chars * 3, maskedInto(&buf, &long).len);
 }

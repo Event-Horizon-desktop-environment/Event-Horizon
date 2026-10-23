@@ -26,7 +26,7 @@ pub fn log(comptime fmt: []const u8, args: anytype) void {
         0;
     const line = std.fmt.bufPrint(&line_buf, "[{d}ms] {s}\n", .{ ms, msg }) catch return;
 
-    var zbuf: [512:0]u8 = [_:0]u8{0} ** 512;
+    var zbuf: [512:0]u8 = @as([512:0]u8, @splat(0));
     if (path.len + 1 > zbuf.len) return;
     @memcpy(zbuf[0..path.len], path);
     const fd_rc = std.os.linux.open(&zbuf, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o644);

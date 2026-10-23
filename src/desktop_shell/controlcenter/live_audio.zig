@@ -74,7 +74,7 @@ pub fn firstPct(s: []const u8) i32 {
 
 pub fn parseMute(s: []const u8) bool {
     // "Mute: yes" / "Mute: no" (case-insensitive, trailing whitespace ok).
-    if (std.ascii.indexOfIgnoreCase(s, "mute: yes") != null) return true;
+    if (std.ascii.findIgnoreCase(s, "mute: yes") != null) return true;
     return false;
 }
 
@@ -252,18 +252,15 @@ pub fn query(alloc: std.mem.Allocator, io: std.Io, detail: bool) ?Queried {
     // At least one pactl probe answered, so the binary exists.
     const exe = pactl_exe.?;
     q.snap.have_server = true;
+    // Raw texts live inside Queried (parsed slices borrow them), so `deinit`
+    // owns the only free.
     const sinks_text = live.runCapture(alloc, io, &.{ exe, "list", "sinks" });
-    defer if (sinks_text) |s| alloc.free(s);
-    const sources_text = live.runCapture(alloc, io, &.{ exe, "list", "sources" });
-    defer if (sources_text) |s| alloc.free(s);
-    const in_text = live.runCapture(alloc, io, &.{ exe, "list", "sink-inputs" });
-    defer if (in_text) |s| alloc.free(s);
-    const out_text = live.runCapture(alloc, io, &.{ exe, "list", "source-outputs" });
-    defer if (out_text) |s| alloc.free(s);
-    // Keep raw texts alive inside Queried; parsed slices borrow them.
     q.sinks_text = sinks_text;
+    const sources_text = live.runCapture(alloc, io, &.{ exe, "list", "sources" });
     q.sources_text = sources_text;
+    const in_text = live.runCapture(alloc, io, &.{ exe, "list", "sink-inputs" });
     q.in_text = in_text;
+    const out_text = live.runCapture(alloc, io, &.{ exe, "list", "source-outputs" });
     q.out_text = out_text;
     const ds = if (def_sink) |s| trimLine(s) else "";
     const dso = if (def_source) |s| trimLine(s) else "";

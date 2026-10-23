@@ -227,7 +227,7 @@ pub const Client = struct {
     fn setDefaultKey(self: *Client, key: [*:0]const u8, configured_key: [*:0]const u8, name: []const u8) bool {
         const md = self.metadata orelse return false;
         var buf: [512]u8 = undefined;
-        const json = std.fmt.bufPrintZ(&buf, "{{\"name\":\"{s}\"}}", .{name}) catch return false;
+        const json = std.fmt.bufPrintSentinel(&buf, "{{\"name\":\"{s}\"}}", .{name}, 0) catch return false;
         const ok = pw.metadataSetProperty(md, 0, key, "Spa:String:JSON", json.ptr) >= 0;
         // The configured key is what WirePlumber restores at startup.
         _ = pw.metadataSetProperty(md, 0, configured_key, "Spa:String:JSON", json.ptr);
@@ -250,9 +250,9 @@ pub const Client = struct {
         const target = self.g.findNode(target_id) orelse return false;
         const serial: u64 = if (target.serial != 0) target.serial else target.id;
         var id_buf: [24]u8 = undefined;
-        const id_str = std.fmt.bufPrintZ(&id_buf, "{d}", .{target_id}) catch return false;
+        const id_str = std.fmt.bufPrintSentinel(&id_buf, "{d}", .{target_id}, 0) catch return false;
         var ser_buf: [24]u8 = undefined;
-        const ser_str = std.fmt.bufPrintZ(&ser_buf, "{d}", .{serial}) catch return false;
+        const ser_str = std.fmt.bufPrintSentinel(&ser_buf, "{d}", .{serial}, 0) catch return false;
         const ok_node = pw.metadataSetProperty(md, stream_id, "target.node", "Spa:Id", id_str.ptr) >= 0;
         const ok_obj = pw.metadataSetProperty(md, stream_id, "target.object", "Spa:Id", ser_str.ptr) >= 0;
         return ok_node and ok_obj;

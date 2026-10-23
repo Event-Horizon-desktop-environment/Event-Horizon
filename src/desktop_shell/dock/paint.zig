@@ -1,5 +1,6 @@
 const std = @import("std");
 const cairo = @import("../../wl/buffer/shm.zig").cairo;
+const repetition = @import("../../compat/repetition.zig");
 const tokens = @import("../../m3/tokens.zig");
 const cairo_helpers = @import("../shared/cairo_helpers.zig");
 
@@ -60,7 +61,7 @@ test "dock-paint: icons render" {
     defer cairo.cairo_surface_destroy(surf);
     const cr = cairo.cairo_create(surf);
     defer cairo.cairo_destroy(cr);
-    const red = [_]u8{ 0, 0, 255, 255 } ** 64;
+    const red = repetition.repeatBytes(256, &.{ 0, 0, 255, 255 });
     const icons = [_]IconPx{
         .{ .pixels = &red, .w = 8, .h = 8 },
         .{},

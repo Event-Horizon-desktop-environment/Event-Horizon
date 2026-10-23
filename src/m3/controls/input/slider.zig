@@ -784,7 +784,7 @@ fn renderGlyph(
     _ = alpha_q;
     // Measure a one-code-point string with the same toy-font calls,
     // so the advance matches the pre-cache path exactly.
-    var buf: [8:0]u8 = [_:0]u8{0} ** 8;
+    var buf: [8:0]u8 = @as([8:0]u8, @splat(0));
     const len = std.unicode.utf8Encode(cp, &buf) catch return null;
     buf[len] = 0;
 

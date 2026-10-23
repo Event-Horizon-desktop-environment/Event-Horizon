@@ -1,7 +1,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 
-const c = @cImport(@cInclude("pthread.h"));
+const c = @import("c_pthread");
 
 pub const FdCallback = *const fn (fd: i32, revents: i16, ctx: *anyopaque) void;
 

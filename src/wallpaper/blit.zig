@@ -1,4 +1,5 @@
 const std = @import("std");
+const repetition = @import("../compat/repetition.zig");
 
 pub const Fit = enum { stretch, fit, fill };
 
@@ -84,7 +85,7 @@ test "blit: cover samples the full source width, not a squeezed slice" {
             src[o + 3] = 255;
         }
     }
-    var dst: [4 * 3]u32 = [_]u32{0} ** (4 * 3);
+    var dst: [4 * 3]u32 = @as([(4 * 3)]u32, @splat(0));
     blitCover(&dst, 4, 3, &src, 6, 4, .fill);
     // Left edge samples column 0, right edge column 4 (not a clamped 5).
     try t.expectEqual(@as(u32, 0xFF000000), dst[0]);
@@ -95,11 +96,11 @@ test "blit: cover samples the full source width, not a squeezed slice" {
 
 test "blit: solid fill + stretch + premult" {
     const t = std.testing;
-    var dst: [16]u32 = [_]u32{0} ** 16;
-    const src = [_]u8{ 255, 0, 0, 255 } ** 16;
+    var dst: [16]u32 = @as([16]u32, @splat(0));
+    const src = repetition.repeatBytes(64, &.{ 255, 0, 0, 255 });
     blitCover(&dst, 4, 4, &src, 2, 2, .fill);
     for (dst) |px| try t.expectEqual(@as(u32, 0xFFFF0000), px);
-    var dst2: [4]u32 = [_]u32{0} ** 4;
+    var dst2: [4]u32 = @as([4]u32, @splat(0));
     const src2 = [_]u8{ 100, 150, 200, 128, 0, 0, 0, 0 };
     blitCover(&dst2, 2, 1, &src2, 2, 1, .stretch);
     try t.expectEqual(premult(100, 150, 200, 128), dst2[0]);

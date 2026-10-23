@@ -157,7 +157,7 @@ pub fn reapChildren() void {
     while (i < spawned.items.len) {
         const pid = spawned.items[i];
         var status: u32 = 0;
-        const rc: isize = @bitCast(linux.wait4(pid, &status, linux.W.NOHANG, null));
+        const rc: isize = @bitCast(linux.wait4(pid, @ptrCast(&status), linux.W.NOHANG, null));
         if (rc == pid or rc < 0) {
             _ = spawned.orderedRemove(i);
         } else {

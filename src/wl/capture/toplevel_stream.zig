@@ -358,7 +358,7 @@ const Session = struct {
         if (self.buf == null or self.buf_w != self.width or self.buf_h != self.height) {
             self.releaseBuffer();
             const size: usize = @as(usize, self.stride) * @as(usize, self.height);
-            var tag_buf: [16:0]u8 = [_:0]u8{0} ** 16;
+            var tag_buf: [16:0]u8 = @as([16:0]u8, @splat(0));
             @memcpy(tag_buf[0..7], "eh-live");
             const fd_rc = linux.memfd_create(&tag_buf, linux.MFD.CLOEXEC);
             if (linux.errno(fd_rc) != .SUCCESS) {
@@ -677,7 +677,7 @@ test "toplevel-stream: addr handle truncates to 32 bits" {
 
 test "toplevel-stream: unsupported format is rejected" {
     const t = std.testing;
-    const buf = [_]u8{0} ** 16;
+    const buf = @as([16]u8, @splat(0));
     try t.expectError(error.UnsupportedFormat, downsample(t.allocator, &buf, 2, 2, 8, 0xdead, false, 256));
 }
 

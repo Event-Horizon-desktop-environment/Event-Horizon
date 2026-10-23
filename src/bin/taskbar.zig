@@ -126,7 +126,7 @@ fn bootMark(t0: u64, comptime name: []const u8) void {
 }
 
 fn getenvStr(key: [:0]const u8) ?[]const u8 {
-    const c = @cImport(@cInclude("stdlib.h"));
+    const c = @import("c_stdlib");
     const p = c.getenv(key) orelse return null;
     return std.mem.span(p);
 }
@@ -4824,7 +4824,7 @@ const Taskbar = struct {
     fn requestOverviewToggle(self: *Taskbar) void {
         if (self.ov_pid) |pid| {
             var status: u32 = 0;
-            const rc: isize = @bitCast(linux.wait4(pid, &status, linux.W.NOHANG, null));
+            const rc: isize = @bitCast(linux.wait4(pid, @ptrCast(&status), linux.W.NOHANG, null));
             self.ov_pid = null;
             if (rc == 0) {
                 // Still running: toggle it off.

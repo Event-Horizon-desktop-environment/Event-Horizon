@@ -915,15 +915,15 @@ test "overview-folders: persist round trip through the state file" {
     const old_owned = if (old) |o| try t.allocator.dupe(u8, std.mem.span(o)) else null;
     defer if (old_owned) |o| t.allocator.free(o);
     {
-        const c = @cImport(@cInclude("stdlib.h"));
-        const zd = try t.allocator.dupeZ(u8, dir);
+        const c = @import("c_stdlib");
+        const zd = try t.allocator.dupeSentinel(u8, dir, 0);
         defer t.allocator.free(zd);
         _ = c.setenv("XDG_STATE_HOME", zd, 1);
     }
     defer {
-        const c = @cImport(@cInclude("stdlib.h"));
+        const c = @import("c_stdlib");
         if (old_owned) |o| {
-            if (t.allocator.dupeZ(u8, o)) |zo| {
+            if (t.allocator.dupeSentinel(u8, o, 0)) |zo| {
                 defer t.allocator.free(zo);
                 _ = c.setenv("XDG_STATE_HOME", zo, 1);
             } else |_| {}

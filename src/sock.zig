@@ -18,7 +18,7 @@ pub const sun_path_len = 108;
 
 pub const AddrUn = extern struct {
     family: u16 = linux.AF.UNIX,
-    path: [sun_path_len]u8 = [_]u8{0} ** sun_path_len,
+    path: [sun_path_len]u8 = @as([sun_path_len]u8, @splat(0)),
 
     pub fn init(path: []const u8) AddrUn {
         var a = AddrUn{};

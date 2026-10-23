@@ -149,7 +149,7 @@ pub fn writePng(path: []const u8, img: *const Image, exclusive: bool) !void {
     if (img.width <= 0 or img.height <= 0 or img.rgba.len == 0) return error.BadDimensions;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len >= buf.len) return error.PathTooLong;
-    const zpath = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.PathTooLong;
+    const zpath = std.fmt.bufPrintSentinel(&buf, "{s}", .{path}, 0) catch return error.PathTooLong;
     const rc = eh_write_png(
         zpath.ptr,
         @intCast(img.width),
@@ -497,7 +497,7 @@ const ShmTarget = struct {
         errdefer t.deinit();
 
         const size: usize = @as(usize, stride) * @as(usize, height);
-        var tag: [16:0]u8 = [_:0]u8{0} ** 16;
+        var tag: [16:0]u8 = @as([16:0]u8, @splat(0));
         @memcpy(tag[0..7], "eh-shot");
         const fd_rc = linux.memfd_create(&tag, linux.MFD.CLOEXEC);
         if (linux.errno(fd_rc) != .SUCCESS) return error.NoShm;
@@ -575,7 +575,7 @@ test "wl-capture-shot: decode honors y inversion and leaves alpha straight" {
 
 test "wl-capture-shot: short mapping and unknown format are rejected" {
     const t = std.testing;
-    const src = [_]u8{0} ** 8;
+    const src = @as([8]u8, @splat(0));
     try t.expectError(error.BadDimensions, decodeRgba(t.allocator, &src, 4, 2, 8, wl.WL_SHM_FORMAT_XRGB8888, false));
     try t.expectError(error.UnsupportedFormat, decodeRgba(t.allocator, &src, 1, 2, 4, 0xdead, false));
 }

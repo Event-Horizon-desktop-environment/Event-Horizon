@@ -130,7 +130,7 @@ pub const Layout = struct {
 
     pub fn setText(self: *Layout, text: []const u8) void {
         if (self.layout) |lo| {
-            var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+            var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
             const n = @min(text.len, 1023);
             @memcpy(zbuf[0..n], text[0..n]);
             pango_layout_set_text(lo, &zbuf, @intCast(n));
@@ -139,7 +139,7 @@ pub const Layout = struct {
 
     pub fn setFont(self: *Layout, desc: []const u8) void {
         if (self.layout) |lo| {
-            var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+            var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
             const n = @min(desc.len, 255);
             @memcpy(zbuf[0..n], desc[0..n]);
             const fd = pango_font_description_from_string(&zbuf);
@@ -243,7 +243,7 @@ pub const Layout = struct {
     /// so bake weights into the font description when both are needed.
     pub fn setFontFeatures(self: *Layout, features: []const u8) void {
         if (self.layout) |lo| {
-            var zbuf: [128:0]u8 = [_:0]u8{0} ** 128;
+            var zbuf: [128:0]u8 = @as([128:0]u8, @splat(0));
             const n = @min(features.len, 127);
             @memcpy(zbuf[0..n], features[0..n]);
             const attrs = pango_attr_list_new() orelse return;

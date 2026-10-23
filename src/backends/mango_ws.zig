@@ -665,7 +665,7 @@ test "mango-ws: navigation only ever dispatches a positive tag number" {
         Serve.run,
         .{Serve{
             .lfd = lfd,
-            .replies = &([_][]const u8{"{\"success\":true}"} ** 6),
+            .replies = &(@as([6][]const u8, @splat("{\"success\":true}"))),
             .alloc = t.allocator,
             .seen = &seen,
         }},

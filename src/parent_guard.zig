@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 pub const supervisor_env = "EH_SUPERVISOR_PID";
 const max_pid: i64 = 4194304;
@@ -32,7 +32,7 @@ pub fn installGuard() GuardState {
 
 pub fn markChildEnv() void {
     var buf: [32]u8 = undefined;
-    const val = std.fmt.bufPrintZ(&buf, "{d}", .{std.os.linux.getpid()}) catch return;
+    const val = std.fmt.bufPrintSentinel(&buf, "{d}", .{std.os.linux.getpid()}, 0) catch return;
     _ = c.setenv(supervisor_env, val.ptr, 1);
 }
 

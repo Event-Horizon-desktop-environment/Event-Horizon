@@ -1,4 +1,5 @@
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 const app_catalog = @import("../../services/app_catalog.zig");
 const app_mod = @import("app.zig");
 const fields = @import("fields.zig");
@@ -16,7 +17,7 @@ const fields = @import("fields.zig");
 
 pub const Category = enum { web, mail, calendar, files, terminal, music, video, images, pdf };
 
-pub const category_count: usize = @typeInfo(Category).@"enum".fields.len;
+pub const category_count: usize = reflection.enumFields(Category).len;
 
 pub const category_labels = [category_count][]const u8{
     "Web browser", "Email", "Calendar", "File manager", "Terminal",

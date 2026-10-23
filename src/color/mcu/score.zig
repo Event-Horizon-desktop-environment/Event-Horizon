@@ -40,7 +40,7 @@ pub fn rankedSuggestions(
     var colors = std.ArrayList(utils.Argb).empty;
     errdefer colors.deinit(alloc);
 
-    var hue_population = [_]u32{0} ** 360;
+    var hue_population = @as([360]u32, @splat(0));
     var population_sum: f64 = 0.0;
 
     // Key-ordered pass.
@@ -61,7 +61,7 @@ pub fn rankedSuggestions(
         population_sum += @as(f64, @floatFromInt(pop));
     }
 
-    var excited = [_]f64{0.0} ** 360;
+    var excited = @as([360]f64, @splat(0.0));
     for (0..360) |hue| {
         const proportion = @as(f64, @floatFromInt(hue_population[hue])) / population_sum;
         var i: i32 = @as(i32, @intCast(hue)) - 14;

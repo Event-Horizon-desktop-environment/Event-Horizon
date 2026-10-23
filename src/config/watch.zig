@@ -15,7 +15,7 @@ pub const Watcher = struct {
 
     pub fn watchConfigDir(self: *Watcher, dir_path: []const u8) bool {
         self.close();
-        var zbuf: [512:0]u8 = [_:0]u8{0} ** 512;
+        var zbuf: [512:0]u8 = @as([512:0]u8, @splat(0));
         if (dir_path.len + 1 > zbuf.len) return false;
         @memcpy(zbuf[0..dir_path.len], dir_path);
         const fd_rc = linux.inotify_init1(linux.IN.CLOEXEC | linux.IN.NONBLOCK);
@@ -42,7 +42,7 @@ pub const Watcher = struct {
     /// Events from every watched dir drain through `drainAnyToml` together.
     pub fn watchExtraDir(self: *Watcher, dir_path: []const u8) bool {
         if (self.fd < 0) return false;
-        var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+        var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
         if (dir_path.len + 1 > zbuf.len) return false;
         @memcpy(zbuf[0..dir_path.len], dir_path);
         const wd_rc = linux.inotify_add_watch(self.fd, &zbuf, linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE | linux.IN.MOVE | linux.IN.IGNORED);
@@ -147,11 +147,11 @@ test "watch: drain on unwatched is quiet" {
 test "watch: detects file write" {
     const t = std.testing;
     const dir_path = "/tmp/eh-watch-test";
-    var zdir: [64:0]u8 = [_:0]u8{0} ** 64;
+    var zdir: [64:0]u8 = @as([64:0]u8, @splat(0));
     @memcpy(zdir[0..dir_path.len], dir_path);
     _ = std.os.linux.mkdir(&zdir, 0o755);
     defer {
-        var fz: [128:0]u8 = [_:0]u8{0} ** 128;
+        var fz: [128:0]u8 = @as([128:0]u8, @splat(0));
         @memcpy(fz[0..dir_path.len], dir_path);
         @memcpy(fz[dir_path.len .. dir_path.len + 12], "/config.toml");
         _ = std.os.linux.unlink(&fz);
@@ -160,7 +160,7 @@ test "watch: detects file write" {
     var w = Watcher{};
     defer w.close();
     try t.expect(w.watchConfigDir(dir_path));
-    var fz2: [128:0]u8 = [_:0]u8{0} ** 128;
+    var fz2: [128:0]u8 = @as([128:0]u8, @splat(0));
     @memcpy(fz2[0..dir_path.len], dir_path);
     @memcpy(fz2[dir_path.len .. dir_path.len + 12], "/config.toml");
     const cfd = std.os.linux.open(&fz2, .{ .ACCMODE = .WRONLY, .CREAT = true }, 0o644);
@@ -208,14 +208,14 @@ test "watch: drainAnyLive takes tomls and the named stores" {
     const other = dir_path ++ "/notes.txt";
     const toml = dir_path ++ "/dock.toml";
     const json = dir_path ++ "/world_clock.json";
-    var zdir: [64:0]u8 = [_:0]u8{0} ** 64;
+    var zdir: [64:0]u8 = @as([64:0]u8, @splat(0));
     @memcpy(zdir[0..dir_path.len], dir_path);
     _ = std.os.linux.mkdir(&zdir, 0o755);
-    var zother: [96:0]u8 = [_:0]u8{0} ** 96;
+    var zother: [96:0]u8 = @as([96:0]u8, @splat(0));
     @memcpy(zother[0..other.len], other);
-    var ztoml: [96:0]u8 = [_:0]u8{0} ** 96;
+    var ztoml: [96:0]u8 = @as([96:0]u8, @splat(0));
     @memcpy(ztoml[0..toml.len], toml);
-    var zjson: [96:0]u8 = [_:0]u8{0} ** 96;
+    var zjson: [96:0]u8 = @as([96:0]u8, @splat(0));
     @memcpy(zjson[0..json.len], json);
     defer {
         _ = std.os.linux.unlink(&zother);
@@ -238,12 +238,12 @@ test "watch: drainAnyOf hits only the listed names" {
     const dir_path = "/tmp/eh-watch-any-test";
     const other = dir_path ++ "/unlisted.toml";
     const wanted = dir_path ++ "/desktop_widgets.toml";
-    var zdir: [64:0]u8 = [_:0]u8{0} ** 64;
+    var zdir: [64:0]u8 = @as([64:0]u8, @splat(0));
     @memcpy(zdir[0..dir_path.len], dir_path);
     _ = std.os.linux.mkdir(&zdir, 0o755);
-    var zother: [96:0]u8 = [_:0]u8{0} ** 96;
+    var zother: [96:0]u8 = @as([96:0]u8, @splat(0));
     @memcpy(zother[0..other.len], other);
-    var zwant: [96:0]u8 = [_:0]u8{0} ** 96;
+    var zwant: [96:0]u8 = @as([96:0]u8, @splat(0));
     @memcpy(zwant[0..wanted.len], wanted);
     defer {
         _ = std.os.linux.unlink(&zother);

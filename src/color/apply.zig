@@ -1002,7 +1002,7 @@ pub const Applier = struct {
             // shipped build are 0xaa and leave state-settings.toml invalid
             // UTF-8/TOML.
             var rbufs: [nrep][32]u8 = undefined;
-            var reps: [nrep]?[]const u8 = .{null} ** nrep;
+            var reps: [nrep]?[]const u8 = @splat(null);
             for (files_map, 0..) |m, i| {
                 const hex = hex_map.get(m.hex_key) orelse continue;
                 var rgb: [3]f64 = undefined;
@@ -1841,7 +1841,7 @@ fn schemeCliName(raw: []const u8) []const u8 {
 fn bumpMtimeNow(io: std.Io, path: []const u8) void {
     _ = io; // raw syscall; kept for call-site symmetry with the other helpers
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return;
+    const z = std.fmt.bufPrintSentinel(&buf, "{s}", .{path}, 0) catch return;
     const times = [_]linux.timespec{ linux.UTIME.NOW, linux.UTIME.NOW };
     _ = linux.utimensat(linux.AT.FDCWD, z, &times, 0);
 }
@@ -3027,23 +3027,23 @@ test "apply: external runner merges the bundle and spawns matugen" {
     defer alloc.free(script);
     writeAll(t.io, fake, script);
     var fb: [4200]u8 = undefined;
-    const fakez = try std.fmt.bufPrintZ(&fb, "{s}", .{fake});
+    const fakez = try std.fmt.bufPrintSentinel(&fb, "{s}", .{fake}, 0);
     _ = linux.chmod(fakez, 0o755);
 
     // PATH: stub first, restored after the run.
     const old_path = getenvAny("PATH");
-    const oldz = try alloc.dupeZ(u8, old_path);
+    const oldz = try alloc.dupeSentinel(u8, old_path, 0);
     defer alloc.free(oldz);
     const path0 = try std.fmt.allocPrint(alloc, "{s}:{s}", .{ bin, old_path });
     defer alloc.free(path0);
-    const pathz = try alloc.dupeZ(u8, path0);
+    const pathz = try alloc.dupeSentinel(u8, path0, 0);
     defer alloc.free(pathz);
     {
-        const c = @cImport(@cInclude("stdlib.h"));
+        const c = @import("c_stdlib");
         _ = c.setenv("PATH", pathz.ptr, 1);
     }
     defer {
-        const c = @cImport(@cInclude("stdlib.h"));
+        const c = @import("c_stdlib");
         _ = c.setenv("PATH", oldz.ptr, 1);
     }
 
@@ -3276,7 +3276,7 @@ fn writeTwoToneBmp(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !void
             try data.appendSlice(alloc, &.{ px[2], px[1], px[0] });
         }
     }
-    var hdr = [_]u8{0} ** 54;
+    var hdr = @as([54]u8, @splat(0));
     std.mem.writeInt(u16, hdr[0..2], 0x4D42, .little);
     std.mem.writeInt(u32, hdr[2..6], @intCast(54 + data.items.len), .little);
     std.mem.writeInt(u32, hdr[10..14], 54, .little);

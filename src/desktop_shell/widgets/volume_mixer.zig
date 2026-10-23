@@ -1901,7 +1901,7 @@ fn setToyFont(cr: ?*cairo.cairo_t, size: f64, bold: bool) void {
 }
 
 fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     cairo.cairo_move_to(cr, x, y);
@@ -1910,7 +1910,7 @@ fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
 
 fn textAdv(cr: ?*cairo.cairo_t, s: []const u8) f64 {
     const c = cr orelse return 0;
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     var te: cairo.cairo_text_extents_t = undefined;
@@ -2631,7 +2631,7 @@ pub const MixerLog = struct {
         var path_buf: [512]u8 = undefined;
         const path = mixerLogPath(&path_buf, self.home);
         if (path.len == 0 or path.len + 1 > 1024) return false;
-        var z: [1024:0]u8 = [_:0]u8{0} ** 1024;
+        var z: [1024:0]u8 = @as([1024:0]u8, @splat(0));
         @memcpy(z[0..path.len], path);
         const rc = std.os.linux.open(&z, .{
             .ACCMODE = .WRONLY,

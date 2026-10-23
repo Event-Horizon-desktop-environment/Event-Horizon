@@ -162,7 +162,7 @@ pub fn cellDate(display: Date, idx: usize) Date {
 fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
     const c = cr orelse return;
     if (s.len == 0) return;
-    var z: [32:0]u8 = [_:0]u8{0} ** 32;
+    var z: [32:0]u8 = @as([32:0]u8, @splat(0));
     const n = @min(s.len, 31);
     @memcpy(z[0..n], s[0..n]);
     cairo.cairo_move_to(c, x, y);
@@ -172,7 +172,7 @@ fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
 fn textAdvance(cr: ?*cairo.cairo_t, s: []const u8) f64 {
     const c = cr orelse return 0.0;
     if (s.len == 0) return 0.0;
-    var z: [32:0]u8 = [_:0]u8{0} ** 32;
+    var z: [32:0]u8 = @as([32:0]u8, @splat(0));
     const n = @min(s.len, 31);
     @memcpy(z[0..n], s[0..n]);
     var te: cairo.cairo_text_extents_t = undefined;
@@ -183,7 +183,7 @@ fn textAdvance(cr: ?*cairo.cairo_t, s: []const u8) f64 {
 fn textHeight(cr: ?*cairo.cairo_t, s: []const u8) f64 {
     const c = cr orelse return 0.0;
     if (s.len == 0) return 0.0;
-    var z: [32:0]u8 = [_:0]u8{0} ** 32;
+    var z: [32:0]u8 = @as([32:0]u8, @splat(0));
     const n = @min(s.len, 31);
     @memcpy(z[0..n], s[0..n]);
     var te: cairo.cairo_text_extents_t = undefined;
@@ -194,7 +194,7 @@ fn textHeight(cr: ?*cairo.cairo_t, s: []const u8) f64 {
 fn textBearing(cr: ?*cairo.cairo_t, s: []const u8) f64 {
     const c = cr orelse return 0.0;
     if (s.len == 0) return 0.0;
-    var z: [32:0]u8 = [_:0]u8{0} ** 32;
+    var z: [32:0]u8 = @as([32:0]u8, @splat(0));
     const n = @min(s.len, 31);
     @memcpy(z[0..n], s[0..n]);
     var te: cairo.cairo_text_extents_t = undefined;

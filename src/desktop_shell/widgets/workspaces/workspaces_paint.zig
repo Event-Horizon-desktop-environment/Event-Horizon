@@ -363,8 +363,8 @@ pub const LayoutResult = struct {
 const TextEntry = struct {
     key: []u8 = &.{},
     font_px: i32 = 0,
-    widths: [40]i32 = [_]i32{0} ** 40,
-    heights: [40]i32 = [_]i32{0} ** 40,
+    widths: [40]i32 = @as([40]i32, @splat(0)),
+    heights: [40]i32 = @as([40]i32, @splat(0)),
     n: usize = 0,
     layout: ?*text.PangoLayout = null,
 };
@@ -555,7 +555,7 @@ pub fn layoutCells(
     }
     if (widths.items.len == 0 and mcr != null) {
         const entry = textEntryFor(kid, ws_key, font_px);
-        var cwidths: [40]i32 = [_]i32{0} ** 40;
+        var cwidths: [40]i32 = @as([40]i32, @splat(0));
         var cn: usize = 0;
         for (entries) |*e| {
             if (show_apps and e.app_keys.len > 0) {
@@ -860,8 +860,8 @@ pub fn paintWorkspacesSlot(
     const tx_g = if (matugen_chrome) k_surf[1] else 0.10;
     const tx_b = if (matugen_chrome) k_surf[2] else 0.09;
 
-    var pw: [40]i32 = [_]i32{0} ** 40;
-    var ph: [40]i32 = [_]i32{0} ** 40;
+    var pw: [40]i32 = @as([40]i32, @splat(0));
+    var ph: [40]i32 = @as([40]i32, @splat(0));
     var pn: usize = 0;
     var cache_miss = false;
 

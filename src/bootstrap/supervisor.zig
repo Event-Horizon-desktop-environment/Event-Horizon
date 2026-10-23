@@ -31,13 +31,13 @@ pub const Supervisor = struct {
     /// Directory holding this executable; component binaries are resolved
     /// against it. Never PATH.
     exe_dir: []u8,
-    states: [spawn_mod.table.len]State = .{.idle} ** spawn_mod.table.len,
-    pids: [spawn_mod.table.len]std.posix.pid_t = .{0} ** spawn_mod.table.len,
-    restarts: [spawn_mod.table.len]u32 = .{0} ** spawn_mod.table.len,
-    retry_at_ms: [spawn_mod.table.len]i64 = .{0} ** spawn_mod.table.len,
+    states: [spawn_mod.table.len]State = @splat(.idle),
+    pids: [spawn_mod.table.len]std.posix.pid_t = @splat(0),
+    restarts: [spawn_mod.table.len]u32 = @splat(0),
+    retry_at_ms: [spawn_mod.table.len]i64 = @splat(0),
     /// Settings-suppressed components (gated off): never spawned, and
     /// stopped when the gate closes under a running child.
-    suppressed: [spawn_mod.table.len]bool = .{false} ** spawn_mod.table.len,
+    suppressed: [spawn_mod.table.len]bool = @splat(false),
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io) !Supervisor {
         const dir = resolveExeDir(gpa) catch null;
@@ -167,7 +167,7 @@ pub const Supervisor = struct {
     /// Poll one child. Returns true when it has exited (state cleared).
     fn reap(self: *Supervisor, i: usize) bool {
         var status: u32 = 0;
-        const rc = linux.wait4(self.pids[i], &status, wait_nohang, null);
+        const rc = linux.wait4(self.pids[i], @ptrCast(&status), wait_nohang, null);
         const got: isize = @bitCast(rc);
         if (got == 0) return false; // still alive
         const name = spawn_mod.table[i].argv0;
@@ -224,7 +224,7 @@ pub const Supervisor = struct {
 
     /// True when `path` exists and is executable by us.
     fn isExecutable(self: *Supervisor, path: []const u8) bool {
-        const z = self.gpa.dupeZ(u8, path) catch return false;
+        const z = self.gpa.dupeSentinel(u8, path, 0) catch return false;
         defer self.gpa.free(z);
         return linux.access(z, linux.X_OK) == 0;
     }

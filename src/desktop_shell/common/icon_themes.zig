@@ -17,7 +17,7 @@ const icon_lookup = @import("icon_lookup.zig");
 // preview rule: vectors render at the target size, bitmaps are only ever
 // downscaled, never upscaled past what the theme ships.
 
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 // Shared literal names. Everything read from the environment,
 // from an ini file or from a toolkit's config is spelled once here, so the

@@ -79,7 +79,7 @@ fn perfAvgNs(sum_ns: u64, n: u64) f64 {
 /// One line from `/proc/self/task/<tid>/<name>` (thread is always self).
 fn procFile(tid: i32, name: []const u8, buf: []u8) []const u8 {
     var pathbuf: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&pathbuf, "/proc/self/task/{d}/{s}", .{ tid, name }) catch return "";
+    const path = std.fmt.bufPrintSentinel(&pathbuf, "/proc/self/task/{d}/{s}", .{ tid, name }, 0) catch return "";
     const rc = std.os.linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
     if (std.os.linux.errno(rc) != .SUCCESS) return "";
     const fd: i32 = @intCast(rc);

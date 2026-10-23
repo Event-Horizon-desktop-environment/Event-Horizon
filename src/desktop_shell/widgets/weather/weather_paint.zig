@@ -190,7 +190,7 @@ const TextCache = struct {
     }
 };
 
-var g_text_cache = [_]TextCache{.{}} ** max_text_cache;
+var g_text_cache = @as([max_text_cache]TextCache, @splat(.{}));
 var g_next_slot: usize = 0;
 
 /// `g_weatherTextCache.find(kid)` — never inserts, so a measurement pass that

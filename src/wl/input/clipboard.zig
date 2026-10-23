@@ -490,7 +490,7 @@ pub const Service = struct {
         }
         if (!has_mime) return null;
 
-        var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+        var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
         if (mime.len >= zbuf.len) return null;
         @memcpy(zbuf[0..mime.len], mime);
         var pfds: [2]i32 = .{ -1, -1 };
@@ -543,7 +543,7 @@ pub const Service = struct {
                 self.clearSource();
                 return false;
             };
-            var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+            var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
             if (m.len >= zbuf.len) continue;
             @memcpy(zbuf[0..m.len], m);
             switch (self.backend) {
@@ -828,7 +828,7 @@ pub const Service = struct {
                 self.destroySourceOnly();
                 return false;
             };
-            var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+            var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
             if (it.mime.len >= zbuf.len) continue;
             @memcpy(zbuf[0..it.mime.len], it.mime);
             switch (self.backend) {

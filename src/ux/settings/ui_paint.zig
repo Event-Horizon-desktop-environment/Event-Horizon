@@ -33,7 +33,7 @@ extern fn pango_cairo_font_map_get_default() ?*anyopaque;
 extern fn pango_fc_font_map_cache_clear(map: ?*anyopaque) void;
 
 const kMaterialFamily = "Material Symbols Rounded";
-const libc = @cImport(@cInclude("stdlib.h"));
+const libc = @import("c_stdlib");
 var g_font_registered = false;
 
 // `liga` feature attribute — the C++ draw path enables the ligature feature
@@ -82,7 +82,7 @@ fn materialFontPath(buf: []u8) ?[]const u8 {
 }
 
 fn fileExists(p: []const u8) bool {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     if (p.len >= zbuf.len) return false;
     @memcpy(zbuf[0..p.len], p);
     return std.os.linux.errno(std.os.linux.access(&zbuf, std.os.linux.R_OK)) == .SUCCESS;
@@ -94,7 +94,7 @@ pub fn registerMaterialFont() void {
     g_font_registered = true;
     var buf: [1024]u8 = undefined;
     const path = materialFontPath(&buf) orelse return;
-    const zpath: [:0]const u8 = std.fmt.bufPrintZ(buf[900..], "{s}", .{path}) catch return;
+    const zpath: [:0]const u8 = std.fmt.bufPrintSentinel(buf[900..], "{s}", .{path}, 0) catch return;
     const cfg = FcConfigGetCurrent() orelse return;
     if (FcConfigAppFontAddFile(cfg, zpath) != 0) {
         _ = FcConfigBuildFonts(cfg);

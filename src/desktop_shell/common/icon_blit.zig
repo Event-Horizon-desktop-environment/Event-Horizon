@@ -1,4 +1,5 @@
 const std = @import("std");
+const repetition = @import("../../compat/repetition.zig");
 
 pub fn blitScaled(dst: []u32, dw: i32, dh: i32, dx: i32, dy: i32, slot: i32, src: []const u8, sw: i32, sh: i32) void {
     if (sw <= 0 or sh <= 0 or slot <= 0 or dw <= 0 or dh <= 0) return;
@@ -33,11 +34,11 @@ pub fn blitScaled(dst: []u32, dw: i32, dh: i32, dx: i32, dy: i32, slot: i32, src
 
 test "icon-blit: scale down solid + transparent" {
     const t = std.testing;
-    var dst: [16]u32 = [_]u32{0xFF000000} ** 16;
-    const red = [_]u8{ 255, 0, 0, 255 } ** 16;
+    var dst: [16]u32 = @as([16]u32, @splat(0xFF000000));
+    const red = repetition.repeatBytes(64, &.{ 255, 0, 0, 255 });
     blitScaled(&dst, 4, 4, 0, 0, 4, &red, 2, 2);
     for (dst) |px| try t.expectEqual(@as(u32, 0xFFFF0000), px);
-    const clear = [_]u8{ 9, 9, 9, 0 } ** 4;
+    const clear = repetition.repeatBytes(16, &.{ 9, 9, 9, 0 });
     blitScaled(&dst, 4, 4, 0, 0, 2, &clear, 2, 2);
     try t.expectEqual(@as(u32, 0), dst[0]);
 }

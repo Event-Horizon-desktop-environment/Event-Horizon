@@ -870,7 +870,7 @@ pub fn splitStyles(alloc: std.mem.Allocator, styles: []const u8) ![]const []cons
 const t = std.testing;
 
 test "hyprland-data: section table covers every key exactly once" {
-    var seen = [_]bool{false} ** k_keys.len;
+    var seen = @as([k_keys.len]bool, @splat(false));
     for (k_sections) |sec| {
         var i = sec.first;
         const end = sec.first + sec.len;

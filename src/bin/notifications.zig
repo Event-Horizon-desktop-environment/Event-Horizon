@@ -310,7 +310,7 @@ pub const Daemon = struct {
     /// the surface is only ever created after layout hands it a real size.
     fn refresh(self: *Daemon) void {
         if (self.measure_cr == null) return; // scratch surface failed; no layout
-        var ids = [_]u32{0} ** toast_cards.kMaxCards;
+        var ids = @as([toast_cards.kMaxCards]u32, @splat(0));
         const sel = toast_cards.selectCards(&self.mgr, &ids);
         self.ncards = sel.len;
         if (sel.len == 0) {

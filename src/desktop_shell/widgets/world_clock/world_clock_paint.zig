@@ -105,7 +105,7 @@ const CachedZone = struct {
     offset_seconds: i64 = 0,
 };
 
-var g_cached_zones: [k_max_cached_zones]CachedZone = [_]CachedZone{.{}} ** k_max_cached_zones;
+var g_cached_zones: [k_max_cached_zones]CachedZone = @as([k_max_cached_zones]CachedZone, @splat(.{}));
 var g_cached_count: usize = 0;
 
 /// Cache lookup for `g_apiCache[tz]`. With no fetch thread the table is plain state: the

@@ -4,7 +4,7 @@ const app = @import("app.zig");
 const config = eh.config;
 const linux = std.os.linux;
 
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 const layer = eh.wl_layer;
 const ns = eh.ns;
@@ -5623,7 +5623,7 @@ const Dock = struct {
     fn showOverview(self: *Dock) void {
         if (self.ov_pid) |pid| {
             var status: u32 = 0;
-            const rc: isize = @bitCast(linux.wait4(pid, &status, linux.W.NOHANG, null));
+            const rc: isize = @bitCast(linux.wait4(pid, @ptrCast(&status), linux.W.NOHANG, null));
             self.ov_pid = null;
             if (rc == 0) {
                 // Still running: toggle it off.

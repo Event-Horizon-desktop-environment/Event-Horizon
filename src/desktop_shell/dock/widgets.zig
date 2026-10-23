@@ -11,6 +11,7 @@
 //! defaults that degrade to "no measurement available" fallbacks.
 
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 const schema = @import("../../config/schema.zig");
 const defaults = @import("../../ux/shared/widget_defaults.zig");
 const island_specs = @import("island_specs.zig");
@@ -1260,7 +1261,7 @@ test "widgets: only the kinds whose arm paints one own a pill" {
     // five: anything else that answered false would push `bare` past it.
     var bare: usize = 0;
     var owned: usize = 0;
-    inline for (std.meta.fields(Kind)) |f| {
+    inline for (reflection.enumFields(Kind)) |f| {
         if (ownsPill(@enumFromInt(f.value))) owned += 1 else bare += 1;
     }
     try t.expectEqual(@as(usize, 5), bare);

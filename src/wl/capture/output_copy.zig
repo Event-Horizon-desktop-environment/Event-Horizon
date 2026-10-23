@@ -196,7 +196,7 @@ pub fn copyOutputs(
             continue;
         }
         const size: usize = @as(usize, info.stride) * @as(usize, info.height);
-        var tag_buf: [16:0]u8 = [_:0]u8{0} ** 16;
+        var tag_buf: [16:0]u8 = @as([16:0]u8, @splat(0));
         @memcpy(tag_buf[0..7], "eh-shot");
         const fd_rc = linux.memfd_create(&tag_buf, linux.MFD.CLOEXEC);
         if (linux.errno(fd_rc) != .SUCCESS) {
@@ -328,7 +328,7 @@ test "wl-capture-output: rows convert to premultiplied BGRA with y flip" {
 
 test "wl-capture-output: short mapping and unknown format are rejected" {
     const t = std.testing;
-    const src = [_]u8{0} ** 8;
+    const src = @as([8]u8, @splat(0));
     try t.expectError(error.BadDimensions, rowsToBgra(t.allocator, &src, 4, 1, 16, wl.WL_SHM_FORMAT_XRGB8888, false, 64));
     try t.expectError(error.UnsupportedFormat, rowsToBgra(t.allocator, &src, 1, 1, 4, 0xdead, false, 64));
 }

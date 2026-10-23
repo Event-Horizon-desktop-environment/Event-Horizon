@@ -224,11 +224,11 @@ test "thumb-disk: scale-then-premultiply matches the one-pass blit" {
             src[o + 3] = if ((x + y) % 2 == 0) 255 else 128;
         }
     }
-    var want: [4 * 3]u32 = [_]u32{0} ** (4 * 3);
+    var want: [4 * 3]u32 = @as([(4 * 3)]u32, @splat(0));
     blit.blitCover(&want, 4, 3, &src, 6, 4, .stretch);
     var scaled: [4 * 3 * 4]u8 = undefined;
     scaleStraight(&scaled, 4, 3, &src, 6, 4);
-    var got: [4 * 3]u32 = [_]u32{0} ** (4 * 3);
+    var got: [4 * 3]u32 = @as([(4 * 3)]u32, @splat(0));
     premultInto(&got, &scaled);
     try t.expectEqualSlices(u32, &want, &got);
 }

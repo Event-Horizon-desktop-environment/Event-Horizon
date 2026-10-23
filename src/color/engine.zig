@@ -48,7 +48,7 @@ pub const PaletteResult = struct {
     notif_critical_outline: [3]f32 = .{ 0, 0, 0 },
     source_color_argb: u32 = 0,
     /// The 47 M3 roles in `scheme_to_result` order (0=primary … 46).
-    roles: [47]u32 = [_]u32{0} ** 47,
+    roles: [47]u32 = @as([47]u32, @splat(0)),
 };
 
 /// Fixed resample grid edge, regardless of source aspect.

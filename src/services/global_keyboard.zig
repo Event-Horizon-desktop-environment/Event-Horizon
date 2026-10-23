@@ -16,7 +16,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const logz = @import("../logz.zig");
-const c = @cImport(@cInclude("pthread.h"));
+const c = @import("c_pthread");
 
 const EV_KEY: u32 = 0x01;
 const KEY_LEFTMETA: u32 = 125;
@@ -62,7 +62,7 @@ pub const Probe = struct {
     /// not even KEY_SYSRQ — so a META-only probe would refuse every node
     /// and the keybinds would never start at all (seen live, 2026-10-16).
     has_letter: bool = false,
-    name: [256]u8 = [_]u8{0} ** 256,
+    name: [256]u8 = @as([256]u8, @splat(0)),
 
     pub fn isSuperKeyboard(self: *const Probe) bool {
         if (!self.has_ev_key) return false;
@@ -79,7 +79,7 @@ fn bitIsSet(bits: []const u64, n: u32) bool {
 pub fn probeFd(fd: i32) Probe {
     var r = Probe{};
     _ = linux.ioctl(fd, eviocgName(256), @intFromPtr(&r.name));
-    var ev_bits: [(EV_MAX / 64) + 1]u64 = [_]u64{0} ** ((EV_MAX / 64) + 1);
+    var ev_bits: [(EV_MAX / 64) + 1]u64 = @as([((EV_MAX / 64) + 1)]u64, @splat(0));
     // The kernel returns the byte count copied, NOT zero, on success;
     // only a negative result is an error. The old `!= 0` check rejected
     // every working device, leaving keybinds off on every boot (seen
@@ -87,7 +87,7 @@ pub fn probeFd(fd: i32) Probe {
     if (evBits(fd, 0, &ev_bits) < 0) return r;
     r.has_ev_key = bitIsSet(&ev_bits, EV_KEY);
     if (!r.has_ev_key) return r;
-    var key_bits: [(KEY_MAX / 64) + 1]u64 = [_]u64{0} ** ((KEY_MAX / 64) + 1);
+    var key_bits: [(KEY_MAX / 64) + 1]u64 = @as([((KEY_MAX / 64) + 1)]u64, @splat(0));
     if (evBits(fd, EV_KEY, &key_bits) < 0) return r;
     r.has_leftmeta = bitIsSet(&key_bits, KEY_LEFTMETA);
     r.has_print = bitIsSet(&key_bits, KEY_SYSRQ) or bitIsSet(&key_bits, KEY_SCREENSHOT);
@@ -114,7 +114,7 @@ fn evBits(fd: i32, ev: u32, bits: []u64) isize {
 fn openSuperKeyboard(n: u32, probe_out: ?*Probe) i32 {
     var path: [32]u8 = undefined;
     const p = std.fmt.bufPrint(&path, "/dev/input/event{d}", .{n}) catch return -1;
-    var zpath: [40:0]u8 = [_:0]u8{0} ** 40;
+    var zpath: [40:0]u8 = @as([40:0]u8, @splat(0));
     if (p.len + 1 > zpath.len) return -1;
     @memcpy(zpath[0..p.len], p);
     zpath[p.len] = 0;
@@ -136,7 +136,7 @@ pub fn findSuperKeyboard() ?[64]u8 {
         _ = linux.close(fd);
         var path: [32]u8 = undefined;
         const p = std.fmt.bufPrint(&path, "/dev/input/event{d}", .{i}) catch continue;
-        var out: [64]u8 = [_]u8{0} ** 64;
+        var out: [64]u8 = @as([64]u8, @splat(0));
         @memcpy(out[0..p.len], p);
         return out;
     }
@@ -418,7 +418,7 @@ pub const Handler = struct {
 /// silence, and everything is closed when `stop` flips the flag.
 fn readerMain(h: *Handler) void {
     logz.log("global-keyboard: evdev reader started", .{});
-    var devs: [64]i32 = .{-1} ** 64;
+    var devs: [64]i32 = @splat(-1);
     var pfds: [64]std.posix.pollfd = undefined;
     var machine = Machine{};
     var idle_rounds: u32 = 0;
@@ -739,7 +739,7 @@ test "kbd: handler stops cleanly whether or not it was started" {
 
 test "kbd: device scan fills slots it can open and ignores the rest" {
     const t = std.testing;
-    var devs: [64]i32 = .{-1} ** 64;
+    var devs: [64]i32 = @splat(-1);
     scanNewDevices(&devs);
     var opened: usize = 0;
     for (devs) |fd| {

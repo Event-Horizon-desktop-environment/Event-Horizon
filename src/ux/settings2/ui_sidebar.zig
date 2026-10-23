@@ -30,7 +30,7 @@ pub const Action = union(enum) {
 pub const Sidebar = struct {
     // Kept from the old model so window.zig's handlers compile unchanged;
     // the rail has no expander — category clicks jump to the page list.
-    expanded: [app_mod.sidebar_categories.len]bool = .{true} ** app_mod.sidebar_categories.len,
+    expanded: [app_mod.sidebar_categories.len]bool = @splat(true),
     scroll_px: i32 = 0,
     active_tab: i32 = 0,
     query: [128]u8 = undefined,

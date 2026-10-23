@@ -296,7 +296,7 @@ pub fn truncateToWidth(
 
 fn cairoAdvance(ctx: *anyopaque, s: []const u8) f64 {
     const cr: ?*cairo.cairo_t = @ptrCast(ctx);
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     var ex: cairo.cairo_text_extents_t = undefined;
@@ -339,7 +339,7 @@ fn setToyFont(cr: ?*cairo.cairo_t, size: f64, bold: bool) void {
 }
 
 fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     cairo.cairo_move_to(cr, x, y);
@@ -396,7 +396,7 @@ pub fn paint(
         cairo.cairo_set_source_rgba(c, mc.text.r, mc.text.g, mc.text.b, 0.5);
         setToyFont(c, 13, false);
         const msg = "No VPN connections";
-        var zbuf: [64:0]u8 = [_:0]u8{0} ** 64;
+        var zbuf: [64:0]u8 = @as([64:0]u8, @splat(0));
         @memcpy(zbuf[0..msg.len], msg);
         var ex: cairo.cairo_text_extents_t = undefined;
         cairo.cairo_text_extents(c, &zbuf, &ex);
@@ -454,7 +454,7 @@ pub fn paint(
         const lbl: []const u8 = if (active) "Disconnect" else "Connect";
         cairo.cairo_set_source_rgba(c, 1, 1, 1, if (btn_hover) 1.0 else 0.90);
         setToyFont(c, 11, false);
-        var zbuf: [16:0]u8 = [_:0]u8{0} ** 16;
+        var zbuf: [16:0]u8 = @as([16:0]u8, @splat(0));
         @memcpy(zbuf[0..lbl.len], lbl);
         var te: cairo.cairo_text_extents_t = undefined;
         cairo.cairo_text_extents(c, &zbuf, &te);

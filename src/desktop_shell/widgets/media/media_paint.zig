@@ -283,7 +283,7 @@ fn sepWidth(cr: ?*cairo.cairo_t, s: f64) f64 {
 fn newLayout(cr: ?*cairo.cairo_t, px: f64) text.Layout {
     var l = text.Layout.createForCairo(cr);
     const size: c_int = @intFromFloat(@max(1.0, px));
-    var zbuf: [64:0]u8 = [_:0]u8{0} ** 64;
+    var zbuf: [64:0]u8 = @as([64:0]u8, @splat(0));
     const desc = std.fmt.bufPrint(&zbuf, "Inter SemiBold {d}", .{size}) catch return l;
     zbuf[desc.len] = 0;
     const fd = pango_font_description_from_string(zbuf[0..desc.len :0]);

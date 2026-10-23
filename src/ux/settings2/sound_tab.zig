@@ -515,7 +515,7 @@ pub const Page = struct {
         while (i < self.tone_len) {
             const pid = self.tone_pids[i];
             var status: u32 = 0;
-            const rc: isize = @bitCast(linux.wait4(pid, &status, linux.W.NOHANG, null));
+            const rc: isize = @bitCast(linux.wait4(pid, @ptrCast(&status), linux.W.NOHANG, null));
             if (rc == pid or rc < 0) {
                 self.tone_pids[i] = self.tone_pids[self.tone_len - 1];
                 self.tone_len -= 1;
@@ -1856,7 +1856,7 @@ test "sound-tab: combo boxes fit their value and clamp to the card" {
     try t.expectEqual(narrow.x + narrow.w, wide.x + wide.w);
 
     // Never wider than the card's inner width minus the label gap.
-    const huge = comboRect(sec, 0, "x" ** 400);
+    const huge = comboRect(sec, 0, &@as([400:0]u8, @splat('x')));
     try t.expectEqual(sec.w - 2 * common.card_pad - common.spacing_m, huge.w);
     try t.expectEqual(sec.x + common.card_pad + common.spacing_m, huge.x);
 }

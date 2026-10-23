@@ -60,7 +60,7 @@ const CachedText = struct {
     buf: [text_cache_max_len]u8 = undefined,
 };
 
-var text_cache: [text_cache_slots]CachedText = .{CachedText{}} ** text_cache_slots;
+var text_cache: [text_cache_slots]CachedText = @splat(CachedText{});
 var text_cache_stamp: u64 = 0;
 /// CTM scale the cached layouts were built under; changing display scale
 /// invalidates every entry (a fresh miss re-applies the whole key).

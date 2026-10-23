@@ -121,7 +121,7 @@ pub const Surface = struct {
         const ws = wl.wl_compositor_create_surface(compositor);
         if (ws == null) return false;
         errdefer wl.wl_surface_destroy(ws);
-        var ns_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+        var ns_buf: [128:0]u8 = @as([128:0]u8, @splat(0));
         const n = @min(namespace.len, 127);
         @memcpy(ns_buf[0..n], namespace[0..n]);
         const ls = wl.zwlr_layer_shell_v1_get_layer_surface(shell, ws, output, @intFromEnum(layer), &ns_buf);

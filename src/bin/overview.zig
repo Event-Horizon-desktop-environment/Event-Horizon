@@ -8,7 +8,7 @@
 
 const std = @import("std");
 const linux = std.os.linux;
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 const wl = @import("../wl/c.zig").wl;
 const conn_mod = @import("../wl/connection.zig");
@@ -68,7 +68,7 @@ const Ov = struct {
     /// Hyprland event socket: window/workspace events re-snapshot through
     /// the pulse (debounced) instead of polling.
     ev_fd: i32 = -1,
-    ev_buf: [8192]u8 = [_]u8{0} ** 8192,
+    ev_buf: [8192]u8 = @as([8192]u8, @splat(0)),
     ev_len: usize = 0,
     want_resnap: bool = false,
     last_resnap_ms: u64 = 0,
@@ -183,7 +183,7 @@ const Ov = struct {
         if (socks.ev.len == 0) return;
         const fd = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
         if (linux.errno(fd) != .SUCCESS) return;
-        var addr: linux.sockaddr.un = .{ .path = [_]u8{0} ** 108 };
+        var addr: linux.sockaddr.un = .{ .path = @as([108]u8, @splat(0))};
         if (socks.ev.len >= addr.path.len) {
             _ = linux.close(@intCast(fd));
             return;

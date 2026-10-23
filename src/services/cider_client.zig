@@ -13,6 +13,7 @@
 //! the snapshot lifecycle.
 
 const std = @import("std");
+const reflection = @import("../compat/reflection.zig");
 
 pub const base_url = "http://127.0.0.1:10767";
 pub const app_name = "Event Horizon";
@@ -58,7 +59,7 @@ fn bit(s: Scope) u16 {
 }
 
 fn scopeFromName(s: []const u8) ?Scope {
-    inline for (@typeInfo(Scope).@"enum".fields) |f| {
+    inline for (reflection.enumFields(Scope)) |f| {
         if (std.ascii.eqlIgnoreCase(s, f.name)) return @enumFromInt(f.value);
     }
     return null;

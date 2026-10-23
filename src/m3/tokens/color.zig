@@ -95,7 +95,7 @@ pub const ColorRole = enum {
     surface_tint, // Overlay tint for elevation colour shift.
 
     /// Total roles declared. A palette is exactly this long.
-    pub const count: usize = @typeInfo(ColorRole).@"enum".fields.len;
+    pub const count: usize = reflection.enumFields(ColorRole).len;
 };
 
 test "m3-tokens-color: 47 declared roles, in palette order" {
@@ -126,6 +126,7 @@ pub const ColorSpec = struct {
 };
 
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 
 test "m3-tokens-color: spec defaults favour the role" {
     const t = std.testing;

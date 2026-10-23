@@ -11,7 +11,7 @@ const conn_mod = @import("../../dbus/connection.zig");
 const wire = @import("../../dbus/wire.zig");
 const linux = std.os.linux;
 
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 fn getenvSlice(key: [:0]const u8) ?[]const u8 {
     const p = c.getenv(key);

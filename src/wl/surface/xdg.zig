@@ -174,8 +174,8 @@ pub const Toplevel = struct {
 
         var tbuf: [64]u8 = undefined;
         var abuf: [64]u8 = undefined;
-        const tstr = std.fmt.bufPrintZ(&tbuf, "{s}", .{title}) catch "Settings";
-        const astr = std.fmt.bufPrintZ(&abuf, "{s}", .{app_id}) catch "horizon-settings";
+        const tstr = std.fmt.bufPrintSentinel(&tbuf, "{s}", .{title}, 0) catch "Settings";
+        const astr = std.fmt.bufPrintSentinel(&abuf, "{s}", .{app_id}, 0) catch "horizon-settings";
         wl.xdg_toplevel_set_title(tl, tstr.ptr);
         wl.xdg_toplevel_set_app_id(tl, astr.ptr);
 

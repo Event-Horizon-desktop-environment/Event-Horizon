@@ -362,7 +362,7 @@ const perf_header = 2;
 const perf_page = 3;
 const perf_player = 4;
 const perf_toast = 5;
-var paint_sections_ns: [6]u64 = [_]u64{0} ** 6;
+var paint_sections_ns: [6]u64 = @as([6]u64, @splat(0));
 var paint_view_ns: u64 = 0;
 var paint_art_ns: u64 = 0;
 var paint_art_calls: u32 = 0;
@@ -429,7 +429,7 @@ var st_card: PerfStat = .{};
 var st_card_build: PerfStat = .{};
 var st_halo: PerfStat = .{};
 var st_view: PerfStat = .{};
-var section_stats: [6]PerfStat = [_]PerfStat{.{}} ** 6;
+var section_stats: [6]PerfStat = @as([6]PerfStat, @splat(.{}));
 var slow_elements: u64 = 0;
 
 var art_hits: u64 = 0;
@@ -480,7 +480,7 @@ fn resetElementStats() void {
 fn paintStarted() u64 {
     paint_art_ns = 0;
     paint_art_calls = 0;
-    paint_sections_ns = [_]u64{0} ** 6;
+    paint_sections_ns = @as([6]u64, @splat(0));
     return nowNs();
 }
 
@@ -699,7 +699,7 @@ fn dumpStallForensics() void {
     // Threads: iterate /proc/self/task with getdents64 (no allocator); for
     // each task log tid, comm, and the kernel wait-channel. A wedged main
     // thread shows up here instantly (futex/poll skb/other wchan).
-    var zdir: [64:0]u8 = [_:0]u8{0} ** 64;
+    var zdir: [64:0]u8 = @as([64:0]u8, @splat(0));
     const dir_path = "/proc/self/task";
     @memcpy(zdir[0..dir_path.len], dir_path);
     const dfd: i32 = @intCast(linux.open(&zdir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0o644));
@@ -727,14 +727,14 @@ fn dumpStallForensics() void {
 }
 
 /// One scratch path buffer shared by the /proc readers (watchdog thread only).
-var tidpath_buf: [160:0]u8 = [_:0]u8{0} ** 160;
+var tidpath_buf: [160:0]u8 = @as([160:0]u8, @splat(0));
 
 /// Reads a small /proc file fully (<256 bytes), returning it as a trimmed
 /// string. Uses raw syscalls: safe from the watchdog thread while the main
 /// thread is wedged.
 fn readProcSlurp(tid: i32, comptime tag: []const u8) []const u8 {
     const linux = std.os.linux;
-    const path = std.fmt.bufPrintZ(&tidpath_buf, "/proc/self/task/{d}/" ++ tag, .{tid}) catch return "?";
+    const path = std.fmt.bufPrintSentinel(&tidpath_buf, "/proc/self/task/{d}/" ++ tag, .{tid}, 0) catch return "?";
     const fd: i32 = @intCast(linux.open(path.ptr, .{ .ACCMODE = .RDONLY }, 0o644));
     if (fd < 0) return "?";
     defer _ = linux.close(fd);
@@ -748,7 +748,7 @@ fn readProcSlurp(tid: i32, comptime tag: []const u8) []const u8 {
 /// Bounded /proc read, up to `lines` non-empty lines, straight through logz.
 fn readProcLines(path: []const u8, lines: usize) void {
     const linux = std.os.linux;
-    var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+    var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
     if (path.len + 1 > zbuf.len) return;
     @memcpy(zbuf[0..path.len], path);
     const fd: i32 = @intCast(linux.open(&zbuf, .{ .ACCMODE = .RDONLY }, 0o644));
@@ -863,7 +863,7 @@ const ArtEntry = struct {
     gen: u32 = 0,
 };
 
-var art_entries: [24]ArtEntry = [_]ArtEntry{.{}} ** 24;
+var art_entries: [24]ArtEntry = @as([24]ArtEntry, @splat(.{}));
 var art_clock: u64 = 0;
 
 fn artFind(url: []const u8) ?*ArtEntry {
@@ -1748,7 +1748,7 @@ const TextEntry = struct {
 // re-bind them to the current Cairo context. Pango's update call makes the
 // cached layout honour the current transform before measuring/showing it.
 const text_cache_cap = 192;
-var text_cache: [text_cache_cap]TextEntry = [_]TextEntry{.{}} ** text_cache_cap;
+var text_cache: [text_cache_cap]TextEntry = @as([text_cache_cap]TextEntry, @splat(.{}));
 var text_clock: u64 = 0;
 
 fn layoutFor(
@@ -1873,7 +1873,7 @@ const LabelSlot = struct {
     last: u64 = 0,
 };
 const label_cache_cap = 192;
-var label_cache: [label_cache_cap]LabelSlot = [_]LabelSlot{.{}} ** label_cache_cap;
+var label_cache: [label_cache_cap]LabelSlot = @as([label_cache_cap]LabelSlot, @splat(.{}));
 var label_clock: u64 = 0;
 var label_hits: u64 = 0;
 var label_misses: u64 = 0;
@@ -2527,7 +2527,7 @@ const HaloCache = struct {
 // Eight keyed slots: pages glow with different radii/colours, and a single
 // cache thrashed (one ~2.7ms gradient rebuild per page switch). With slots,
 // page flips alternate between cached blits.
-var halo_slots: [8]HaloCache = [_]HaloCache{.{}} ** 8;
+var halo_slots: [8]HaloCache = @as([8]HaloCache, @splat(.{}));
 var halo_clock: u64 = 0;
 
 fn haloCached(cr: ?*cairo.cairo_t, cx: f64, cy: f64, radius: f64, col: [3]f64, alpha: f64) void {
@@ -2649,7 +2649,7 @@ const ArtSurface = struct {
     ph: i32 = 0,
     last: u64 = 0,
 };
-var art_surfaces: [32]ArtSurface = [_]ArtSurface{.{}} ** 32;
+var art_surfaces: [32]ArtSurface = @as([32]ArtSurface, @splat(.{}));
 var art_surface_clock: u64 = 0;
 
 fn paintArtSurface(entry: *ArtEntry, w: f64, h: f64, scale: u32) ?SurfaceHit {
@@ -2732,7 +2732,7 @@ const FallbackSlot = struct {
     scale: u32 = 1,
     last: u64 = 0,
 };
-var fallback_slots: [8]FallbackSlot = [_]FallbackSlot{.{}} ** 8;
+var fallback_slots: [8]FallbackSlot = @as([8]FallbackSlot, @splat(.{}));
 var fallback_clock: u64 = 0;
 
 fn fallbackSurface(pal_idx: usize, w: f64, h: f64, r: f64, th: Theme, scale: u32) ?SurfaceHit {
@@ -3825,7 +3825,7 @@ fn writePreview(cr: ?*cairo.cairo_t, name: []const u8) void {
     if (std.c.getenv("EH_CIDER_PREVIEW") == null) return;
     std.Io.Dir.cwd().createDirPath(std.testing.io, "/tmp/opencode/cider-preview") catch return;
     var path: [128]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&path, "/tmp/opencode/cider-preview/{s}.png", .{name}) catch return;
+    const z = std.fmt.bufPrintSentinel(&path, "/tmp/opencode/cider-preview/{s}.png", .{name}, 0) catch return;
     const surf = cairo.cairo_get_target(cr);
     _ = cairo_surface_write_to_png(surf, z.ptr);
 }

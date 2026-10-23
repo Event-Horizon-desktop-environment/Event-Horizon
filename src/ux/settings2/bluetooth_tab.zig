@@ -1389,7 +1389,7 @@ test "settings-bluetooth: priority fill keeps paired rows past the cap" {
     // Adversarial walk order: a flood of unpaired beacons first, the one
     // paired headset last — a first-N fill evicts it, the two-pass fill
     // must keep it.
-    var devs = [_]live_bt.Device{.{}} ** 14;
+    var devs = @as([14]live_bt.Device, @splat(.{}));
     for (devs[0..13]) |*d| {
         d.address = "BE:AC:ON:00:00:00";
         d.alias = "beacon";
@@ -1408,9 +1408,9 @@ test "settings-bluetooth: page paints the connected fixture" {
     const t = std.testing;
     // The debug fixture exercises the whole paint path (cards, rows,
     // glyphs, pills, status lines) without a BlueZ daemon.
-    const c = @cImport(@cInclude("stdlib.h"));
+    const c = @import("c_stdlib");
     const prev_ptr = c.getenv("EH_BLUETOOTH_DEBUG");
-    var prev_buf: [64:0]u8 = [_:0]u8{0} ** 64;
+    var prev_buf: [64:0]u8 = @as([64:0]u8, @splat(0));
     var have_prev = false;
     if (prev_ptr) |pv| {
         const s = std.mem.span(pv);

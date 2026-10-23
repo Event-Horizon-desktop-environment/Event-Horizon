@@ -22,10 +22,7 @@ const builtin = @import("builtin");
 /// Screenshot children are spawned through `posix_spawnp` from here — an
 /// argv array, never `system()` or a shell (audit F-4) — with their own
 /// session, exactly like the C++ helper in control_center_pear_layout.cpp.
-const spawn_c = @cImport({
-    @cDefine("_GNU_SOURCE", "");
-    @cInclude("spawn.h");
-});
+const spawn_c = @import("c_spawn");
 
 /// Supervisor run loop: keeps the component children alive, serves the
 /// eh-ipc socket, and drives both off one periodic timer tick.
@@ -39,10 +36,10 @@ var g_supervisor: ?*supervisor_mod.Supervisor = null;
 /// are ours, so without a wait(2) a burst of PrtScr keys would pile up
 /// zombies; the table is drained on every supervisor tick. Main loop
 /// thread only.
-var screenshot_pids: [8]std.posix.pid_t = .{0} ** 8;
+var screenshot_pids: [8]std.posix.pid_t = @splat(0);
 
 /// Overview children spawned by IPC or Super+Tab, reaped like screenshots.
-var overview_pids: [4]std.posix.pid_t = .{0} ** 4;
+var overview_pids: [4]std.posix.pid_t = @splat(0);
 
 /// Two triggers for one physical Win+Tab (our evdev path plus a leftover
 /// Hyprland `eh-ipc overview-toggle` bind) land milliseconds apart. The
@@ -479,7 +476,7 @@ fn spawnScreenshot(alloc: std.mem.Allocator, args: []const []const u8) i64 {
     argv[0] = @constCast(bin.ptr);
     argv[1] = @constCast(screenshot_flag.ptr);
     for (args, 0..) |a, i| {
-        const z = alloc.dupeZ(u8, a) catch return -@as(i64, @intFromEnum(linux.E.NOMEM));
+        const z = alloc.dupeSentinel(u8, a, 0) catch return -@as(i64, @intFromEnum(linux.E.NOMEM));
         owned[owned_len] = z;
         owned_len += 1;
         argv[2 + i] = @constCast(z.ptr);
@@ -534,7 +531,7 @@ fn reapScreenshotChildren() void {
     for (&screenshot_pids) |*slot| {
         if (slot.* == 0) continue;
         var status: u32 = 0;
-        const rc: isize = @bitCast(linux.wait4(slot.*, &status, linux.W.NOHANG, null));
+        const rc: isize = @bitCast(linux.wait4(slot.*, @ptrCast(&status), linux.W.NOHANG, null));
         if (rc == slot.* or rc < 0) slot.* = 0; // reaped, or not ours anymore
     }
 }
@@ -547,7 +544,7 @@ fn chooseOverviewTarget(buf: *[eh_exe_buf]u8, self_exe: []const u8) [:0]const u8
     const exe = stripDeletedMarker(self_exe);
     if (exe.len > 0) {
         if (std.fs.path.dirname(exe)) |dir| {
-            return std.fmt.bufPrintZ(buf, "{s}/horizon-overview", .{dir}) catch "horizon-overview";
+            return std.fmt.bufPrintSentinel(buf, "{s}/horizon-overview", .{dir}, 0) catch "horizon-overview";
         }
     }
     return "horizon-overview";
@@ -637,7 +634,7 @@ fn reapOverviewChildren() void {
     for (&overview_pids) |*slot| {
         if (slot.* == 0) continue;
         var status: u32 = 0;
-        const rc: isize = @bitCast(linux.wait4(slot.*, &status, linux.W.NOHANG, null));
+        const rc: isize = @bitCast(linux.wait4(slot.*, @ptrCast(&status), linux.W.NOHANG, null));
         if (rc == slot.* or rc < 0) slot.* = 0; // reaped, or not ours anymore
     }
 }

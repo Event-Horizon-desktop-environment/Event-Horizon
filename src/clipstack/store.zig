@@ -269,7 +269,7 @@ pub const Store = struct {
         var keep: bool = false;
         defer if (!keep) self.dir.deleteFile(self.io, tmp) catch {};
 
-        var hdr: [header_bytes]u8 = [_]u8{0} ** header_bytes;
+        var hdr: [header_bytes]u8 = @as([header_bytes]u8, @splat(0));
         @memcpy(hdr[0..4], magic);
         hdr[4] = version;
         hdr[5] = @intFromEnum(kind);

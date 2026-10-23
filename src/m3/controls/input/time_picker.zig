@@ -151,7 +151,7 @@ pub const TimePicker = struct {
         cairo.cairo_set_font_size(cr, 24);
         cairo.cairo_set_source_rgba(cr, self.text_r, self.text_g, self.text_b, 0.93);
         var buf: [16]u8 = undefined;
-        const text = std.fmt.bufPrintZ(&buf, "{d:0>2}:{d:0>2}", .{ self.hour, self.minute }) catch "";
+        const text = std.fmt.bufPrintSentinel(&buf, "{d:0>2}:{d:0>2}", .{ self.hour, self.minute }, 0) catch "";
         // The x offset is a hard-coded -28, an estimate of the readout
         // width at 24pt — not a measured centring.
         cairo.cairo_move_to(cr, cx - 28, self.y + self.h - 20);

@@ -356,7 +356,7 @@ const FrameStats = struct {
     /// Frames sampled since the last flush.
     n: u64 = 0,
     /// Last `frame_samples` frame totals in µs, for the percentile summary.
-    ring: [frame_samples]u32 = [_]u32{0} ** frame_samples,
+    ring: [frame_samples]u32 = @as([frame_samples]u32, @splat(0)),
     idx: usize = 0,
     sum_pw_ns: u64 = 0,
     sum_sync_ns: u64 = 0,
@@ -578,7 +578,7 @@ pub const Win = struct {
     /// Card sub-stage accumulators for the current frame (see CardProf).
     card_prof: CardProf = .{},
     /// Baked card backgrounds, keyed by size (see CardBg).
-    card_bg: [card_bg_slots]CardBg = [_]CardBg{.{}} ** card_bg_slots,
+    card_bg: [card_bg_slots]CardBg = @as([card_bg_slots]CardBg, @splat(.{})),
     card_bg_stamp: u64 = 0,
 
     // ── scene cache ──
@@ -1513,7 +1513,7 @@ pub const Win = struct {
         const dir = self.dump_dir orelse return;
         if (self.dump_n >= 500) return;
         var path: [600]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&path, "{s}/fr_{d:0>4}_{s}.png", .{ dir, self.dump_n, kind }) catch return;
+        const z = std.fmt.bufPrintSentinel(&path, "{s}/fr_{d:0>4}_{s}.png", .{ dir, self.dump_n, kind }, 0) catch return;
         const target = cairo.cairo_get_target(cr) orelse return;
         _ = cairo.cairo_surface_write_to_png(target, z.ptr);
         self.dump_n += 1;
@@ -2318,8 +2318,8 @@ fn glyphForDevice(icon_name: []const u8, desc: []const u8, role: graph_mod.Role)
     // the only telling signal, and a display glyph reads truer than a speaker
     // box for "…Digital Stereo (HDMI) [MAG 272Q X24]".
     if (role == .sink and desc.len > 0) {
-        if (std.ascii.indexOfIgnoreCase(desc, "hdmi") != null) return "monitor";
-        if (std.ascii.indexOfIgnoreCase(desc, "displayport") != null) return "monitor";
+        if (std.ascii.findIgnoreCase(desc, "hdmi") != null) return "monitor";
+        if (std.ascii.findIgnoreCase(desc, "displayport") != null) return "monitor";
     }
     return if (role == .sink) "speaker" else "mic";
 }
@@ -2801,7 +2801,7 @@ fn applyDrag(self: *Win, d: *Drag, force: bool) void {
     const target = self.graph.volumeTarget(node, d.monitor);
     const c = self.client orelse return;
     const n = if (target.n_volumes == 0) 2 else target.n_volumes;
-    var vols: [graph_mod.max_channels]f32 = .{0} ** graph_mod.max_channels;
+    var vols: [graph_mod.max_channels]f32 = @splat(0);
     const amp = graph_mod.ratioAmplitude(@as(f32, @floatFromInt(d.pct)) / 100.0);
     for (0..n) |i| vols[i] = amp;
     _ = c.setVolume(d.id, vols[0..n], d.monitor);

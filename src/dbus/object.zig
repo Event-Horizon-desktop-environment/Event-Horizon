@@ -480,7 +480,7 @@ test "dbus-object: serve + introspect + props + method + signal" {
     const t = std.testing;
     const getAddr = struct {
         fn env(alloc: std.mem.Allocator) ?[]u8 {
-            const cc = @cImport(@cInclude("stdlib.h"));
+            const cc = @import("c_stdlib");
             const p = cc.getenv("DBUS_SESSION_BUS_ADDRESS");
             if (p == null) return null;
             return alloc.dupe(u8, std.mem.span(p)) catch null;

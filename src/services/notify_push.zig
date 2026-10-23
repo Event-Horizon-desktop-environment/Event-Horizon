@@ -331,7 +331,7 @@ test "notify-push: art blob round-trips sender to receiver" {
     const t = std.testing;
     const a = t.allocator;
     // 4x4 straight RGBA (receiver-side format): red gradient + opaque.
-    var straight = [_]u8{0} ** (4 * 4 * 4);
+    var straight = @as([(4 * 4 * 4)]u8, @splat(0));
     for (0..16) |i| {
         straight[i * 4 + 0] = @intCast(i * 16);
         straight[i * 4 + 1] = 0;

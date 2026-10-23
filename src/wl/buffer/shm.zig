@@ -2,7 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const wl = @import("../connection.zig").wl;
 
-pub const cairo = @cImport(@cInclude("cairo/cairo.h"));
+pub const cairo = @import("c_cairo");
 
 pub const ShmBuffer = struct {
     alloc: std.mem.Allocator,
@@ -57,7 +57,7 @@ pub const ShmBuffer = struct {
         const raw: usize = @intCast(@as(isize, stride) * @as(isize, height));
         const size: usize = std.mem.alignForward(usize, raw, std.heap.page_size_min);
 
-        var tag_buf: [64:0]u8 = [_:0]u8{0} ** 64;
+        var tag_buf: [64:0]u8 = @as([64:0]u8, @splat(0));
         const n = @min(tag.len, 63);
         @memcpy(tag_buf[0..n], tag[0..n]);
         const fd_rc = linux.memfd_create(&tag_buf, linux.MFD.CLOEXEC);

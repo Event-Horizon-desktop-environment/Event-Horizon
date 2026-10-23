@@ -20,10 +20,7 @@ const wire = @import("../../dbus/wire.zig");
 const session_mod = @import("session.zig");
 const logz = @import("../../logz.zig");
 
-const c = @cImport({
-    @cInclude("pwd.h");
-    @cInclude("unistd.h");
-});
+const c = @import("c_polkit");
 
 /// The agent object polkitd calls back into (same path the C++ used).
 pub const agent_object_path = "/org/eventhorizon/polkit1/AuthenticationAgent";

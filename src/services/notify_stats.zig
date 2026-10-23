@@ -49,8 +49,8 @@ pub const Stats = struct {
     layout_ms_total: u64 = 0,
     layout_ms_max: u64 = 0,
 
-    failures: [kFailureCap][]const u8 = [_][]const u8{""} ** kFailureCap,
-    failure_serials: [kFailureCap]u64 = [_]u64{0} ** kFailureCap,
+    failures: [kFailureCap][]const u8 = @as([kFailureCap][]const u8, @splat("")),
+    failure_serials: [kFailureCap]u64 = @as([kFailureCap]u64, @splat(0)),
     nfailures: usize = 0,
     change_serial: u64 = 0,
     boot_ms: i64 = 0,

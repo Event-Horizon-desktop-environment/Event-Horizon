@@ -26,7 +26,7 @@ const linux = std.os.linux;
 const wl = @import("../c.zig").wl;
 const xkb = @import("../seat.zig").xkb;
 
-const libc = @cImport(@cInclude("stdlib.h"));
+const libc = @import("c_stdlib");
 
 /// `zwp_virtual_keyboard_v1.keymap` format enum: XKB_V1.
 pub const keymap_format_xkb_v1: u32 = 1;
@@ -119,7 +119,7 @@ fn writeAll(fd: i32, bytes: []const u8) bool {
 }
 
 fn sendKeymap(vk: *wl.zwp_virtual_keyboard_v1, map: []const u8) bool {
-    var tag: [16:0]u8 = [_:0]u8{0} ** 16;
+    var tag: [16:0]u8 = @as([16:0]u8, @splat(0));
     @memcpy(tag[0..9], "vk-keymap");
     const rc = linux.memfd_create(&tag, linux.MFD.CLOEXEC);
     if (linux.errno(rc) != .SUCCESS) return false;
@@ -151,7 +151,7 @@ pub const Keyboard = struct {
 
         const map = buildKeymap(alloc) orelse return self;
         defer alloc.free(map);
-        const map_z = alloc.dupeZ(u8, map) catch return self;
+        const map_z = alloc.dupeSentinel(u8, map, 0) catch return self;
         defer alloc.free(map_z);
 
         const ctx = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS) orelse return self;
@@ -230,7 +230,7 @@ test "clipstack vk: buildKeymap always yields a keymap (system or fallback)" {
 
     const ctx = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS).?;
     defer xkb.xkb_context_unref(ctx);
-    const map_z = try testing.allocator.dupeZ(u8, map);
+    const map_z = try testing.allocator.dupeSentinel(u8, map, 0);
     defer testing.allocator.free(map_z);
     const km = xkb.xkb_keymap_new_from_string(ctx, map_z.ptr, xkb.XKB_KEYMAP_FORMAT_TEXT_V1, xkb.XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (km != null) xkb.xkb_keymap_unref(km);

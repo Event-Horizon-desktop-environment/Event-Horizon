@@ -308,11 +308,11 @@ pub fn quantizeWu(alloc: std.mem.Allocator, pixels: []const utils.Argb, max_colo
     // Summed-area table over r, then g, then b (ComputeMoments).
     var r: usize = 1;
     while (r < index_count) : (r += 1) {
-        var area = [_]i64{0} ** index_count;
-        var area_r = [_]i64{0} ** index_count;
-        var area_g = [_]i64{0} ** index_count;
-        var area_b = [_]i64{0} ** index_count;
-        var area_2 = [_]f64{0.0} ** index_count;
+        var area = @as([index_count]i64, @splat(0));
+        var area_r = @as([index_count]i64, @splat(0));
+        var area_g = @as([index_count]i64, @splat(0));
+        var area_b = @as([index_count]i64, @splat(0));
+        var area_2 = @as([index_count]f64, @splat(0.0));
         var g: usize = 1;
         while (g < index_count) : (g += 1) {
             var line: i64 = 0;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 
 // Default-apps data — Zig port of
 // src/ux/settings/data/default_apps/settings_default_apps*.{hpp,cpp}.
@@ -22,7 +23,7 @@ pub const category_names = [_][]const u8{
 };
 
 pub const Model = struct {
-    apps: [@typeInfo(Category).@"enum".fields.len][]const u8 = [_][]const u8{""} ** @typeInfo(Category).@"enum".fields.len,
+    apps: [reflection.enumFields(Category).len][]const u8 = @as([reflection.enumFields(Category).len][]const u8, @splat("")),
 
     pub fn set(self: *Model, cat: Category, desktop_id: []const u8) void {
         self.apps[@intFromEnum(cat)] = desktop_id;

@@ -330,7 +330,7 @@ pub const Session = struct {
             if (child.id) |pid| {
                 _ = linux.kill(pid, .TERM);
                 var status: u32 = 0;
-                const rc = linux.waitpid(pid, &status, linux.W.NOHANG);
+                const rc = linux.waitpid(pid, @ptrCast(&status), linux.W.NOHANG);
                 if (@as(isize, @bitCast(rc)) == 0) {
                     // Still alive one syscall after SIGTERM. Reap off the
                     // main loop: the C++ hit (and logged) a cancel path that
@@ -339,7 +339,7 @@ pub const Session = struct {
                         th.detach();
                     } else |_| {
                         var st: u32 = 0;
-                        _ = linux.waitpid(pid, &st, 0);
+                        _ = linux.waitpid(pid, @ptrCast(&st), 0);
                     }
                 }
             }
@@ -350,7 +350,7 @@ pub const Session = struct {
     fn reapDetached(pid: i32) void {
         var status: u32 = 0;
         while (true) {
-            const rc = linux.waitpid(pid, &status, 0);
+            const rc = linux.waitpid(pid, @ptrCast(&status), 0);
             const s: isize = @bitCast(rc);
             if (s < 0 and linux.errno(rc) == .INTR) continue;
             return;

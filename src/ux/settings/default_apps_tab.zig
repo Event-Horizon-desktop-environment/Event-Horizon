@@ -1,9 +1,10 @@
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 
 pub const Slot = enum { web, mail, calendar, files, terminal, music, video, images, pdf };
 
 pub const Model = struct {
-    apps: [@typeInfo(Slot).@"enum".fields.len][]const u8 = [_][]const u8{""} ** @typeInfo(Slot).@"enum".fields.len,
+    apps: [reflection.enumFields(Slot).len][]const u8 = @as([reflection.enumFields(Slot).len][]const u8, @splat("")),
 
     pub fn set(self: *Model, slot: Slot, app_id: []const u8) void {
         self.apps[@intFromEnum(slot)] = app_id;

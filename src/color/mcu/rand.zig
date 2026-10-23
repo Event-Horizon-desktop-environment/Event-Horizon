@@ -12,7 +12,7 @@ const std = @import("std");
 pub const rand_max: f64 = 2147483647.0;
 
 pub const Rand31 = struct {
-    state: [32]i32 = [_]i32{0} ** 32,
+    state: [32]i32 = @as([32]i32, @splat(0)),
     f: usize = 3,
     r: usize = 0,
 

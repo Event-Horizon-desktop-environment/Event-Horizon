@@ -84,7 +84,7 @@ pub const Catalog = struct {
     /// The per-bucket tallies behind the launcher's category pills, plus the
     /// grand total the "All" pill shows.
     pub fn counts(self: *const Catalog) struct { buckets: [bucket_count]u32, total: u32 } {
-        var buckets = [_]u32{0} ** bucket_count;
+        var buckets = @as([bucket_count]u32, @splat(0));
         var total: u32 = 0;
         for (self.entries) |e| {
             buckets[@intFromEnum(e.bucket)] += 1;

@@ -28,7 +28,7 @@ const object = @import("../dbus/object.zig");
 const sock = @import("../sock.zig");
 const tray = @import("tray.zig");
 const logz = @import("../logz.zig");
-const libc = @cImport(@cInclude("stdlib.h"));
+const libc = @import("c_stdlib");
 
 /// Tray slot key prefix: a tray
 /// slot's key is this prefix followed by the item's service and object path.

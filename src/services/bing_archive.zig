@@ -343,7 +343,7 @@ pub fn matchesBlocklist(entry: *const Entry, keywords: []const []const u8) bool 
     if (combined.len == 0) return false;
     for (keywords) |kw| {
         if (kw.len == 0) continue;
-        if (std.ascii.indexOfIgnoreCase(combined, kw) != null) return true;
+        if (std.ascii.findIgnoreCase(combined, kw) != null) return true;
     }
     return false;
 }

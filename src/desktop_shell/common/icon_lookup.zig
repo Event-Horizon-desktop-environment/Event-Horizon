@@ -188,7 +188,7 @@ fn buildThemeChain(io: std.Io, dir: []const u8, theme: []const u8, out: *ThemeCh
 
 /// One `access()` probe, preferring the vector spelling of an icon.
 pub fn isReadable(path: []const u8) bool {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     if (path.len >= zbuf.len) return false;
     @memcpy(zbuf[0..path.len], path);
     return std.os.linux.errno(std.os.linux.access(&zbuf, std.os.linux.R_OK)) == .SUCCESS;
@@ -325,21 +325,21 @@ pub fn freeFound(alloc: std.mem.Allocator, f: Found) void {
 }
 
 fn mkAbsDir(path: []const u8) void {
-    var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+    var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
     if (path.len + 1 > zbuf.len) return;
     @memcpy(zbuf[0..path.len], path);
     _ = std.os.linux.mkdir(&zbuf, 0o755);
 }
 
 fn rmAbsFile(path: []const u8) void {
-    var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+    var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
     if (path.len + 1 > zbuf.len) return;
     @memcpy(zbuf[0..path.len], path);
     _ = std.os.linux.unlink(&zbuf);
 }
 
 fn touchFile(path: []const u8) void {
-    var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+    var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
     if (path.len + 1 > zbuf.len) return;
     @memcpy(zbuf[0..path.len], path);
     const fd = std.os.linux.open(&zbuf, .{ .ACCMODE = .WRONLY, .CREAT = true }, 0o644);
@@ -357,7 +357,7 @@ test "icon-lookup: finds hicolor icon + misses cleanly" {
     mkAbsDir(base ++ "/icons/TestTheme/48x48/apps");
     defer {
         rmAbsFile(base ++ "/icons/TestTheme/48x48/apps/myapp.png");
-        var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+        var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
         const dirs = [_][]const u8{
             base ++ "/icons/TestTheme/48x48/apps",
             base ++ "/icons/TestTheme/48x48",
@@ -391,7 +391,7 @@ test "icon-lookup: nearest size wins when the exact one is missing" {
     mkAbsDir(base ++ "/icons/Sizes/apps/32");
     defer {
         rmAbsFile(base ++ "/icons/Sizes/apps/32/nearest.png");
-        var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+        var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
         const dirs = [_][]const u8{
             base ++ "/icons/Sizes/apps/32",
             base ++ "/icons/Sizes/apps",
@@ -420,7 +420,7 @@ test "icon-lookup: absolute paths from Icon= are used as-is" {
     mkAbsDir(base);
     defer {
         rmAbsFile(base ++ "/abs-icon.svg");
-        var zbuf: [256:0]u8 = [_:0]u8{0} ** 256;
+        var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
         const p = base;
         @memcpy(zbuf[0..p.len], p);
         zbuf[p.len] = 0;

@@ -24,7 +24,7 @@ pub const App = struct {
     /// Owned copies of the ambient XDG paths, kept for reloads.
     xdg_config: ?[]const u8,
     home: ?[]const u8,
-    watchers: [max_watchers]config.watch.Watcher = [_]config.watch.Watcher{.{}} ** max_watchers,
+    watchers: [max_watchers]config.watch.Watcher = @as([max_watchers]config.watch.Watcher, @splat(.{})),
     nwatch: usize = 0,
     /// Invoked after `reload()` swaps `loaded` in. The callee must rebuild any
     /// cached view of the config — old slices point into the freed arena.

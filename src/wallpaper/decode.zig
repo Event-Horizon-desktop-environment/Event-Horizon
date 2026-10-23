@@ -17,7 +17,7 @@ pub const Image = struct {
 
 /// Decode a wallpaper within the pixel budget, returning allocator-owned RGBA.
 pub fn loadRgba(alloc: std.mem.Allocator, path: []const u8) ?Image {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     if (path.len >= zbuf.len) return null;
     @memcpy(zbuf[0..path.len], path);
     var w: c_int = 0;

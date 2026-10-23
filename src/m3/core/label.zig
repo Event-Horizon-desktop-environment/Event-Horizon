@@ -131,7 +131,7 @@ pub const Label = struct {
             return null;
         };
 
-        var fam_buf: [256:0]u8 = [_:0]u8{0} ** 256;
+        var fam_buf: [256:0]u8 = @as([256:0]u8, @splat(0));
         text.pango_font_description_set_family(desc, self.familyZ(&fam_buf));
         text.pango_font_description_set_size(desc, self.pangoSize());
         text.pango_font_description_set_weight(desc, self.fc.weight);

@@ -51,7 +51,7 @@ pub const Snapshot = struct {
 };
 
 const Ring = struct {
-    buf: [graph_samples]i32 = [_]i32{0} ** graph_samples,
+    buf: [graph_samples]i32 = @as([graph_samples]i32, @splat(0)),
     len: usize = 0,
     fn push(self: *Ring, v: i32) void {
         if (self.len < graph_samples) {
@@ -87,9 +87,9 @@ pub const State = struct {
     net_throughput: Ring = .{},
     net_down: Ring = .{},
     net_up: Ring = .{},
-    cpu_name: [128]u8 = [_]u8{0} ** 128,
+    cpu_name: [128]u8 = @as([128]u8, @splat(0)),
     cpu_name_len: usize = 0,
-    gpu_name: [64]u8 = [_]u8{0} ** 64,
+    gpu_name: [64]u8 = @as([64]u8, @splat(0)),
     gpu_name_len: usize = 0,
     stat_user: i64 = 0,
     stat_nice: i64 = 0,
@@ -341,7 +341,7 @@ fn readNet(s: *State, io: std.Io) NetData {
         const ci = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         if (std.mem.eql(u8, std.mem.trim(u8, line[0..ci], " \t"), "lo")) continue;
         var jt = std.mem.splitScalar(u8, line[ci + 1 ..], ' ');
-        var nums: [16]u64 = [_]u64{0} ** 16;
+        var nums: [16]u64 = @as([16]u64, @splat(0));
         var ni: usize = 0;
         while (jt.next()) |tok| {
             if (tok.len == 0) continue;
@@ -379,7 +379,7 @@ const Nvml = struct {
     lib: ?std.DynLib = null,
     handle: usize = 0,
     ready: bool = false,
-    name_buf: [64]u8 = [_]u8{0} ** 64,
+    name_buf: [64]u8 = @as([64]u8, @splat(0)),
 
     const NVML_SUCCESS: c_int = 0;
     const NVML_TEMPERATURE_GPU: c_uint = 0;
@@ -435,7 +435,7 @@ const Nvml = struct {
             @memcpy(out[0..3], "GPU");
             return 3;
         });
-        var buf: [64]u8 = [_]u8{0} ** 64;
+        var buf: [64]u8 = @as([64]u8, @splat(0));
         if (get_name(self.handle, &buf, 64) != NVML_SUCCESS) {
             @memcpy(out[0..3], "GPU");
             return 3;

@@ -388,7 +388,7 @@ const FieldBuf = struct {
 const VpnDlg = struct {
     open: bool = false,
     type_i: usize = 0,
-    values: [field_count]FieldBuf = [_]FieldBuf{.{}} ** field_count,
+    values: [field_count]FieldBuf = @as([field_count]FieldBuf, @splat(.{})),
     /// 0 = none, else `@intFromEnum(id) + 1`.
     focus: u8 = 0,
     hover: i32 = 0,
@@ -455,7 +455,7 @@ const VpnDlgLay = struct {
     close: common.Rect,
 };
 
-var tab_widths: [vpn_types.len]i32 = .{0} ** vpn_types.len;
+var tab_widths: [vpn_types.len]i32 = @splat(0);
 var tab_widths_ready = false;
 
 fn vpnTabWidths() [vpn_types.len]i32 {
@@ -628,10 +628,10 @@ pub const Page = struct {
     /// UUIDs with a delete in flight — hidden until NM stops reporting them
     /// (the C++ page's `s_removing` set; four are enough for click bursts).
     removing: [4][64]u8 = undefined,
-    removing_len: [4]usize = .{0} ** 4,
+    removing_len: [4]usize = @splat(0),
     /// When each marker was set; a failed `nmcli delete` must not hide the
     /// row forever (the poll re-adds it after the window).
-    removing_at: [4]i64 = .{0} ** 4,
+    removing_at: [4]i64 = @splat(0),
     removing_n: usize = 0,
     /// Button top edge after the last Wired Status paint (the reference puts
     /// Disconnect under the final row; hit-testing reuses the painted edge).
@@ -742,8 +742,8 @@ pub const Page = struct {
         const now = nowMs();
         // Retire delete markers once NM stops reporting the UUID.
         var keep: [4][64]u8 = undefined;
-        var keep_len: [4]usize = .{0} ** 4;
-        var keep_at: [4]i64 = .{0} ** 4;
+        var keep_len: [4]usize = @splat(0);
+        var keep_at: [4]i64 = @splat(0);
         var keep_n: usize = 0;
         for (self.removing[0..self.removing_n], 0..) |u, ui| {
             const uu = u[0..self.removing_len[ui]];
@@ -1710,7 +1710,7 @@ pub const Page = struct {
         const filter = if (wireguard) "*.conf" else "*.ovpn";
 
         var kb: [96]u8 = undefined;
-        const kfilter = std.fmt.bufPrintZ(&kb, "{s}|VPN configs", .{filter}) catch filter;
+        const kfilter = std.fmt.bufPrintSentinel(&kb, "{s}|VPN configs", .{filter}, 0) catch filter;
         const kd = std.process.run(self.alloc, self.io, .{ .argv = &.{
             "kdialog", "--getopenfilename", start, kfilter,
         } }) catch null;
@@ -2251,9 +2251,9 @@ fn pluginAvailable(spec: *const VpnTypeSpec) bool {
     };
     var buf: [224]u8 = undefined;
     for (dirs) |dir| {
-        const lib = std.fmt.bufPrintZ(&buf, "{s}libnm-vpn-plugin-{s}.so", .{ dir, name }) catch continue;
+        const lib = std.fmt.bufPrintSentinel(&buf, "{s}libnm-vpn-plugin-{s}.so", .{ dir, name }, 0) catch continue;
         if (std.c.access(@ptrCast(lib.ptr), std.c.R_OK) == 0) return true;
-        const svc = std.fmt.bufPrintZ(&buf, "{s}nm-{s}-service.name", .{ dir, name }) catch continue;
+        const svc = std.fmt.bufPrintSentinel(&buf, "{s}nm-{s}-service.name", .{ dir, name }, 0) catch continue;
         if (std.c.access(@ptrCast(svc.ptr), std.c.R_OK) == 0) return true;
     }
     return false;

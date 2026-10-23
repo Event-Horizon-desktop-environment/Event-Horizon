@@ -561,7 +561,7 @@ test "toast-cards: selection newest-first with dedupe + cap" {
     const id3 = m.addOrUpdate(0, .{ .app_name = "C", .summary = "s3", .body = "b3" });
     const id4 = m.addOrUpdate(0, .{ .app_name = "D", .summary = "s4", .body = "b4" });
     const id5 = m.addOrUpdate(0, .{ .app_name = "E", .summary = "s5", .body = "b5" });
-    var ids = [_]u32{0} ** 8;
+    var ids = @as([8]u32, @splat(0));
     const sel = selectCards(&m, &ids);
     try t.expectEqual(@as(usize, 4), sel.len);
     try t.expectEqual(id5, sel[0]); // newest first
@@ -576,7 +576,7 @@ test "toast-cards: silent + DND hide everything" {
     var m = Manager.init(t.allocator);
     defer m.deinit();
     _ = m.addOrUpdate(0, .{ .app_name = "A", .summary = "s", .body = "b", .silent = true });
-    var ids = [_]u32{0} ** 8;
+    var ids = @as([8]u32, @splat(0));
     try t.expectEqual(@as(usize, 0), selectCards(&m, &ids).len);
     m.setQuietMode(true);
     _ = m.addOrUpdate(0, .{ .app_name = "B", .summary = "s", .body = "b" });

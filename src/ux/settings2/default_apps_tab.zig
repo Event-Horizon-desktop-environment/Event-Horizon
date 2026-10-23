@@ -59,9 +59,9 @@ pub const Page = struct {
     /// to alias the "System default · …" string it was printing
     /// (`@memcpy arguments alias` panic, plus a flood of invalid-UTF-8
     /// Pango warnings from painting the dangling bytes).
-    sys_valid: [da_data.category_count]bool = [_]bool{false} ** da_data.category_count,
+    sys_valid: [da_data.category_count]bool = @as([da_data.category_count]bool, @splat(false)),
     sys_buf: [da_data.category_count][256]u8 = undefined,
-    sys_len: [da_data.category_count]usize = [_]usize{0} ** da_data.category_count,
+    sys_len: [da_data.category_count]usize = @as([da_data.category_count]usize, @splat(0)),
 
     /// Themed icon pixels for the dropdown rows, keyed by the catalog
     /// entry's `Icon=` name. Resolved lazily on first paint through the

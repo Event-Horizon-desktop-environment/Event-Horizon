@@ -21,7 +21,7 @@ const autostart = @import("../../services/autostart.zig");
 /// value and copying a whole struct (the baseline snapshot) is safe.
 pub fn Str(comptime cap: usize) type {
     return struct {
-        buf: [cap]u8 = [_]u8{0} ** cap,
+        buf: [cap]u8 = @as([cap]u8, @splat(0)),
         len: usize = 0,
 
         const Self = @This();
@@ -100,10 +100,10 @@ pub const MonitorRow = struct {
 
 pub const OutputCaps = struct {
     n_res: usize = 0,
-    res: [max_res][16]u8 = [_][16]u8{[_]u8{0} ** 16} ** max_res,
-    res_len: [max_res]u8 = [_]u8{0} ** max_res,
-    hz: [max_res][max_hz]f64 = [_][max_hz]f64{[_]f64{0} ** max_hz} ** max_res,
-    hz_len: [max_res]u8 = [_]u8{0} ** max_res,
+    res: [max_res][16]u8 = @as([max_res][16]u8, @splat(@as([16]u8, @splat(0)))),
+    res_len: [max_res]u8 = @as([max_res]u8, @splat(0)),
+    hz: [max_res][max_hz]f64 = @as([max_res][max_hz]f64, @splat(@as([max_hz]f64, @splat(0)))),
+    hz_len: [max_res]u8 = @as([max_res]u8, @splat(0)),
     vrr_capable: bool = false,
     hdr_hint: bool = false,
     width: i32 = 0,
@@ -906,9 +906,9 @@ fn emitKV(
 
 pub const State = struct {
     kind: compositor.Kind = .unknown,
-    outputs: [max_outputs]MonitorRow = [1]MonitorRow{.{}} ** max_outputs,
+    outputs: [max_outputs]MonitorRow = @as([max_outputs]MonitorRow, @splat(.{})),
     outputs_len: usize = 0,
-    caps: [max_outputs]CapEntry = [1]CapEntry{.{}} ** max_outputs,
+    caps: [max_outputs]CapEntry = @as([max_outputs]CapEntry, @splat(.{})),
     caps_len: usize = 0,
     conf_path: Str(path_cap) = .{},
     /// Everything before the first monitor block, as read.
@@ -916,7 +916,7 @@ pub const State = struct {
     status: Str(status_cap) = .{},
     dirty: bool = false,
     selected: usize = 0,
-    baseline_outputs: [max_outputs]MonitorRow = [1]MonitorRow{.{}} ** max_outputs,
+    baseline_outputs: [max_outputs]MonitorRow = @as([max_outputs]MonitorRow, @splat(.{})),
     baseline_outputs_len: usize = 0,
     baseline_preamble: ?[]u8 = null,
     did_refresh: bool = false,
@@ -1232,7 +1232,7 @@ pub fn luaConfigActive(home: []const u8) bool {
     // and then re-printing that slice back into `buf` would make the source
     // and destination of the copy the same memory.
     var buf: [1024]u8 = undefined;
-    const z: [:0]const u8 = std.fmt.bufPrintZ(&buf, "{s}/.config/hypr/hyprland.lua", .{home}) catch return false;
+    const z: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "{s}/.config/hypr/hyprland.lua", .{home}, 0) catch return false;
     return std.c.access(@ptrCast(z.ptr), std.c.R_OK) == 0;
 }
 

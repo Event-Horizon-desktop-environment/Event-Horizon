@@ -35,7 +35,7 @@ pub const widget_names = [_][]const u8{
 };
 
 pub const DesktopWidgetsModel = struct {
-    enabled: [9]bool = .{true} ** 9,
+    enabled: [9]bool = @splat(true),
 
     pub fn setEnabled(self: *DesktopWidgetsModel, kind: WidgetKind, v: bool) void {
         self.enabled[@intFromEnum(kind)] = v;

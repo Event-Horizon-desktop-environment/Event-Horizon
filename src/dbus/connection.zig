@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const wire = @import("wire.zig");
 const sock = @import("../sock.zig");
 
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 pub const BusError = error{
     BadAddress,

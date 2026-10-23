@@ -8,6 +8,7 @@
 //! delete keys. Sections the tab does not own survive byte for byte.
 
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 const app_mod = @import("app.zig");
 const data = @import("default_apps_data.zig");
 const cfg = @import("../../config.zig");
@@ -19,7 +20,7 @@ pub const section = "default_apps";
 
 /// Seed tab state from the decoded config (window init).
 pub fn load(alloc: std.mem.Allocator, s: *app_mod.Settings, da: anytype) void {
-    inline for (@typeInfo(data.Category).@"enum".fields, 0..) |f, i| {
+    inline for (reflection.enumFields(data.Category), 0..) |f, i| {
         data.setStoredId(s, @enumFromInt(f.value), alloc.dupe(u8, @field(da, data.category_keys[i])) catch "");
     }
 }

@@ -332,7 +332,7 @@ pub const Settings = struct {
     matugen_mode: []const u8 = "dark",
     /// Per-app external-template switches (`[appearance.matugen_templates]`,
     /// keys in the same order as `templates_registry.templates`).
-    matugen_templates: [37]bool = .{true} ** 37,
+    matugen_templates: [37]bool = @splat(true),
     horizon_native: bool = true,
     color_theme_enabled: bool = false,
     color_theme_name: []const u8 = "",

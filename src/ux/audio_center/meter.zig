@@ -142,7 +142,7 @@ pub const Manager = struct {
         else
             t.id;
         var id_buf: [24]u8 = undefined;
-        const id_str = std.fmt.bufPrintZ(&id_buf, "{d}", .{serial}) catch return error.NameTooLong;
+        const id_str = std.fmt.bufPrintSentinel(&id_buf, "{d}", .{serial}, 0) catch return error.NameTooLong;
         const sink_str: [*:0]const u8 = if (t.sink) "true" else "false";
         const props = pw.pw_properties_new(
             "media.type",

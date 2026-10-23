@@ -182,6 +182,61 @@ fn addPkgConfig(b: *std.Build, mod: *std.Build.Module, package: []const u8) void
     }
 }
 
+fn addPkgConfigIncludesToTranslateC(b: *std.Build, tc: *std.Build.Step.TranslateC, package: []const u8) void {
+    const cflags = b.run(&.{ "pkg-config", "--cflags", package });
+    var it = std.mem.tokenizeAny(u8, cflags, " \t\r\n");
+    while (it.next()) |flag| {
+        if (std.mem.startsWith(u8, flag, "-I") and flag.len > 2) {
+            tc.addSystemIncludePath(.{ .cwd_relative = b.dupe(flag[2..]) });
+        }
+    }
+}
+
+const CImports = struct {
+    stdlib: *std.Build.Module,
+    pthread: *std.Build.Module,
+    cairo: *std.Build.Module,
+    xkbcommon: *std.Build.Module,
+    wayland: *std.Build.Module,
+    polkit: *std.Build.Module,
+    spawn: *std.Build.Module,
+
+    fn addTo(self: CImports, mod: *std.Build.Module) void {
+        mod.addImport("c_stdlib", self.stdlib);
+        mod.addImport("c_pthread", self.pthread);
+        mod.addImport("c_cairo", self.cairo);
+        mod.addImport("c_xkbcommon", self.xkbcommon);
+        mod.addImport("c_wayland", self.wayland);
+        mod.addImport("c_polkit", self.polkit);
+        mod.addImport("c_spawn", self.spawn);
+    }
+};
+
+/// Translate the C headers the shell needs into modules. Zig 0.17 removed
+/// `@cImport`, while `translate-c` and module imports work on both 0.16 and
+/// 0.17.
+fn cImportModule(
+    b: *std.Build,
+    name: []const u8,
+    source: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    include_paths: []const std.Build.LazyPath,
+    pkg_config: ?[]const u8,
+    define_gnu_source: bool,
+) *std.Build.Module {
+    const tc = b.addTranslateC(.{
+        .root_source_file = source,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    for (include_paths) |path| tc.addIncludePath(path);
+    if (pkg_config) |package| addPkgConfigIncludesToTranslateC(b, tc, package);
+    if (define_gnu_source) tc.defineCMacro("_GNU_SOURCE", "");
+    return tc.addModule(name);
+}
+
 fn linkShellLibraries(b: *std.Build, mod: *std.Build.Module, options: ModuleOptions) void {
     addPkgConfig(b, mod, "wayland-client");
     addPkgConfig(b, mod, "xkbcommon");
@@ -225,6 +280,7 @@ fn shellModule(
     protocol_codes: []const std.Build.LazyPath,
     protocol_includes: []const std.Build.LazyPath,
     options: ModuleOptions,
+    c_imports: CImports,
 ) *std.Build.Module {
     const mod = b.createModule(.{
         .root_source_file = b.path(root_src),
@@ -234,6 +290,7 @@ fn shellModule(
     });
 
     linkShellLibraries(b, mod, options);
+    c_imports.addTo(mod);
 
     for (protocol_includes) |include| mod.addIncludePath(include);
     if (options.c_sources) {
@@ -263,6 +320,16 @@ fn addBinaryStep(b: *std.Build, name: []const u8, description: []const u8, exe: 
     step.dependOn(&install.step);
 }
 
+/// Build-root handle. Zig 0.16 exposes `Build.build_root`; 0.17 moved the
+/// same directory behind `Build.root`.
+fn buildRootHandle(b: *std.Build) std.Io.Dir {
+    if (comptime @hasField(std.Build, "build_root")) {
+        return b.build_root.handle;
+    } else {
+        return b.root.root_dir.handle;
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -281,6 +348,61 @@ pub fn build(b: *std.Build) void {
         protocol_includes[i] = generated.header.dirname();
     }
 
+    const c_files = b.addWriteFiles();
+    const c_stdlib_src = c_files.add("c_stdlib.c",
+        \\#include <stdlib.h>
+    );
+    const c_pthread_src = c_files.add("c_pthread.c",
+        \\#include <pthread.h>
+    );
+    const c_cairo_src = c_files.add("c_cairo.c",
+        \\#include <cairo/cairo.h>
+    );
+    const c_xkbcommon_src = c_files.add("c_xkbcommon.c",
+        \\#include <xkbcommon/xkbcommon.h>
+    );
+    const c_polkit_src = c_files.add("c_polkit.c",
+        \\#include <pwd.h>
+        \\#include <unistd.h>
+    );
+    const c_spawn_src = c_files.add("c_spawn.c",
+        \\#include <spawn.h>
+    );
+    const c_wayland_src = c_files.add("c_wayland.c",
+        \\#include <wayland-client.h>
+        \\#include <wayland-client-protocol.h>
+        \\#include <xdg-shell-client-protocol.h>
+        \\#include <idle-inhibit-unstable-v1-client-protocol.h>
+        \\#include <ext-session-lock-v1-client-protocol.h>
+        \\#include <xdg-activation-v1-client-protocol.h>
+        \\#include <ext-idle-notify-v1-client-protocol.h>
+        \\#include <wlr-gamma-control-unstable-v1-client-protocol.h>
+        \\#include <ext-data-control-v1-client-protocol.h>
+        \\#include <wlr-data-control-unstable-v1-client-protocol.h>
+        \\#include <virtual-keyboard-unstable-v1-client-protocol.h>
+        \\#include <wlr-layer-shell-unstable-v1-client-protocol.h>
+        \\#include <wlr-foreign-toplevel-management-unstable-v1-client-protocol.h>
+        \\#include <ext-foreign-toplevel-list-v1-client-protocol.h>
+        \\#include <ext-workspace-v1-client-protocol.h>
+        \\#include <dwl-ipc-unstable-v2-client-protocol.h>
+        \\#include <hyprland-toplevel-export-v1-client-protocol.h>
+        \\#include <hyprland-focus-grab-v1-client-protocol.h>
+        \\#include <wlr-screencopy-unstable-v1-client-protocol.h>
+        \\#include <ext-image-copy-capture-v1-client-protocol.h>
+        \\#include <ext-image-capture-source-v1-client-protocol.h>
+        \\#include <xdg-output-unstable-v1-client-protocol.h>
+    );
+
+    const c_imports = CImports{
+        .stdlib = cImportModule(b, "c_stdlib", c_stdlib_src, target, optimize, &.{}, null, false),
+        .pthread = cImportModule(b, "c_pthread", c_pthread_src, target, optimize, &.{}, null, false),
+        .cairo = cImportModule(b, "c_cairo", c_cairo_src, target, optimize, &.{}, "cairo", false),
+        .xkbcommon = cImportModule(b, "c_xkbcommon", c_xkbcommon_src, target, optimize, &.{}, "xkbcommon", false),
+        .wayland = cImportModule(b, "c_wayland", c_wayland_src, target, optimize, &protocol_includes, "wayland-client", false),
+        .polkit = cImportModule(b, "c_polkit", c_polkit_src, target, optimize, &.{}, null, false),
+        .spawn = cImportModule(b, "c_spawn", c_spawn_src, target, optimize, &.{}, null, true),
+    };
+
     // The supervisor. It pulls in the shell modules directly, so it needs
     // the protocol sources and Pango as well.
     const horizon_mod = shellModule(
@@ -291,6 +413,7 @@ pub fn build(b: *std.Build) void {
         &protocol_codes,
         &protocol_includes,
         .{ .pango = true, .c_sources = true },
+        c_imports,
     );
     const horizon = b.addExecutable(.{ .name = "horizon", .root_module = horizon_mod });
     b.installArtifact(horizon);
@@ -298,7 +421,12 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(horizon);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    // Zig 0.17 replaced `Build.args` with the passthru marker on Run steps.
+    if (comptime @hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run_cmd.addPassthruArgs();
+    } else {
+        if (b.args) |args| run_cmd.addArgs(args);
+    }
     const run_step = b.step("run", "Run the shell supervisor");
     run_step.dependOn(&run_cmd.step);
 
@@ -309,6 +437,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    c_imports.addTo(ipc_mod);
     const eh_ipc = b.addExecutable(.{ .name = "eh-ipc", .root_module = ipc_mod });
     b.installArtifact(eh_ipc);
     addBinaryStep(b, "ipc", "Build only eh-ipc", eh_ipc);
@@ -323,6 +452,7 @@ pub fn build(b: *std.Build) void {
         &protocol_codes,
         &protocol_includes,
         .{ .pango = true, .c_sources = true },
+        c_imports,
     );
 
     // Unit tests use the same module graph as the shell, plus PipeWire for
@@ -340,6 +470,7 @@ pub fn build(b: *std.Build) void {
         &protocol_codes,
         &protocol_includes,
         .{ .pango = true, .c_sources = true, .pipewire = true },
+        c_imports,
     );
     const unit_tests = b.addTest(.{ .root_module = test_mod });
     const run_tests = b.addRunArtifact(unit_tests);
@@ -357,6 +488,7 @@ pub fn build(b: *std.Build) void {
             &protocol_codes,
             &protocol_includes,
             spec.options,
+            c_imports,
         );
         if (spec.imports_eh) mod.addImport("eh", eh_mod);
         const exe = b.addExecutable(.{ .name = spec.name, .root_module = mod });
@@ -371,7 +503,7 @@ pub fn build(b: *std.Build) void {
         "install-icons",
         "Install src/resources/icons into the icon theme (use --prefix ~/.local/share)",
     );
-    if (b.build_root.handle.openDir(b.graph.io, "src/resources/icons", .{ .iterate = true })) |icons_dir| {
+    if (buildRootHandle(b).openDir(b.graph.io, "src/resources/icons", .{ .iterate = true })) |icons_dir| {
         var dir = icons_dir;
         defer dir.close(b.graph.io);
         var it = dir.iterate();

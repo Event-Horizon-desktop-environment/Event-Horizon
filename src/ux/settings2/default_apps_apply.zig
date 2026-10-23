@@ -10,6 +10,7 @@
 //! (override deleted externally, or set before this logic existed).
 
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 const live = @import("../../desktop_shell/controlcenter/live.zig");
 const autostart = @import("../../services/autostart.zig");
 const data = @import("default_apps_data.zig");
@@ -119,8 +120,8 @@ pub fn queryEffectiveDesktopId(gpa: std.mem.Allocator, io: std.Io, cat: Category
 // -- Pre-apply capture (the reset memory) ----------------------------------------
 
 var capture_arena: ?std.heap.ArenaAllocator = null;
-var s_pre_apply: [data.category_count][]const u8 = .{""} ** data.category_count;
-var s_pre_apply_set = [_]bool{false} ** data.category_count;
+var s_pre_apply: [data.category_count][]const u8 = @splat("");
+var s_pre_apply_set = @as([data.category_count]bool, @splat(false));
 var s_last_applied: ?[]const u8 = null;
 
 fn dupePersistent(gpa: std.mem.Allocator, s: []const u8) []const u8 {
@@ -195,7 +196,7 @@ pub fn restoreCategorySystemDefault(gpa: std.mem.Allocator, io: std.Io, cat: Cat
 /// the stored config ids are cleared by the caller (with a flush) after
 /// this returns.
 pub fn resetAllToSystemDefault(gpa: std.mem.Allocator, io: std.Io) void {
-    inline for (@typeInfo(Category).@"enum".fields) |f| {
+    inline for (reflection.enumFields(Category)) |f| {
         restoreCategorySystemDefault(gpa, io, @enumFromInt(f.value));
     }
 }

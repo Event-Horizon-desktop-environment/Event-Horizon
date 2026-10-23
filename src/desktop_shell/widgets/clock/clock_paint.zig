@@ -96,7 +96,7 @@ pub const BrokenTime = struct {
     sec: u8 = 0,
     /// Seconds east of UTC, from `tm_gmtoff` (0 when libc has none).
     gmtoff_sec: i64 = 0,
-    zone: [16]u8 = [_]u8{0} ** 16,
+    zone: [16]u8 = @as([16]u8, @splat(0)),
     zone_len: usize = 0,
 
     pub fn zoneName(self: *const BrokenTime) []const u8 {
@@ -540,11 +540,11 @@ pub fn reset() void {
 /// the font size, and one width/height per line (growable; a
 /// clock face never needs more than a handful of lines).
 const Sizes = struct {
-    key: [256]u8 = [_]u8{0} ** 256,
+    key: [256]u8 = @as([256]u8, @splat(0)),
     key_len: usize = 0,
     font_px: i32 = 0,
-    widths: [8]i32 = [_]i32{0} ** 8,
-    heights: [8]i32 = [_]i32{0} ** 8,
+    widths: [8]i32 = @as([8]i32, @splat(0)),
+    heights: [8]i32 = @as([8]i32, @splat(0)),
     n: usize = 0,
     total_h: i32 = 0,
     max_w: i32 = 0,

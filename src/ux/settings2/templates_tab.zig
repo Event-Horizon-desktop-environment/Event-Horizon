@@ -126,7 +126,7 @@ pub const GroupGeom = struct {
     y: i32 = 0,
     h: i32 = 0,
     open: bool = true,
-    rows: [k_max_group_rows]RowGeom = [_]RowGeom{.{}} ** k_max_group_rows,
+    rows: [k_max_group_rows]RowGeom = @as([k_max_group_rows]RowGeom, @splat(.{})),
     n: u8 = 0,
 };
 
@@ -137,10 +137,10 @@ pub const Layout = struct {
     enable_btn: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     regen_btn: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     filter: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-    seg: [4]Rect = [_]Rect{.{ .x = 0, .y = 0, .w = 0, .h = 0 }} ** 4,
+    seg: [4]Rect = @as([4]Rect, @splat(.{ .x = 0, .y = 0, .w = 0, .h = 0 })),
     summary_y: i32 = 0,
     groups_y: i32 = 0,
-    groups: [tmpl.group_count]GroupGeom = [_]GroupGeom{.{}} ** tmpl.group_count,
+    groups: [tmpl.group_count]GroupGeom = @as([tmpl.group_count]GroupGeom, @splat(.{})),
     n_groups: u8 = 0,
     empty_y: i32 = 0,
     empty_h: i32 = 0,
@@ -162,9 +162,9 @@ pub const Page = struct {
     // --- detection + status caches ------------------------------------
     env_bufs: tmpl.EnvBufs = .{},
     env: tmpl.Env = .{},
-    detected: [tmpl.template_count]bool = [_]bool{true} ** tmpl.template_count,
+    detected: [tmpl.template_count]bool = @as([tmpl.template_count]bool, @splat(true)),
     have_detect: bool = false,
-    status: [tmpl.template_count]tmpl.StatusInfo = [_]tmpl.StatusInfo{.{}} ** tmpl.template_count,
+    status: [tmpl.template_count]tmpl.StatusInfo = @as([tmpl.template_count]tmpl.StatusInfo, @splat(.{})),
     have_status: bool = false,
     stat_ms: i64 = 0,
     last_sig: u64 = 0,
@@ -177,7 +177,7 @@ pub const Page = struct {
     segment: tmpl.Segment = .all,
     show_all: bool = false,
     open_slot: i32 = -1,
-    expanded: [tmpl.group_count]bool = [_]bool{true} ** tmpl.group_count,
+    expanded: [tmpl.group_count]bool = @as([tmpl.group_count]bool, @splat(true)),
 
     pub fn init(self: *Page, gpa: std.mem.Allocator, io: std.Io, settings: *app_mod.Settings) void {
         self.alloc = gpa;
@@ -1277,7 +1277,7 @@ test "templates page: group row cap fits the registry" {
     const t = std.testing;
     var s = app_mod.Settings{};
     const p = testPage(&s);
-    var counts = [_]usize{0} ** tmpl.group_count;
+    var counts = @as([tmpl.group_count]usize, @splat(0));
     for (tmpl.templates) |tp| counts[tp.group] += 1;
     var max_rows: usize = 0;
     for (counts) |c| max_rows = @max(max_rows, c);

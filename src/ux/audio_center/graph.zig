@@ -92,10 +92,10 @@ pub const Node = struct {
 
     volume: f32 = 1.0,
     mute: bool = false,
-    volumes: [max_channels]f32 = .{0} ** max_channels,
-    chan_pos: [max_channels]u32 = .{0} ** max_channels,
+    volumes: [max_channels]f32 = @splat(0),
+    chan_pos: [max_channels]u32 = @splat(0),
     volume_count: u8 = 0,
-    monitor_volumes: [max_channels]f32 = .{0} ** max_channels,
+    monitor_volumes: [max_channels]f32 = @splat(0),
     monitor_volume_count: u8 = 0,
     monitor_mute: bool = false,
     have_props: bool = false,
@@ -174,7 +174,7 @@ pub fn isControlToolApp(app_id: []const u8) bool {
 /// The volume/mute a device row shows, and the object a write must go to.
 pub const VolumeTarget = struct {
     n_volumes: u8 = 0,
-    volumes: [max_channels]f32 = .{0} ** max_channels,
+    volumes: [max_channels]f32 = @splat(0),
     mute: bool = false,
     /// Card route that owns the volume (0 = node Props are the target).
     card_id: u32 = 0,
@@ -192,10 +192,10 @@ pub const Route = struct {
     available: u32 = pod.availability_unknown,
     device: i32 = -1,
     /// Profiles this route belongs to (enum-route `profiles` array).
-    profiles: [8]i32 = .{-1} ** 8,
+    profiles: [8]i32 = @splat(-1),
     n_profiles: u8 = 0,
     /// Card devices (PCMs) this route applies to (enum-route `devices`).
-    devices: [8]i32 = .{-1} ** 8,
+    devices: [8]i32 = @splat(-1),
     n_devices: u8 = 0,
 
     pub fn deinit(self: *Route, alloc: std.mem.Allocator) void {
@@ -251,7 +251,7 @@ pub const RouteVolume = struct {
     device: i32 = -1,
     has_props: bool = false,
     n_volumes: u8 = 0,
-    volumes: [max_channels]f32 = .{0} ** max_channels,
+    volumes: [max_channels]f32 = @splat(0),
     mute: bool = false,
 };
 

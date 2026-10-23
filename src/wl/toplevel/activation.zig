@@ -77,7 +77,7 @@ pub const Service = struct {
         const a = self.activation orelse return false;
         if (token.len == 0) return false;
         const s = surface orelse return false;
-        var zbuf: [512:0]u8 = [_:0]u8{0} ** 512;
+        var zbuf: [512:0]u8 = @as([512:0]u8, @splat(0));
         if (token.len >= zbuf.len) return false;
         @memcpy(zbuf[0..token.len], token);
         act.xdg_activation_v1_activate(a, &zbuf, s);

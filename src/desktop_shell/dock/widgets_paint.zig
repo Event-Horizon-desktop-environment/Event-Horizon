@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const cairo = @import("../../wl/buffer/shm.zig").cairo;
+const repetition = @import("../../compat/repetition.zig");
 const text_layout = @import("../../text/layout.zig");
 const tokens = @import("../../m3/tokens.zig");
 const cairo_helpers = @import("../shared/cairo_helpers.zig");
@@ -673,7 +674,7 @@ test "widgets-paint: slots render onto a surface" {
     const cr = cairo.cairo_create(surf);
     defer cairo.cairo_destroy(cr);
 
-    const red = [_]u8{ 0, 0, 255, 255 } ** 64;
+    const red = repetition.repeatBytes(256, &.{ 0, 0, 255, 255 });
     // App slot with an icon, widget slot with text, with dots, and the
     // no-data fallback — all four paths in one pass.
     paintSlot(cr, 8, 8, 44, 44, 44, .{ .icon = .{ .pixels = &red, .w = 8, .h = 8 } });
@@ -703,7 +704,7 @@ test "widgets-paint: lift, press and indicators all draw" {
     const cr = cairo.cairo_create(surf);
     defer cairo.cairo_destroy(cr);
 
-    const red = [_]u8{ 0, 0, 255, 255 } ** 64;
+    const red = repetition.repeatBytes(256, &.{ 0, 0, 255, 255 });
     // Hovered, running, focused: pill + accent wash + lifted icon + blue dot.
     paintSlot(cr, 8, 30, 44, 44, 44, .{
         .pill = true,
@@ -729,7 +730,7 @@ test "widgets-paint: lift, press and indicators all draw" {
 test "widgets-paint: only full-bleed art is framed" {
     const t = std.testing;
     // 16x16 of solid opacity: every corner probe is opaque.
-    var px = [_]u8{ 0, 0, 255, 255 } ** 256;
+    var px = repetition.repeatBytes(1024, &.{ 0, 0, 255, 255 });
     try t.expect(cornersOpaque(.{ .pixels = &px, .w = 16, .h = 16 }));
 
     // Clear the eight probe pixels — the shape of art that carries its own
@@ -756,12 +757,12 @@ test "widgets-paint: a framed icon paints on a surface" {
     defer cairo.cairo_destroy(cr);
 
     // Full-bleed square art: rounded by the frame, rimmed and shadowed.
-    const square = [_]u8{ 0, 0, 255, 255 } ** 64;
+    const square = repetition.repeatBytes(256, &.{ 0, 0, 255, 255 });
     paintSlot(cr, 8, 30, 44, 44, 44, .{ .icon = .{ .pixels = &square, .w = 8, .h = 8 }, .frame = true });
     // The frame flag off keeps the plain blit.
     paintSlot(cr, 70, 30, 44, 44, 44, .{ .icon = .{ .pixels = &square, .w = 8, .h = 8 } });
     // Raster too small for the corner probes: the frame is a no-op.
-    const tiny = [_]u8{ 0, 0, 255, 255 } ** 16;
+    const tiny = repetition.repeatBytes(64, &.{ 0, 0, 255, 255 });
     paintSlot(cr, 132, 30, 44, 44, 44, .{ .icon = .{ .pixels = &tiny, .w = 4, .h = 4 }, .frame = true });
     try t.expect(cairo.cairo_status(cr) == cairo.CAIRO_STATUS_SUCCESS);
 }

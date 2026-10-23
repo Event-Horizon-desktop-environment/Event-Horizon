@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const cairo = @import("../../wl/buffer/shm.zig").cairo;
+const repetition = @import("../../compat/repetition.zig");
 const tokens = @import("../../m3/tokens.zig");
 const cairo_helpers = @import("../shared/cairo_helpers.zig");
 const pill_style = @import("../widgets/shared/pill.zig");
@@ -208,7 +209,7 @@ pub fn paintWindowBadge(cr: ?*cairo.cairo_t, x: f64, y: f64, w: f64, ui: f64, co
     if (count <= 1) return;
     const c = cr orelse return;
     var buf: [24]u8 = undefined;
-    const num = std.fmt.bufPrintZ(&buf, "{d}", .{count}) catch return;
+    const num = std.fmt.bufPrintSentinel(&buf, "{d}", .{count}, 0) catch return;
     const br = @max(8.0, 8.5 * ui);
     const bcx = x + w - 3.0 * ui;
     const bcy = y + 3.0 * ui;
@@ -298,7 +299,7 @@ test "taskbar-paint: hot-track finds the dominant color" {
     const c = hotTrack(&px, 2, 2, 8).?;
     try t.expect(c.r > c.b and c.r > c.g);
     // All gray → disqualified.
-    const gray = [_]u8{ 130, 130, 130, 255, 130, 130, 130, 255 } ++ [_]u8{0} ** 0;
+    const gray = [_]u8{ 130, 130, 130, 255, 130, 130, 130, 255 } ++ @as([0]u8, @splat(0));
     try t.expect(hotTrack(&gray, 2, 1, 8) == null);
 }
 
@@ -619,7 +620,7 @@ test "taskbar-paint: thumbs + menu + tooltip render" {
     defer cairo.cairo_surface_destroy(surf);
     const cr = cairo.cairo_create(surf);
     defer cairo.cairo_destroy(cr);
-    const red = [_]u8{ 0, 0, 228, 255 } ** 64;
+    const red = repetition.repeatBytes(256, &.{ 0, 0, 228, 255 });
     const items = [_]ThumbItem{
         .{ .title = "Firefox", .icon = .{ .pixels = &red, .w = 8, .h = 8 }, .active = true },
         .{ .title = "Terminal", .icon = .{ .pixels = &red, .w = 8, .h = 8 } },

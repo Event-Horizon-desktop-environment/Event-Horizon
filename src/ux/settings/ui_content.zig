@@ -248,7 +248,7 @@ pub const Content = struct {
     settings: *app_mod.Settings,
     active_tab: i32 = 0,
     /// Active child tab per sidebar tab (sub-tab bars keep their own state).
-    sub_for: [80]i32 = .{0} ** 80,
+    sub_for: [80]i32 = @splat(0),
     scroll_px: i32 = 0,
     content_x: i32 = 292,
     content_w: i32 = 592,
@@ -294,7 +294,7 @@ pub const Content = struct {
     /// Live output names for the Desktop Widgets display dropdown. The
     /// window fills these from its bound Wayland outputs (the same source
     /// the C++ `sync_dropdown` reads) — see `Win.syncDesktopOutputs`.
-    dwt_outputs: [16][]const u8 = [_][]const u8{""} ** 16,
+    dwt_outputs: [16][]const u8 = @as([16][]const u8, @splat("")),
     dwt_outputs_len: usize = 0,
     /// The monitors page rebuilt into these buffers each relayout (the card
     /// lists everywhere else are compile-time constants, so the one data-

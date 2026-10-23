@@ -480,7 +480,7 @@ pub const LabelKind = enum { none, count, battery };
 pub const SlotLabel = struct {
     kind: LabelKind = .none,
     /// `NN%` or `N device(s)`; empty when `kind` is `none`.
-    text: [32]u8 = [_]u8{0} ** 32,
+    text: [32]u8 = @as([32]u8, @splat(0)),
     len: usize = 0,
     pct: i32 = 0,
 
@@ -551,7 +551,7 @@ pub fn widgetListContainsBluetooth(sc: *const schema.ShellConfig, list: []const 
 // Text measuring + cache
 
 const TextSizes = struct {
-    text: [40]u8 = [_]u8{0} ** 40,
+    text: [40]u8 = @as([40]u8, @splat(0)),
     text_len: usize = 0,
     w: i32 = 0,
     h: i32 = 0,
@@ -984,7 +984,7 @@ fn setToyFont(cr: ?*cairo.cairo_t, size: f64, bold: bool) void {
 }
 
 fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     cairo.cairo_move_to(cr, x, y);
@@ -992,7 +992,7 @@ fn showText(cr: ?*cairo.cairo_t, s: []const u8, x: f64, y: f64) void {
 }
 
 fn textExtents(cr: ?*cairo.cairo_t, s: []const u8) cairo.cairo_text_extents_t {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     const n = @min(s.len, 1023);
     @memcpy(zbuf[0..n], s[0..n]);
     var te: cairo.cairo_text_extents_t = undefined;

@@ -88,7 +88,7 @@ pub const Service = struct {
             self.alloc.free(self.socket_path);
             self.socket_path = &[_]u8{};
         }
-        const zpath = try self.alloc.dupeZ(u8, path);
+        const zpath = try self.alloc.dupeSentinel(u8, path, 0);
         defer self.alloc.free(zpath);
         _ = linux.unlink(zpath);
 
@@ -115,7 +115,7 @@ pub const Service = struct {
             self.listen_fd = -1;
         }
         if (self.socket_path.len > 0) {
-            const zpath = self.alloc.dupeZ(u8, self.socket_path) catch null;
+            const zpath = self.alloc.dupeSentinel(u8, self.socket_path, 0) catch null;
             if (zpath) |z| {
                 defer self.alloc.free(z);
                 _ = linux.unlink(z);

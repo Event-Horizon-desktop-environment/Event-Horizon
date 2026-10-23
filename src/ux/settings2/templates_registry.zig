@@ -571,7 +571,7 @@ fn fxMtime(ctx: ?*anyopaque, path: []const u8) i64 {
 
 test "registry: 37 templates, unique slots, groups in range" {
     const t = std.testing;
-    var seen = [_]bool{false} ** 37;
+    var seen = @as([37]bool, @splat(false));
     for (templates) |tpl| {
         try t.expect(tpl.slot < 37);
         try t.expect(!seen[tpl.slot]);
@@ -605,7 +605,7 @@ test "registry: roster order and groups match the old tile order" {
     // The first group is the compositors, as the mockup roster starts.
     for (templates[0..3]) |tpl| try t.expectEqual(@as(u8, 0), tpl.group);
     // Every group holds at least one template.
-    var counts = [_]usize{0} ** group_count;
+    var counts = @as([group_count]usize, @splat(0));
     for (templates) |tpl| counts[tpl.group] += 1;
     for (counts) |c| try t.expect(c > 0);
 }

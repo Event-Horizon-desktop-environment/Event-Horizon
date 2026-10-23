@@ -223,10 +223,10 @@ test "region-select: drag frames cost memcpys, not blends (no compounding, no gh
     const w: i32 = 8;
     const h: i32 = 8;
     const pal = Palette{};
-    const back = [_]u32{0xff808080} ** 64; // flat mid-grey frozen frame
+    const back = @as([64]u32, @splat(0xff808080)); // flat mid-grey frozen frame
     var dimmed = back;
     renderOverlay(&dimmed, w, h, null, pal); // the one-time pre-dim
-    var frame = [_]u32{0} ** 64;
+    var frame = @as([64]u32, @splat(0));
     const box1 = Box{ .x1 = 1, .y1 = 1, .x2 = 3, .y2 = 3 };
     const box2 = Box{ .x1 = 4, .y1 = 4, .x2 = 6, .y2 = 6 };
     // Two consecutive frames, as the drag loop paints them.
@@ -328,7 +328,7 @@ test "region-select: damage-scoped slots match full repaints; damage covers ever
     const w: i32 = 16;
     const h: i32 = 12;
     const pal = Palette{};
-    const back = [_]u32{0xff808080} ** 192; // flat mid-grey frozen frame
+    const back = @as([192]u32, @splat(0xff808080)); // flat mid-grey frozen frame
     var dimmed = back;
     renderOverlay(&dimmed, w, h, null, pal); // the one-time pre-dim
 
@@ -573,7 +573,7 @@ const Overlay = struct {
         var o = Overlay{};
         errdefer o.deinit();
         const size: usize = @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * 4;
-        var tag: [16:0]u8 = [_:0]u8{0} ** 16;
+        var tag: [16:0]u8 = @as([16:0]u8, @splat(0));
         @memcpy(tag[0..6], "wl-shm");
         const fd_rc = std.os.linux.memfd_create(&tag, std.os.linux.MFD.CLOEXEC);
         if (std.os.linux.errno(fd_rc) != .SUCCESS) return error.NoShm;
@@ -1329,7 +1329,7 @@ test "bootstrap-region-select: overlay paints dim, border, and a transparent hol
     // Transparent white: distinguishable from both paint colors, and its
     // zero alpha keeps the dim's arithmetic exact wherever it is applied.
     const untouched: u32 = 0x00ffffff;
-    var px = [_]u32{0} ** (8 * 4);
+    var px = @as([(8 * 4)]u32, @splat(0));
     renderOverlay(&px, 8, 4, null, .{});
     // Cleared buffer plus a straight-alpha dim reads back as the dim itself.
     for (px) |p| try t.expectEqual(@as(u32, 0x44000000), p);

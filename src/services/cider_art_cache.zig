@@ -28,10 +28,10 @@ pub const Result = struct {
 const queue_cap = 64;
 
 var mu: std.atomic.Mutex = .unlocked;
-var pending: [queue_cap]?[]u8 = [_]?[]u8{null} ** queue_cap;
+var pending: [queue_cap]?[]u8 = @as([queue_cap]?[]u8, @splat(null));
 var pending_head: usize = 0;
 var pending_len: usize = 0;
-var ready: [queue_cap]Result = [_]Result{.{}} ** queue_cap;
+var ready: [queue_cap]Result = @as([queue_cap]Result, @splat(.{}));
 var ready_head: usize = 0;
 var ready_len: usize = 0;
 // The URL the worker is loading right now. Without this, `queued` only saw

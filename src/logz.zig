@@ -65,7 +65,7 @@ pub fn init(io: std.Io, home: ?[]const u8, tag: []const u8) void {
         }
     } else |_| {}
 
-    var z: [1060:0]u8 = [_:0]u8{0} ** 1060;
+    var z: [1060:0]u8 = @as([1060:0]u8, @splat(0));
     if (path.len + 1 > z.len) return;
     @memcpy(z[0..path.len], path);
     const rc = linux.open(&z, .{

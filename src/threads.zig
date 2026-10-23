@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const c = @cImport(@cInclude("pthread.h"));
+const c = @import("c_pthread");
 
 pub const TaskFn = *const fn (ctx: *anyopaque) void;
 

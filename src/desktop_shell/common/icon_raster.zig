@@ -71,7 +71,7 @@ pub fn freePixels(alloc: std.mem.Allocator, p: *Pixels) void {
 }
 
 pub fn loadSvg(alloc: std.mem.Allocator, path: []const u8, size: i32) ?Pixels {
-    var zbuf: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var zbuf: [1024:0]u8 = @as([1024:0]u8, @splat(0));
     if (path.len >= zbuf.len) return null;
     @memcpy(zbuf[0..path.len], path);
     const handle = rsvg_handle_new_from_file(&zbuf, null) orelse return null;

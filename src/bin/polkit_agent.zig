@@ -100,8 +100,8 @@ fn strOf(v: wire.Value) ?[]const u8 {
 /// Error details captured from a bus error reply (fixed buffers: the reply's
 /// arena dies before the caller logs).
 const CallError = struct {
-    name_buf: [96]u8 = [_]u8{0} ** 96,
-    text_buf: [192]u8 = [_]u8{0} ** 192,
+    name_buf: [96]u8 = @as([96]u8, @splat(0)),
+    text_buf: [192]u8 = @as([192]u8, @splat(0)),
     name_len: usize = 0,
     text_len: usize = 0,
 

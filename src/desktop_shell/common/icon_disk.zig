@@ -42,7 +42,7 @@ pub const Disk = struct {
     }
 
     fn cacheDir(gpa: std.mem.Allocator) ![]u8 {
-        const c = @cImport(@cInclude("stdlib.h"));
+        const c = @import("c_stdlib");
         const home = if (c.getenv("XDG_CACHE_HOME")) |p| std.mem.span(p) else null;
         const base = home orelse blk: {
             const h = if (c.getenv("HOME")) |p| std.mem.span(p) else return error.NoHome;

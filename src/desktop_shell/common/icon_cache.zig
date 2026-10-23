@@ -532,7 +532,7 @@ pub const IconCache = struct {
     }
 
     fn cacheBudget() usize {
-        const c = @cImport(@cInclude("stdlib.h"));
+        const c = @import("c_stdlib");
         if (c.getenv("EH_ICON_CACHE_MB")) |p| {
             const s = std.mem.span(p);
             if (std.fmt.parseInt(usize, s, 10)) |mb| {
@@ -1127,7 +1127,7 @@ fn buildDirsAndScan(c: *IconCache, theme: []const u8) !void {
 /// `~/.cache/Event-Horizon/icon-index/<hash>.ehidx`, keyed by the theme and
 /// the XDG search path (so a changed environment never reads a stale index).
 fn indexCachePath(gpa: std.mem.Allocator, io: std.Io, theme: []const u8) ?[]u8 {
-    const c = @cImport(@cInclude("stdlib.h"));
+    const c = @import("c_stdlib");
     const xdg = if (c.getenv("XDG_CACHE_HOME")) |p| std.mem.span(p) else null;
     const base_owned: ?[]u8 = if (xdg == null) blk: {
         const h = if (c.getenv("HOME")) |p| std.mem.span(p) else return null;
@@ -1737,7 +1737,7 @@ fn nowNs() u64 {
 }
 
 fn getenv(key: [:0]const u8) ?[]const u8 {
-    const c = @cImport(@cInclude("stdlib.h"));
+    const c = @import("c_stdlib");
     const p = c.getenv(key) orelse return null;
     const s = std.mem.span(p);
     return if (s.len == 0) null else s;

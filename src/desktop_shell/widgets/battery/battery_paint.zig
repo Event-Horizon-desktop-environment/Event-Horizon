@@ -30,7 +30,7 @@
 //! `State.timeRemaining()`.
 
 const std = @import("std");
-const stdlib = @cImport(@cInclude("stdlib.h"));
+const stdlib = @import("c_stdlib");
 
 const cairo = @import("../../../wl/buffer/shm.zig").cairo;
 const text = @import("../../../text/layout.zig");
@@ -270,9 +270,9 @@ const Measured = struct {
 /// Text/glyph measurement cache entry, keyed by widget instance id. The other half
 /// (`layout` + `lastFontPx`) is `text.LayoutCache`, which owns it.
 const Sizes = struct {
-    text: [24]u8 = [_]u8{0} ** 24,
+    text: [24]u8 = @as([24]u8, @splat(0)),
     text_len: usize = 0,
-    glyph: [32]u8 = [_]u8{0} ** 32,
+    glyph: [32]u8 = @as([32]u8, @splat(0)),
     glyph_len: usize = 0,
     tw: i32 = 0,
     th: i32 = 0,

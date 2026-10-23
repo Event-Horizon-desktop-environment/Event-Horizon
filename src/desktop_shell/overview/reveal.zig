@@ -12,7 +12,7 @@ pub const State = enum { idle, revealed, syncing, restoring };
 
 /// An address copied out of the snapshot: valid past any refresh.
 pub const Target = struct {
-    buf: [32]u8 = [_]u8{0} ** 32,
+    buf: [32]u8 = @as([32]u8, @splat(0)),
     len: usize = 0,
 
     pub fn slice(self: *const Target) []const u8 {
@@ -108,7 +108,7 @@ const Fake = struct {
     target: ?Target = null,
     orig: ?Target = null,
     frames: bool = false,
-    focused_to: [8][]const u8 = [_][]const u8{undefined} ** 8,
+    focused_to: [8][]const u8 = @as([8][]const u8, @splat(undefined)),
     n_focus: usize = 0,
     resyncs: u32 = 0,
 

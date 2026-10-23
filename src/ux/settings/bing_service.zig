@@ -22,7 +22,7 @@
 
 const std = @import("std");
 const linux = std.os.linux;
-const c = @cImport(@cInclude("pthread.h"));
+const c = @import("c_pthread");
 const bing = @import("../../services/bing.zig");
 const archive = @import("../../services/bing_archive.zig");
 

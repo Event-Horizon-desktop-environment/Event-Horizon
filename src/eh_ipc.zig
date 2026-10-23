@@ -2,7 +2,7 @@ const std = @import("std");
 const ipc_client = @import("ipc_client.zig");
 const logz = @import("logz.zig");
 
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @import("c_stdlib");
 
 fn envDup(alloc: std.mem.Allocator, key: [:0]const u8) ?[]u8 {
     const p = c.getenv(key);

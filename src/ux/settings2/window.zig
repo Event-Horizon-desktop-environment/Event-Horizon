@@ -95,7 +95,7 @@ const qarma_cmd = "qarma --file-selection --directory --title=\"Wallpaper folder
 
 /// True when `path` exists and is executable by us (`access(X_OK)`).
 fn isExecutable(path: []const u8) bool {
-    const z = std.heap.page_allocator.dupeZ(u8, path) catch return false;
+    const z = std.heap.page_allocator.dupeSentinel(u8, path, 0) catch return false;
     defer std.heap.page_allocator.free(z);
     return linux.access(z, linux.X_OK) == 0;
 }

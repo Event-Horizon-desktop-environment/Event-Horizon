@@ -12,7 +12,7 @@ pub const weekday = math.weekday;
 
 /// Six rows of seven dates, `0` where the previous or next month shows.
 pub fn monthGrid(alloc: std.mem.Allocator, y: i32, m: u8) ![42]i8 {
-    var grid: [42]i8 = [_]i8{0} ** 42;
+    var grid: [42]i8 = @as([42]i8, @splat(0));
     const dim = daysInMonth(y, m);
     const first = weekday(y, m, 1);
     var d: u8 = 1;

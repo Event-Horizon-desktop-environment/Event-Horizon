@@ -1255,7 +1255,7 @@ pub const Page = struct {
 
     fn userExists(name: []const u8) bool {
         if (name.len == 0 or name.len > max_username) return false;
-        var zbuf: [max_username + 1]u8 = .{0} ** (max_username + 1);
+        var zbuf: [max_username + 1]u8 = @splat(0);
         @memcpy(zbuf[0..name.len], name);
         const z: [*:0]const u8 = @ptrCast(&zbuf);
         return std.c.getpwnam(z) != null;

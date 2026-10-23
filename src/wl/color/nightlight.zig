@@ -210,7 +210,7 @@ pub const GammaService = struct {
         if (!self.enabled or self.display_temperature < 0) return;
         if (og.control == null or og.gamma_size == 0 or !og.ready) return;
         const table_bytes: usize = 3 * og.gamma_size * @sizeOf(u16);
-        var tag: [64:0]u8 = [_:0]u8{0} ** 64;
+        var tag: [64:0]u8 = @as([64:0]u8, @splat(0));
         @memcpy(tag[0..5], "gamma");
         const fd_rc = linux.memfd_create(&tag, linux.MFD.CLOEXEC);
         if (linux.errno(fd_rc) != .SUCCESS) return;

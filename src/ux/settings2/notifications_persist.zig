@@ -12,7 +12,7 @@ const prefs = @import("../../desktop_shell/pear/prefs.zig");
 const dbus_conn = @import("../../dbus/connection.zig");
 const wire = @import("../../dbus/wire.zig");
 
-const libc = @cImport(@cInclude("stdlib.h"));
+const libc = @import("c_stdlib");
 
 fn getenvOpt(name: [:0]const u8) ?[]const u8 {
     const p = libc.getenv(name) orelse return null;

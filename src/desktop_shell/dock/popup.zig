@@ -30,6 +30,7 @@
 //! arithmetic and the cards carry on as they were.
 
 const std = @import("std");
+const reflection = @import("../../compat/reflection.zig");
 const wl = @import("../../wl/c.zig").wl;
 const layer = @import("../../wl/surface/layer.zig");
 const shm_mod = @import("../../wl/buffer/shm.zig");
@@ -75,7 +76,7 @@ pub const Action = enum(i32) {
 /// A row id back to its `Action`. Ids outside the enum are the window band,
 /// the desktop-action band and `new_window`, none of which mean anything here.
 pub fn actionFromId(id: i32) ?Action {
-    inline for (@typeInfo(Action).@"enum".fields) |f| {
+    inline for (reflection.enumFields(Action)) |f| {
         if (id == @as(i32, @intCast(f.value))) return @enumFromInt(f.value);
     }
     return null;
@@ -1551,7 +1552,7 @@ test "popup: world clock margin keeps the widget standoff" {
 
 test "popup: row ids map back to the actions they came from" {
     const t = std.testing;
-    inline for (@typeInfo(Action).@"enum".fields) |f| {
+    inline for (reflection.enumFields(Action)) |f| {
         const got = actionFromId(f.value).?;
         try t.expectEqual(@as(i32, @intCast(f.value)), @intFromEnum(got));
     }

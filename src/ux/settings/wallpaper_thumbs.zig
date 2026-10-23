@@ -2,7 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const decode = @import("../../wallpaper/decode.zig");
 const disk = @import("wallpaper_thumb_disk.zig");
-const c = @cImport(@cInclude("pthread.h"));
+const c = @import("c_pthread");
 
 // Wallpaper gallery thumbnails — the Zig port of
 // `eh::wallpaper::WallpaperThumbnailService`. The settings window must never
@@ -169,7 +169,7 @@ pub const Service = struct {
         }
         self.unlock();
         if (self.wake_fd >= 0) {
-            var buf: [8]u8 = [_]u8{0} ** 8;
+            var buf: [8]u8 = @as([8]u8, @splat(0));
             _ = linux.read(self.wake_fd, &buf, buf.len);
         }
     }
@@ -376,7 +376,7 @@ fn storeFor(io: std.Io, path: []const u8, px: u32, w: i32, h: i32, rgba: []const
 /// A 2x2 24-bit BMP with a solid red bottom row — small enough to write out
 /// by hand and enough to prove the decode → downscale → premultiply path.
 fn writeTestBmp(alloc: std.mem.Allocator, path: []const u8) !void {
-    var b: [70]u8 = [_]u8{0} ** 70;
+    var b: [70]u8 = @as([70]u8, @splat(0));
     b[0] = 'B';
     b[1] = 'M';
     std.mem.writeInt(u32, b[2..6], 70, .little);

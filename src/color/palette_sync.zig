@@ -46,6 +46,7 @@
 //!     one half does work — native by default (`horizon_colors_native`).
 
 const std = @import("std");
+const reflection = @import("../compat/reflection.zig");
 const refresh = @import("refresh.zig");
 const apply_mod = @import("apply.zig");
 const hypr_border = @import("hyprland_border.zig");
@@ -239,7 +240,7 @@ fn fingerprint(cfg: *const schema.ShellConfig) u64 {
         @as(u8, @intFromBool(a.matugen_palette_ok)),
         @as(u8, @intFromBool(a.custom_theme_enabled)),
     });
-    inline for (std.meta.fields(schema3.MatugenToggles)) |f| {
+    inline for (reflection.structFields(schema3.MatugenToggles)) |f| {
         if (f.type == bool) {
             h.update(&[_]u8{@as(u8, @intFromBool(@field(a.matugen_outputs, f.name)))});
         }

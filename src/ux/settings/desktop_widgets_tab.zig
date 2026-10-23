@@ -819,7 +819,7 @@ fn caretOn() bool {
     return wcMillis() / 530 % 2 == 0;
 }
 
-var ellipsize_buf: [256]u8 = [_]u8{0} ** 256;
+var ellipsize_buf: [256]u8 = @as([256]u8, @splat(0));
 
 /// Ellipsize to `max_w` px at 12px/400, appending "..." like the C++.
 fn ellipsize(c: ?*cairo.cairo_t, tz: []const u8, max_w: f64) []const u8 {

@@ -142,7 +142,7 @@ pub const DatePicker = struct {
         );
         cairo.cairo_set_font_size(cr, 18);
         var buf: [32]u8 = undefined;
-        const title = std.fmt.bufPrintZ(&buf, "{d}/{d}", .{ self.month, self.year }) catch "";
+        const title = std.fmt.bufPrintSentinel(&buf, "{d}/{d}", .{ self.month, self.year }, 0) catch "";
         cairo.cairo_move_to(cr, self.x + pad, self.y + 28);
         if (title.len != 0) cairo.cairo_show_text(cr, title.ptr);
 
@@ -176,7 +176,7 @@ pub const DatePicker = struct {
 
             cairo.cairo_set_font_size(cr, 14);
             var dbuf: [8]u8 = undefined;
-            const dtext = std.fmt.bufPrintZ(&dbuf, "{d}", .{d}) catch continue;
+            const dtext = std.fmt.bufPrintSentinel(&dbuf, "{d}", .{d}, 0) catch continue;
             // Hard-coded nudge of -5/+5 (half-glyph estimate).
             cairo.cairo_move_to(cr, dx + cell_w * 0.5 - 5, dy + cell_h * 0.5 + 5);
             cairo.cairo_show_text(cr, dtext.ptr);

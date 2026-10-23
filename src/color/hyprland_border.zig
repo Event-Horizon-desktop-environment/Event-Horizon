@@ -542,7 +542,7 @@ test "hyprland-border: non-lua provider pushes colon then slash for every key" {
         }
     };
 
-    var log_buf: [4096]u8 = .{0} ** 4096;
+    var log_buf: [4096]u8 = @splat(0);
     var log_len: usize = 0;
     var thread = try std.Thread.spawn(.{}, Serve.run, .{Serve{
         .lfd = lfd,

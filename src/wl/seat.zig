@@ -1,14 +1,14 @@
 const std = @import("std");
 const wl = @import("connection.zig").wl;
 
-pub const xkb = @cImport(@cInclude("xkbcommon/xkbcommon.h"));
+pub const xkb = @import("c_xkbcommon");
 
 pub const KeyEvent = struct {
     keycode: u32 = 0,
     state: u32 = 0,
     sym: u32 = xkb.XKB_KEY_NoSymbol,
     utf8_len: usize = 0,
-    utf8: [128]u8 = [_]u8{0} ** 128,
+    utf8: [128]u8 = @as([128]u8, @splat(0)),
     /// Effective modifiers at the keystroke. The shell dispatches very few
     /// chorded bindings; these three are all the launcher's rail needs to
     /// tell a shortcut from a printable character.
