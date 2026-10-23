@@ -565,11 +565,25 @@ const Ov = struct {
         }
     }
 
+    /// Unmap the layer surface and push that request out before any teardown.
+    /// Closing by simply stopping the loop leaves the compositor holding the
+    /// last frame until the connection drops, so the overlay lingers.
+    fn releaseSurface(self: *Self) void {
+        self.dropFocusGrab();
+        self.host.reset();
+        _ = self.conn.flush();
+    }
+
+    fn quit(self: *Self) void {
+        self.releaseSurface();
+        loop_mod.Loop.requestStop();
+    }
+
     fn runAction(self: *Self, a: ov_host.Action) void {
         switch (a) {
             .none => {},
             .refresh => self.refresh(),
-            .dismiss => loop_mod.Loop.requestStop(),
+            .dismiss => self.quit(),
             .focus => |flat| {
                 if (self.host.flatLoc(flat)) |loc| {
                     const win = self.host.cards[loc[0]].wins[loc[1]];
@@ -578,13 +592,13 @@ const Ov = struct {
                         const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{window = \"address:{s}\"}})", .{win.addr}) catch null;
                         if (cmd) |cc| {
                             if (self.hyprSend(cc)) {
-                                loop_mod.Loop.requestStop();
+                                self.quit();
                                 return;
                             }
                         }
                     }
                 }
-                loop_mod.Loop.requestStop();
+                self.quit();
             },
             .close_win => |flat| {
                 if (self.host.flatLoc(flat)) |loc| {
@@ -607,13 +621,13 @@ const Ov = struct {
             },
             .select_ws => |id| {
                 self.wsJump(id);
-                loop_mod.Loop.requestStop();
+                self.quit();
             },
             .add_ws => {
                 var top: i32 = 0;
                 for (self.host.cards) |card| top = @max(top, card.id);
                 self.wsJump(top + 1);
-                loop_mod.Loop.requestStop();
+                self.quit();
             },
             .apps => {
                 self.host.toggleApps(self.theme);
@@ -626,7 +640,7 @@ const Ov = struct {
                         logz.err("overview: could not start '{s}'", .{e.name});
                     }
                 }
-                loop_mod.Loop.requestStop();
+                self.quit();
             },
             .launch_modal => |cat_idx| {
                 if (self.host.apps.catalogEntry(cat_idx)) |e| {
@@ -635,7 +649,7 @@ const Ov = struct {
                         logz.err("overview: could not start '{s}'", .{e.name});
                     }
                 }
-                loop_mod.Loop.requestStop();
+                self.quit();
             },
             .move_win => |m| {
                 const addr = self.winAddr(m.flat) orelse {
@@ -877,6 +891,11 @@ const Ov = struct {
         if (self.host.snap_at_ms != 0 and nowMs() >= self.host.snap_at_ms) {
             self.host.snap_at_ms = 0;
             if (self.host.snapTargets()) paint = true;
+        } else if (self.host.snap_at_ms != 0) {
+            // The glide can settle before the finger's settle delay expires.
+            // Keep one frame in flight so the snap still runs on time instead
+            // of waiting for the next unrelated event.
+            paint = true;
         }
         // Compositor events, debounced: a window or workspace change
         // re-snapshots through the pulse instead of polling.
@@ -960,6 +979,15 @@ const Ov = struct {
         return xkb.xkb_state_mod_name_is_active(st, xkb.XKB_MOD_NAME_CTRL, xkb.XKB_STATE_MODS_EFFECTIVE) == 1;
     }
 
+    /// Input only retargets the glide; an outstanding frame callback paints
+    /// the latest position at the compositor's cadence. Repainting here as
+    /// well would queue extra commits within one display interval and make a
+    /// burst of wheel/touchpad events visibly stutter.
+    fn scrollRefresh(self: *Self) void {
+        if (self.host.frame_cb != null) return;
+        self.refresh();
+    }
+
     fn onAxis(ctx: *anyopaque, axis: u32, delta: f64, steps: i32) void {
         _ = axis;
         const self: *Self = @ptrCast(@alignCast(ctx));
@@ -971,12 +999,12 @@ const Ov = struct {
             // Trackpad glide: 1:1 motion onto the target, snap on lift.
             // Over the rail the fingers scroll the rail instead.
             if (over_rail) {
-                if (self.host.panRail(delta)) self.refresh();
+                if (self.host.panRail(delta)) self.scrollRefresh();
                 return;
             }
             if (self.host.panFinger(delta)) {
                 self.syncCapture();
-                self.refresh();
+                self.scrollRefresh();
             }
             return;
         }
@@ -984,7 +1012,7 @@ const Ov = struct {
         // one card no matter what raw axis unit the compositor uses.
         if (over_rail) {
             const moved = if (steps != 0) self.host.wheelRailSteps(steps) else self.host.wheelRail(delta);
-            if (moved) self.refresh();
+            if (moved) self.scrollRefresh();
             return;
         }
         const moved = if (steps != 0) self.host.wheelSteps(steps) else self.host.wheel(delta);
@@ -992,7 +1020,7 @@ const Ov = struct {
             // Live mode streams the on-screen cards, so a scroll that
             // brings new ones into view asks the stream for them.
             self.syncCapture();
-            self.refresh();
+            self.scrollRefresh();
         }
     }
 
@@ -1000,7 +1028,7 @@ const Ov = struct {
         const self: *Self = @ptrCast(@alignCast(ctx));
         if (!self.onSurface()) return;
         if (axis != wl.WL_POINTER_AXIS_VERTICAL_SCROLL) return;
-        if (self.host.axisStop(nowMs())) self.refresh();
+        if (self.host.axisStop(nowMs())) self.scrollRefresh();
     }
 
     fn onKey(ctx: *anyopaque, ev: *const seat_mod.KeyEvent) void {
@@ -1025,8 +1053,7 @@ const Ov = struct {
     fn noteClosed(ctx: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         logz.log("overview: closed by the compositor", .{});
-        self.dropFocusGrab();
-        self.host.reset();
+        self.releaseSurface();
         loop_mod.Loop.requestStop();
     }
 };
@@ -1338,5 +1365,8 @@ pub fn main(init: std.process.Init) !u8 {
 
     loop_mod.Loop.installSignalHandlers();
     loop.run();
+    // A signal (dock toggle, IPC close) stops the loop without going through
+    // `runAction`; unmap here too so teardown never delays the overlay's exit.
+    ov.releaseSurface();
     return 0;
 }
