@@ -232,6 +232,9 @@ pub const Settings = struct {
     nightlight_schedule: i32 = 0,
     nightlight_start_min: i32 = 1200,
     nightlight_end_min: i32 = 360,
+    nightlight_use_location: bool = false,
+    nightlight_latitude: i32 = 0,
+    nightlight_longitude: i32 = 0,
 
     dock_scale: f64 = 1.0,
     dock_scale_pct: i32 = 100,

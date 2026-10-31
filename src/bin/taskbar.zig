@@ -369,7 +369,7 @@ const Taskbar = struct {
     cc_bt: ?cc_live_bluetooth.Queried = null,
     cc_media: ?cc_live_media.Queried = null,
     cc_snap_aps: [8]cc_data.WifiAp = @splat(.{}),
-    cc_snap_bt: [8]cc_data.BluetoothDevice = @splat(.{}),
+    cc_snap_bt: std.ArrayList(cc_data.BluetoothDevice) = .empty,
     cc_snap_outdev: [12]cc_data.OutputDevice = @splat(.{}),
     cc_snap_indev: [12]cc_data.InputDevice = @splat(.{}),
     cc_snap_outs: [8]cc_data.MixerStream = @splat(.{}),
@@ -565,6 +565,7 @@ const Taskbar = struct {
         self.pear_backlight.deinit(gpa);
         self.redeye_inhibit.deinit();
         self.freeCcLive();
+        self.cc_snap_bt.deinit(gpa);
         if (self.media_init) self.media.deinit();
         if (self.bt_devs.len > 0) gpa.free(self.bt_devs);
         self.freeVpnConns();
@@ -4969,21 +4970,19 @@ const Taskbar = struct {
         var paired_count: i32 = 0;
         if (self.cc_bt) |*q| {
             snap.bt = .{ .powered = q.snap.powered, .connected = false, .discovering = q.snap.discovering };
-            var n: usize = 0;
+            self.cc_snap_bt.clearRetainingCapacity();
             for (q.device_list.items) |d| {
                 if (d.paired) paired_count += 1;
                 if (d.connected) snap.bt.connected = true;
-                if (n >= self.cc_snap_bt.len) continue;
-                self.cc_snap_bt[n] = .{
+                self.cc_snap_bt.append(self.app.gpa, .{
                     .address = d.address,
                     .alias = d.name,
                     .paired = d.paired,
                     .connected = d.connected,
                     .battery_pct = d.battery_pct,
-                };
-                n += 1;
+                }) catch {};
             }
-            snap.bt_devs = self.cc_snap_bt[0..@min(n, self.cc_snap_bt.len)];
+            snap.bt_devs = self.cc_snap_bt.items;
             snap.bt.paired_count = paired_count;
         }
         if (self.cc_audio) |*q| {
@@ -5204,7 +5203,7 @@ const Taskbar = struct {
                 self.cc.state.net_anim_start_ms = now_ms;
                 self.cc.state.net_anim_from_expanded = !self.cc.state.network_expanded;
                 self.cc.state.net_anim_to_expanded = self.cc.state.network_expanded;
-                if (self.cc.state.network_expanded) cc_live_network.rescanThread(self.app.io);
+                if (self.cc.state.network_expanded) cc_live_network.rescanThread();
                 self.ccResize(now_ms);
                 self.ccRefresh();
             },
@@ -5671,7 +5670,7 @@ const Taskbar = struct {
             .dismiss => self.closePear(),
             .open_networks_overlay => {
                 self.pear.state.networks_overlay = true;
-                cc_live_network.rescanThread(self.app.io);
+                cc_live_network.rescanThread();
                 self.pearResize(now_ms);
                 logz.log("pear: networks overlay open", .{});
             },

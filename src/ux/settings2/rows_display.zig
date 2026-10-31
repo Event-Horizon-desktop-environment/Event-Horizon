@@ -81,7 +81,7 @@ pub const nightlight = [_]Card{
     .{
         .title = "Temperature",
         .rows = &[_]Row{
-            .{ .slider = .{ .label = "Day temperature", .desc = "Kelvin used during daylight hours.", .field = .nightlight_day_temp, .min = 2500, .max = 7500, .unit = "K" } },
+            .{ .slider = .{ .label = "Day temperature", .desc = "Kelvin used outside the night window (6500K is neutral).", .field = .nightlight_day_temp, .min = 2500, .max = 7500, .unit = "K" } },
             .{ .slider = .{ .label = "Night temperature", .field = .nightlight_night_temp, .min = 2500, .max = 7500, .unit = "K" } },
         },
     },
@@ -90,6 +90,14 @@ pub const nightlight = [_]Card{
         .rows = &[_]Row{
             .{ .slider = .{ .label = "Start", .desc = "Minutes after midnight.", .field = .nightlight_start_min, .min = 0, .max = 1439, .unit = "min" } },
             .{ .slider = .{ .label = "End", .field = .nightlight_end_min, .min = 0, .max = 1439, .unit = "min" } },
+        },
+    },
+    .{
+        .title = "Sun position",
+        .rows = &[_]Row{
+            .{ .toggle = .{ .label = "Follow the sun", .desc = "Sunset-to-sunrise scheduling computes the window at this location; off falls back to the scheduled window.", .field = .nightlight_use_location } },
+            .{ .slider = .{ .label = "Latitude", .desc = "Degrees north (negative for south).", .field = .nightlight_latitude, .min = -90, .max = 90, .unit = "°" } },
+            .{ .slider = .{ .label = "Longitude", .desc = "Degrees east (negative for west).", .field = .nightlight_longitude, .min = -180, .max = 180, .unit = "°" } },
         },
     },
 };

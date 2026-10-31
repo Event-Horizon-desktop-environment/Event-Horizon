@@ -982,6 +982,22 @@ pub const State = struct {
         return self.capsFor(self.outputs[i].name.slice());
     }
 
+    /// Copy the detected/config'd output names into `out`, returning the
+    /// count. Used as the fallback source for the Display dropdowns when the
+    /// Wayland output globals are unavailable.
+    pub fn copyOutputNames(self: *const State, out: [][]const u8) usize {
+        var n: usize = 0;
+        for (self.outputs[0..self.outputs_len]) |*m| {
+            if (n >= out.len) break;
+            if (m.disabled) continue;
+            const name = m.name.slice();
+            if (name.len == 0) continue;
+            out[n] = name;
+            n += 1;
+        }
+        return n;
+    }
+
     /// Insert (or replace) one output's capability table.
     pub fn pushCap(self: *State, name: []const u8, oc: OutputCaps) void {
         if (self.caps_len >= max_outputs) return;

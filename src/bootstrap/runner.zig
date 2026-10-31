@@ -14,6 +14,7 @@ const watch_mod = @import("../config/watch.zig");
 const wl_conn = @import("../wl/connection.zig");
 const wl_pump = @import("../wl/pump.zig");
 const nightlight = @import("../wl/color/nightlight.zig");
+const schedule_mod = @import("../wl/color/schedule.zig");
 const gkbd = @import("../services/global_keyboard.zig");
 const ov_launch = @import("../desktop_shell/overview/launch.zig");
 const builtin = @import("builtin");
@@ -64,6 +65,14 @@ const Shell = struct {
     night: NightHost,
 };
 
+/// Wall-clock seconds, for the schedule evaluator (transitions elsewhere
+/// use the monotonic `nowMs`).
+fn realNowSec() i64 {
+    var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+    if (linux.clock_gettime(.REALTIME, &ts) != 0) return 0;
+    return @intCast(@max(ts.sec, 0));
+}
+
 /// The supervisor's night-light seat: the one `zwlr_gamma_control_v1` client
 /// of the session, on its own Wayland connection — the shape the C++ session
 /// kept (`gamma_conn_` + one `GammaService`). The bars and the settings child
@@ -75,6 +84,8 @@ const NightHost = struct {
     gamma: nightlight.GammaService,
     /// The display connection came up, so `deinit` owes it a teardown.
     connected: bool = false,
+    /// Last schedule decision, so the debug log only prints flips.
+    last_want_on: bool = false,
 
     fn init(gpa: std.mem.Allocator) NightHost {
         var host = NightHost{
@@ -106,14 +117,27 @@ const NightHost = struct {
         self.gamma.deinit();
     }
 
-    /// Push the stored `[nightlight]` settings onto the display — the C++
-    /// `apply_nightlight_config`: enable/disable only on an actual state
-    /// change (an unrelated config write must not restart the warm-up), and
-    /// the night temperature whenever it is on.
+    /// Push the `[nightlight]` decision onto the display — the C++
+    /// `apply_nightlight_config`, schedule-aware. `evaluate` folds the
+    /// master toggle and the schedule (manual window / sun position) into
+    /// one display temperature, or `null` when the gamma client should
+    /// hand back to the compositor. Enable/disable flips only on an actual
+    /// state change (an unrelated config write must not restart the
+    /// warm-up), and `setTemperature` early-returns while the target has
+    /// not moved, so the 8 s backstop never restarts the ramp.
     fn apply(self: *NightHost, nl: schema2.NightLightSettings, now_ms: i64) void {
         if (!self.connected) return;
-        if (self.gamma.enabled != nl.enabled) self.gamma.setEnabled(nl.enabled, now_ms);
-        if (nl.enabled) self.gamma.setTemperature(nl.night_temperature, true, now_ms);
+        const want = schedule_mod.evaluate(nl, schedule_mod.localNow(realNowSec()));
+        const want_on = want != null;
+        if (want_on != self.last_want_on) {
+            logz.log("nightlight: want flip on={} k={?d} (enabled={} night={d} day={d} mode={d})", .{ want_on, want, nl.enabled, nl.night_temperature, nl.day_temperature, nl.schedule_mode });
+            self.last_want_on = want_on;
+        }
+        if (self.gamma.enabled != want_on) {
+            logz.log("nightlight: setEnabled {} -> {}", .{ self.gamma.enabled, want_on });
+            self.gamma.setEnabled(want_on, now_ms);
+        }
+        if (want) |k| self.gamma.setTemperature(k, true, now_ms);
         _ = self.conn.flush();
     }
 

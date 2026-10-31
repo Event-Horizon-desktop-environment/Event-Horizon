@@ -1,9 +1,10 @@
 //! Live network behind the control-center tiles + panel: read from
 //! NetworkManager over the system bus (state, devices, access points),
-//! write through `nmcli` (radio toggle, rescan, connect — the slow one runs
-//! in a thread so a 10 s association never stalls the Wayland loop).
+//! write through the system bus (`RequestScan`, radio toggle, connect — the
+//! slow one runs in a thread so a 10 s association never stalls the Wayland
+//! loop).
 //!
-//! Any failure (no NM, no bus, no nmcli) yields `null`/defaults and the dock
+//! Any failure (no NM, no bus) yields `null`/defaults and the dock
 //! keeps its cache.
 
 const std = @import("std");
@@ -62,6 +63,19 @@ fn getU32(conn: *conn_mod.Conn, alloc: std.mem.Allocator, path: []const u8, ifac
     const v = live.propGet(conn, arena.allocator(), nm_dest, path, iface, prop) catch return 0;
     const val = v orelse return 0;
     return live.asU32(val);
+}
+
+/// `LastScan` and friends (`x`/`t`); 0 when absent.
+fn getU64(conn: *conn_mod.Conn, alloc: std.mem.Allocator, path: []const u8, iface: []const u8, prop: []const u8) u64 {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const v = live.propGet(conn, arena.allocator(), nm_dest, path, iface, prop) catch return 0;
+    const val = v orelse return 0;
+    return switch (val) {
+        .int64 => |n| if (n > 0) @intCast(n) else 0,
+        .uint64 => |n| n,
+        else => 0,
+    };
 }
 
 fn getBool(conn: *conn_mod.Conn, alloc: std.mem.Allocator, path: []const u8, iface: []const u8, prop: []const u8) bool {
@@ -231,20 +245,128 @@ pub fn setWifiEnabled(io: std.Io, enabled: bool) bool {
     return res.term == .exited and res.term.exited == 0;
 }
 
-/// `nmcli device wifi rescan` in a thread (can block for seconds).
-pub fn rescanThread(io: std.Io) void {
-    const Args = struct {
-        io: std.Io,
-        fn run(self: @This()) void {
-            const res = std.process.run(std.heap.page_allocator, self.io, .{
-                .argv = &.{ "nmcli", "device", "wifi", "rescan" },
-            }) catch return;
-            std.heap.page_allocator.free(res.stdout);
-            std.heap.page_allocator.free(res.stderr);
+// Async scan — the C++ service's `request_scan` verb. `RequestScan({})` on
+// every Wi-Fi device, straight off the system bus (no `nmcli` spawn, so a
+// missing binary or a rate-limit can no longer be a silent no-op). Runs in
+// a detached thread and publishes the outcome in a single-slot mailbox the
+// Network settings page drains on its next frame.
+
+/// One published scan outcome. `err_len == 0` (with `ok`) means the request
+/// was accepted; a failed request carries the short user-facing text.
+/// `baseline` is the newest `LastScan` read at request time — a newer value
+/// in a later snapshot is what ends the UI's Scanning state.
+pub const ScanResult = struct {
+    ok: bool = false,
+    filled: bool = false,
+    baseline: u64 = 0,
+    err_len: usize = 0,
+    err: [96]u8 = undefined,
+};
+
+var scan_mu: std.atomic.Mutex = .unlocked;
+var scan_last: ScanResult = .{};
+
+fn scanLock() void {
+    var spins: u32 = 0;
+    while (!scan_mu.tryLock()) {
+        spins +%= 1;
+        if (spins < 64) {
+            std.atomic.spinLoopHint();
+        } else {
+            std.Thread.yield() catch {};
         }
-    };
-    const t = std.Thread.spawn(.{}, Args.run, .{Args{ .io = io }}) catch return;
+    }
+}
+
+fn noteScanErr(out: *ScanResult, comptime msg: []const u8) void {
+    out.ok = false;
+    out.err_len = @min(msg.len, out.err.len);
+    @memcpy(out.err[0..out.err_len], msg[0..out.err_len]);
+}
+
+fn scanRun() void {
+    const pa = std.heap.page_allocator;
+    var out = ScanResult{ .filled = true, .ok = true };
+    blk: {
+        var conn = live.openBus(pa, .system) orelse {
+            noteScanErr(&out, "NetworkManager is not reachable");
+            break :blk;
+        };
+        defer conn.deinit();
+        // Empty `a{sv}` options — the same call nmcli sends under the hood.
+        var empty_items: [0]wire.Value = .{};
+        const body = pa.alloc(wire.Value, 1) catch {
+            noteScanErr(&out, "the scan could not be started");
+            break :blk;
+        };
+        defer pa.free(body);
+        body[0] = .{ .array = .{ .elem = "{sv}", .items = &empty_items } };
+        const devs = getPaths(&conn, pa, nm_path, nm_iface, "GetDevices") orelse {
+            noteScanErr(&out, "NetworkManager devices are unreadable");
+            break :blk;
+        };
+        defer freePaths(pa, devs);
+        // Two passes, like the reference worker: record each Wi-Fi device's
+        // `LastScan` baseline, then fire `RequestScan`. A device whose
+        // `LastScan` later passes that baseline has finished its scan.
+        var wifi_paths: [8][]const u8 = undefined;
+        var wifi_n: usize = 0;
+        var saw_wifi = false;
+        for (devs) |d| {
+            if (d != .object_path) continue;
+            if (getU32(&conn, pa, d.object_path, dev_iface, "DeviceType") != NM_DEVICE_TYPE_WIFI) continue;
+            saw_wifi = true;
+            const ls = getU64(&conn, pa, d.object_path, wifi_iface, "LastScan");
+            if (ls > out.baseline) out.baseline = ls;
+            if (wifi_n < wifi_paths.len) {
+                wifi_paths[wifi_n] = d.object_path;
+                wifi_n += 1;
+            }
+        }
+        if (!saw_wifi) {
+            noteScanErr(&out, "No Wi-Fi device was found");
+            break :blk;
+        }
+        for (wifi_paths[0..wifi_n]) |path| {
+            var p = conn.call(.{
+                .mtype = .method_call,
+                .path = path,
+                .interface = wifi_iface,
+                .member = "RequestScan",
+                .destination = nm_dest,
+                .signature = "a{sv}",
+                .body = body,
+            }, 4000) catch {
+                noteScanErr(&out, "the scan request was not accepted (try again in a moment)");
+                break :blk;
+            };
+            p.deinit();
+        }
+    }
+    scanLock();
+    defer scan_mu.unlock();
+    scan_last = out;
+}
+
+/// Kick one scan request in a detached thread. Never blocks the caller.
+pub fn rescanThread() void {
+    const t = std.Thread.spawn(.{}, scanRun, .{}) catch return;
     t.detach();
+}
+
+/// Consume the newest scan outcome. Returns the copied length (0 on success);
+/// a `null` return means nothing has landed since the last drain. `baseline`
+/// receives the request-time `LastScan` the page clears its Scanning state on.
+pub fn takeScanResult(err_out: []u8, ok: *bool, baseline: *u64) ?usize {
+    scanLock();
+    defer scan_mu.unlock();
+    if (!scan_last.filled) return null;
+    scan_last.filled = false;
+    ok.* = scan_last.ok;
+    baseline.* = scan_last.baseline;
+    const n = @min(scan_last.err_len, err_out.len);
+    @memcpy(err_out[0..n], scan_last.err[0..n]);
+    return n;
 }
 
 pub const ConnectArgs = struct {
@@ -254,9 +376,10 @@ pub const ConnectArgs = struct {
 
     fn run(self: *ConnectArgs) void {
         const pa = std.heap.page_allocator;
+        // LIFO: free the fields while `self` is still readable, then the struct.
+        defer pa.destroy(self);
         defer pa.free(self.ssid);
         defer pa.free(self.password);
-        defer pa.destroy(self);
         var argv: [7][]const u8 = undefined;
         var n: usize = 0;
         argv[n] = "nmcli";
@@ -401,6 +524,10 @@ pub const SettingsSnapshot = struct {
     iface: []const u8 = "",
     ssid: []const u8 = "",
     signal_pct: i32 = -1,
+    /// Newest `LastScan` across Wi-Fi devices — the settings page clears its
+    /// Scanning state when this passes the request-time baseline, exactly
+    /// like the reference service.
+    wifi_last_scan: u64 = 0,
     aps: std.ArrayList(SettingsAp) = .empty,
     wired: WiredDetail = .{},
     saved_ssids: std.ArrayList([]const u8) = .empty,
@@ -602,6 +729,10 @@ pub fn settingsQuery(alloc: std.mem.Allocator) ?SettingsSnapshot {
         const dtype = getU32(&conn, alloc, path, dev_iface, "DeviceType");
         const dstate = getU32(&conn, alloc, path, dev_iface, "State");
         if (dtype == NM_DEVICE_TYPE_WIFI) {
+            // Newest completed scan across Wi-Fi devices (the Scanning state
+            // in the settings page ends when this passes the baseline).
+            const ls = getU64(&conn, alloc, path, wifi_iface, "LastScan");
+            if (ls > q.wifi_last_scan) q.wifi_last_scan = ls;
             const iface = getString(&conn, alloc, path, dev_iface, "Interface");
             const ap_path = getPath(&conn, alloc, path, wifi_iface, "ActiveAccessPoint");
             defer if (ap_path.len > 0) alloc.free(ap_path);
@@ -746,8 +877,9 @@ pub fn disconnectThread(io: std.Io, iface: []const u8) void {
         iface: []u8,
         fn run(self: *@This()) void {
             const pa = std.heap.page_allocator;
-            defer pa.free(self.iface);
+            // LIFO: free the field while `self` is still readable, then the struct.
             defer pa.destroy(self);
+            defer pa.free(self.iface);
             _ = runNmcli(self.io, &.{ "nmcli", "device", "disconnect", self.iface });
         }
         fn runNmcli(io_: std.Io, argv: []const []const u8) bool {

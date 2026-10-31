@@ -7,7 +7,7 @@ const Card = rows.Card;
 // card per concern, controls on the right, descriptions under labels.
 
 pub const toast_positions = [_][]const u8{ "top_right", "top_left", "bottom_right", "bottom_left", "top_center", "bottom_center" };
-pub const notif_output_options = [_][]const u8{ "auto", "all", "DP-1", "DP-2", "HDMI-A-1" };
+pub const notif_output_options = [_][]const u8{ "auto", "all" };
 
 pub const notifications = [_]Card{
     .{

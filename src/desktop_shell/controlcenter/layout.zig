@@ -164,7 +164,7 @@ pub fn computeLayout(
 
     // Bluetooth panel.
     {
-        l.bt_rows = @min(8, counts.bt_rows);
+        l.bt_rows = counts.bt_rows;
         var full_h = 44.0 + @as(f64, @floatFromInt(l.bt_rows)) * row_pitch + 12.0;
         // Same rationale as the network panel: an empty device list still
         // says so ("No devices found") rather than opening as a bare header.

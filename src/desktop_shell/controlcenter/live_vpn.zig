@@ -193,8 +193,9 @@ const VerbArgs = struct {
 
     fn run(self: *VerbArgs) void {
         const pa = std.heap.page_allocator;
-        defer pa.free(self.uuid);
+        // LIFO: free the uuid while `self` is still readable, then the struct.
         defer pa.destroy(self);
+        defer pa.free(self.uuid);
         switch (self.kind) {
             // Activate the connection.
             .up => _ = runNmcli(self.io, &.{ "nmcli", "connection", "up", "uuid", self.uuid }),

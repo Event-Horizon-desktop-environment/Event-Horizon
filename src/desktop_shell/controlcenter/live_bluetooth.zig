@@ -90,10 +90,10 @@ const WalkCtx = struct {
     fn flush(self: *WalkCtx) void {
         if (!self.have_cur) return;
         self.have_cur = false;
-        // No cap: every BlueZ object is kept and each view
-        // budgets its own rows (dock popup: 7, settings tab: 12 with
-        // paired/connected priority). Capping here evicted arbitrary
-        // devices — during a scan the paired headset could vanish.
+        // No cap: every BlueZ object is kept so every view can list every
+        // scan result (paired/connected rows are ordered first by the views).
+        // Capping here evicted arbitrary devices — during a scan the paired
+        // headset could vanish.
         if (self.cur.name.len == 0) self.cur.name = self.cur.address;
         if (self.cur.alias.len == 0) self.cur.alias = self.cur.name;
         const row = Device{

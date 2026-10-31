@@ -912,11 +912,15 @@ pub const Page = struct {
         cairo.cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, if (open) 0.9 else 0.45);
         cairo.cairo_stroke(c);
         // Leave room for the chevron and the right padding; Pango ellipsises
-        // anything longer than the (already text-fitted) box.
+        // anything longer than the (already text-fitted) box. The label is
+        // pinned dead-centre the btnBody way: showText's layout top lands
+        // at y - lh + 2, so passing y = top + lh - 2 centres the ink.
+        const ts = ui_paint.textSizePx(c, value, 12, 500);
+        const top = @as(f64, @floatFromInt(r.y)) + (@as(f64, @floatFromInt(r.h)) - @as(f64, @floatFromInt(ts.h))) / 2.0;
         ui_paint.showTextW(
             c,
             @floatFromInt(r.x + 10),
-            @floatFromInt(r.y + 19),
+            top + @as(f64, @floatFromInt(ts.h)) - 2.0,
             value,
             12,
             500,
@@ -1380,10 +1384,13 @@ pub const Page = struct {
                 ui_paint.glassBox(c, @floatFromInt(list.x + 6), @floatFromInt(ry + 2), @floatFromInt(list.w - 12), @floatFromInt(row_h - 4), 8, 1, 1, 1, 0.08);
             }
             const sel = ri == self.dd_sel;
+            // Same dead-centre pinning as the closed combo (btnBody rule).
+            const ts = ui_paint.textSizePx(c, row, 12, 500);
+            const top = @as(f64, @floatFromInt(ry)) + (@as(f64, @floatFromInt(row_h)) - @as(f64, @floatFromInt(ts.h))) / 2.0;
             ui_paint.showTextW(
                 c,
                 @floatFromInt(list.x + 30),
-                @floatFromInt(ry + 21),
+                top + @as(f64, @floatFromInt(ts.h)) - 2.0,
                 row,
                 12,
                 500,

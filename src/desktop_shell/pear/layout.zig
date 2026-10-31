@@ -263,10 +263,11 @@ pub fn computeLayout(
     y += l.pad - l.gap_m;
 
     // The overlay page (networks or bluetooth) covers the popup: same 48 px
-    // header, same 48 px rows, capped at `max_wifi_rows`.
+    // header, same 48 px rows. Wi-Fi keeps its cap; every Bluetooth scan
+    // result is listed.
     const ov_rows: i32 = switch (overlay) {
         .network => @min(max_wifi_rows, counts.wifi_aps),
-        .bluetooth => @min(max_wifi_rows, counts.bt_devices),
+        .bluetooth => counts.bt_devices,
         .none => 0,
     };
     l.wifi_rows = if (overlay == .network) ov_rows else 0;
@@ -306,9 +307,9 @@ test "pear-layout: the bluetooth page reuses the overlay geometry" {
     const t = std.testing;
     var tog: [7]Toggle = undefined;
     const l = computeLayout(360, false, false, .bluetooth, .{}, 1.0, .{ .bt_devices = 12 }, true, &tog);
-    try t.expectEqual(@as(i32, 8), l.bt_rows); // capped like the wifi page
+    try t.expectEqual(@as(i32, 12), l.bt_rows); // every scan result is shown
     try t.expectEqual(@as(i32, 0), l.wifi_rows);
-    try t.expectApproxEqAbs(@as(f64, 12.0 + 48.0 + 8 * 48.0 + 12.0), l.overlay_h, 1e-9);
+    try t.expectApproxEqAbs(@as(f64, 12.0 + 48.0 + 12 * 48.0 + 12.0), l.overlay_h, 1e-9);
     try t.expect(l.total_h >= l.overlay_h);
 }
 

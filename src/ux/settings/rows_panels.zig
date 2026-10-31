@@ -10,7 +10,11 @@ const Card = rows.Card;
 // the slider set from paint_dock_appearance_tab / paintAppearance.
 
 const width_mode_options = [_][]const u8{ "Floating", "Edge-to-edge", "Fill" };
-const output_options = [_][]const u8{ "Auto", "All", "DP-1", "DP-2", "HDMI-A-1" };
+// "Auto" (one monitor) and "All" (every display) are universal; the user's
+// real Wayland output names are appended live from `bound.outputs` in
+// `Content.optionsFor` — the old "DP-1 / DP-2 / HDMI-A-1" entries were
+// hardcoded and hid any other display.
+const output_options = [_][]const u8{ "Auto", "All" };
 // Panel dead-zone actions, spelled exactly as `panel_dispatch_dead_zone`
 // reads them (`panel.cpp:1553-1567`); "none" disables the zone.
 const deadzone_options = [_][]const u8{ "none", "control-center", "calendar", "tray" };

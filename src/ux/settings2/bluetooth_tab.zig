@@ -47,11 +47,6 @@ const k_toggle_w: i32 = 52;
 const k_toggle_h: i32 = 26;
 const k_scan_btn_w: i32 = 120;
 
-/// Displayed rows are capped at 12 (paired/connected fill first, so scan
-/// noise can never evict them); +3 section headers fits with room.
-const k_max_rows: usize = 12;
-const k_max_entries: usize = 16;
-
 // Pure helpers (all unit-tested)
 
 /// Battery level → material glyph (the dock-widget ladder, shared).
@@ -186,8 +181,8 @@ pub fn adapterDesc(
     return std.fmt.bufPrint(buf, "Powered off \u{b7} {d} remembered", .{paired_count}) catch "";
 }
 
-/// Devices card cat label: plain "DEVICES", or `N OF M SHOWN`
-/// when the page's row cap truncates the list (only past `k_max_rows` devices).
+/// Devices card cat label: plain "DEVICES", or `N OF M SHOWN` only if a
+/// caller ever has to report a partial list.
 pub fn devicesCatLabel(buf: []u8, shown: usize, total: usize) []const u8 {
     if (total > shown)
         return std.fmt.bufPrint(buf, "DEVICES \u{b7} {d} OF {d} SHOWN", .{ shown, total }) catch "DEVICES";
@@ -254,9 +249,8 @@ pub fn orderRows(alloc: std.mem.Allocator, rows_in: []const Row) ![]u32 {
 
 /// Split the ordered list into CONNECTED / REMEMBERED DEVICES / NEARBY
 /// DEVICES groups (headers only when more than one group is present).
-/// `out` receives header+row entries; the return is the count.
-pub fn planRows(out: []Entry, ordered: []const u32, rows: []const Row) usize {
-    var n: usize = 0;
+/// `out` receives every header+row entry — no row budget.
+pub fn planRows(out: *std.ArrayList(Entry), alloc: std.mem.Allocator, ordered: []const u32, rows: []const Row) !void {
     var has = [3]bool{ false, false, false };
     for (ordered) |i| {
         has[rank(rows[i].connected, rows[i].connecting, rows[i].paired)] = true;
@@ -270,22 +264,15 @@ pub fn planRows(out: []Entry, ordered: []const u32, rows: []const Row) usize {
         const i = ordered[ord];
         const r: i32 = @intCast(rank(rows[i].connected, rows[i].connecting, rows[i].paired));
         if (show_headers and r != last_rank) {
-            if (n < out.len) {
-                out[n] = .{
-                    .header = true,
-                    .label = if (r == 0) "CONNECTED" else if (r == 1) "REMEMBERED DEVICES" else "NEARBY DEVICES",
-                    .dev = -1,
-                };
-                n += 1;
-            }
+            try out.append(alloc, .{
+                .header = true,
+                .label = if (r == 0) "CONNECTED" else if (r == 1) "REMEMBERED DEVICES" else "NEARBY DEVICES",
+                .dev = -1,
+            });
             last_rank = r;
         }
-        if (n < out.len) {
-            out[n] = .{ .header = false, .label = "", .dev = @intCast(ord) };
-            n += 1;
-        }
+        try out.append(alloc, .{ .header = false, .label = "", .dev = @intCast(ord) });
     }
-    return n;
 }
 
 /// Scroll/clip extent of the device-list content: 60 when empty (the
@@ -354,19 +341,15 @@ pub const Page = struct {
     adapter_path: []const u8 = "",
     paired_count: i32 = 0,
     connected_count: i32 = 0,
-    /// Full device-list length (the page caps rows at `k_max_rows`;
-    /// the cat label flags the truncation).
+    /// Full device-list length (kept for the cat label / diagnostics).
     total_count: i32 = 0,
 
     /// Rows for this frame; strings borrow `last_q` (or `debug_devs`).
-    rows: [k_max_rows]Row = undefined,
-    rows_len: usize = 0,
+    rows: std.ArrayList(Row) = .empty,
     /// Display-order indices into `rows`.
-    order: [k_max_rows]u32 = undefined,
-    order_len: usize = 0,
+    order: std.ArrayList(u32) = .empty,
     /// Sectioned plan (labels are literals; `dev` indexes `order`).
-    entries: [k_max_entries]Entry = undefined,
-    entries_len: usize = 0,
+    entries: std.ArrayList(Entry) = .empty,
 
     /// The raw query backing `rows` (its strings live here).
     last_q: ?live_bt.Queried = null,
@@ -416,6 +399,9 @@ pub const Page = struct {
     pub fn deinit(self: *Page) void {
         if (!self.inited) return;
         self.freeSources();
+        self.rows.deinit(self.alloc);
+        self.order.deinit(self.alloc);
+        self.entries.deinit(self.alloc);
         self.inited = false;
     }
 
@@ -429,9 +415,9 @@ pub const Page = struct {
             self.debug_devs = null;
         }
         self.adapter_path = "";
-        self.rows_len = 0;
-        self.order_len = 0;
-        self.entries_len = 0;
+        self.rows.clearRetainingCapacity();
+        self.order.clearRetainingCapacity();
+        self.entries.clearRetainingCapacity();
         self.total_count = 0;
     }
 
@@ -487,8 +473,8 @@ pub const Page = struct {
         }
 
         // Pass 1: connected or paired — a scan flood of anonymous beacons
-        // must never evict the devices the user cares about. Pass 2 fills
-        // the rest up to the row cap.
+        // must never push the devices the user cares about down the list.
+        // Pass 2 appends every remaining scan result.
         self.fillRows(q.device_list.items);
     }
 
@@ -507,7 +493,6 @@ pub const Page = struct {
 
     /// One live-query device into the row list (shared by both fill passes).
     fn pushLiveRow(self: *Page, d: *const live_bt.Device) void {
-        if (self.rows_len >= k_max_rows) return;
         const kind = blk: {
             const by_icon = bt_paint.iconKind(d.icon);
             if (by_icon != .unknown) break :blk by_icon;
@@ -517,7 +502,7 @@ pub const Page = struct {
         self.pushRow(d.path, d.address, d.alias, kind, d.paired, d.connected, d.rssi != 0, d.rssi, d.battery_pct);
     }
 
-    /// One row into the list (cap enforced). Strings borrow the query.
+    /// One row into the list. Strings borrow the query.
     fn pushRow(
         self: *Page,
         path: []const u8,
@@ -530,8 +515,7 @@ pub const Page = struct {
         rssi: i16,
         battery_pct: i32,
     ) void {
-        if (self.rows_len >= k_max_rows) return;
-        self.rows[self.rows_len] = .{
+        self.rows.append(self.alloc, .{
             .path = path,
             .address = address,
             .alias = alias,
@@ -542,8 +526,7 @@ pub const Page = struct {
             .has_rssi = has_rssi,
             .rssi = rssi,
             .battery_pct = battery_pct,
-        };
-        self.rows_len += 1;
+        }) catch {};
     }
 
     /// Debug fixtures (`EH_BLUETOOTH_DEBUG`) — the same canned states the
@@ -642,34 +625,33 @@ pub const Page = struct {
     }
 
     fn rows_(self: *Page) []Row {
-        return self.rows[0..self.rows_len];
+        return self.rows.items;
     }
 
     fn rebuildOrder(self: *Page) void {
+        self.order.clearRetainingCapacity();
+        self.entries.clearRetainingCapacity();
         const rows = self.rows_();
-        if (rows.len > k_max_rows) {
-            self.order_len = 0;
-            self.entries_len = 0;
-            return;
-        }
+
         // Stable display order (insertion sort on the tiny index list).
+        self.order.ensureTotalCapacity(self.alloc, rows.len) catch return;
         var i: usize = 0;
-        while (i < rows.len) : (i += 1) self.order[i] = @intCast(i);
+        while (i < rows.len) : (i += 1) self.order.appendAssumeCapacity(@intCast(i));
         i = 1;
         while (i < rows.len) : (i += 1) {
-            const cur = self.order[i];
+            const cur = self.order.items[i];
             var j: usize = i;
-            while (j > 0 and rowBefore(rows[cur], rows[self.order[j - 1]], cur, self.order[j - 1])) : (j -= 1) {
-                self.order[j] = self.order[j - 1];
+            while (j > 0 and rowBefore(rows[cur], rows[self.order.items[j - 1]], cur, self.order.items[j - 1])) : (j -= 1) {
+                self.order.items[j] = self.order.items[j - 1];
             }
-            self.order[j] = cur;
+            self.order.items[j] = cur;
         }
-        self.order_len = rows.len;
 
-        const ordered = self.order[0..self.order_len];
-        self.entries_len = planRows(&self.entries, ordered, rows);
+        const ordered = self.order.items;
+        planRows(&self.entries, self.alloc, ordered, rows) catch {};
         // NOTE: paired/connected/total counts stay as refreshLive /
-        // refreshDebug set them over the FULL list — they must not be re-derived from the capped rows.
+        // refreshDebug set them over the FULL list — they are never derived
+        // from the rows.
     }
 
     /// Page-coordinate bottom of the tab (follows the paint-pass card
@@ -682,7 +664,7 @@ pub const Page = struct {
         // paint of a frame; throttled, so this is at most one query per
         // 500 ms like everything else here.
         self.refresh(false);
-        const bottom = k_dev_card_top + 52 + contentHeight(self.entries[0..self.entries_len]);
+        const bottom = k_dev_card_top + 52 + contentHeight(self.entries.items);
         return @max(0, bottom - k_content_top + 12);
     }
 
@@ -890,14 +872,14 @@ pub const Page = struct {
                 ui_paint.showTextW(c, card_x + k_card_pad, status_y, "Turn Bluetooth on to scan", 12, 400, status_max_w, t.text_r, t.text_g, t.text_b, 0.55);
             } else if (self.scanning) {
                 ui_paint.showTextW(c, card_x + k_card_pad, status_y, "Scanning for devices\u{2026}", 12, 400, status_max_w, t.text_r, t.text_g, t.text_b, 0.75);
-            } else if (self.rows_len == 0) {
+            } else if (self.rows.items.len == 0) {
                 ui_paint.showTextW(c, card_x + k_card_pad, status_y, "Scan to find nearby devices", 12, 400, status_max_w, t.text_r, t.text_g, t.text_b, 0.55);
             } else {
                 var found_buf: [64]u8 = undefined;
                 const found = std.fmt.bufPrint(
                     &found_buf,
                     "{d} device{s} found \u{b7} scan for more",
-                    .{ self.rows_len, if (self.rows_len == 1) "" else "s" },
+                    .{ self.rows.items.len, if (self.rows.items.len == 1) "" else "s" },
                 ) catch "";
                 ui_paint.showTextW(c, card_x + k_card_pad, status_y, found, 12, 400, status_max_w, t.text_r, t.text_g, t.text_b, 0.55);
             }
@@ -912,14 +894,14 @@ pub const Page = struct {
         }
 
         // --- Devices card -----------------------------------------------
-        const plan = self.entries[0..self.entries_len];
+        const plan = self.entries.items;
         const dev_content_h: i32 = if (self.powered) contentHeight(plan) else 60;
         const dev_card_h: i32 = 52 + dev_content_h;
         ui_paint.card(c, card_x, @floatFromInt(k_dev_card_top), card_w, @floatFromInt(dev_card_h), glass_ov);
         var devcat_buf: [64]u8 = undefined;
         ui_paint.catLabel(c, card_x + k_card_pad, k_dev_card_top + 22, devicesCatLabel(
             &devcat_buf,
-            self.rows_len,
+            self.rows.items.len,
             @as(usize, @intCast(@max(self.total_count, 0))),
         ));
 
@@ -960,7 +942,7 @@ pub const Page = struct {
                     cursor_y += k_sec_h;
                     continue;
                 }
-                const row = self.rows[self.order[@intCast(entry.dev)]];
+                const row = self.rows.items[self.order.items[@intCast(entry.dev)]];
                 const row_y = cursor_y;
                 cursor_y += k_dev_row_h;
 
@@ -1102,7 +1084,7 @@ pub const Page = struct {
         const cx: i32 = g.content_x + 8;
         self.hover_row = -1;
         var y: i32 = k_dev_list_top;
-        for (self.entries[0..self.entries_len]) |entry| {
+        for (self.entries.items) |entry| {
             if (entry.header) {
                 y += k_sec_h;
                 continue;
@@ -1160,12 +1142,12 @@ pub const Page = struct {
 
         // Device list buttons (geometry matches the paint pass).
         var y: i32 = k_dev_list_top;
-        for (self.entries[0..self.entries_len]) |entry| {
+        for (self.entries.items) |entry| {
             if (entry.header) {
                 y += k_sec_h;
                 continue;
             }
-            const row = self.rows[self.order[@intCast(entry.dev)]];
+            const row = self.rows.items[self.order.items[@intCast(entry.dev)]];
             const row_y = y;
             y += k_dev_row_h;
             // In-flight rows are not clickable until the operation settles.
@@ -1325,28 +1307,30 @@ test "settings-bluetooth: ordering ranks connected first, named before MAC" {
 
 test "settings-bluetooth: plan headers only with multiple groups" {
     const t = std.testing;
-    var buf: [8]Entry = undefined;
+    var plan = std.ArrayList(Entry).empty;
+    defer plan.deinit(t.allocator);
     // One group (paired only) → no headers.
     const rows = [_]Row{
         testRow("Buds", "22:22", false, true),
         testRow("Mouse", "44:44", false, true),
     };
-    const n1 = planRows(&buf, &.{ 0, 1 }, &rows);
-    try t.expectEqual(@as(usize, 2), n1);
-    try t.expect(!buf[0].header);
+    try planRows(&plan, t.allocator, &.{ 0, 1 }, &rows);
+    try t.expectEqual(@as(usize, 2), plan.items.len);
+    try t.expect(!plan.items[0].header);
     // Two groups → a header per group.
+    plan.clearRetainingCapacity();
     const rows2 = [_]Row{
         testRow("Buds", "22:22", true, true),
         testRow("Mouse", "44:44", false, true),
     };
-    const n2 = planRows(&buf, &.{ 0, 1 }, &rows2);
-    try t.expectEqual(@as(usize, 4), n2);
-    try t.expect(buf[0].header);
-    try t.expectEqualStrings("CONNECTED", buf[0].label);
-    try t.expectEqual(@as(i32, 0), buf[1].dev);
-    try t.expect(buf[2].header);
-    try t.expectEqualStrings("REMEMBERED DEVICES", buf[2].label);
-    try t.expectEqual(@as(i32, 1), buf[3].dev);
+    try planRows(&plan, t.allocator, &.{ 0, 1 }, &rows2);
+    try t.expectEqual(@as(usize, 4), plan.items.len);
+    try t.expect(plan.items[0].header);
+    try t.expectEqualStrings("CONNECTED", plan.items[0].label);
+    try t.expectEqual(@as(i32, 0), plan.items[1].dev);
+    try t.expect(plan.items[2].header);
+    try t.expectEqualStrings("REMEMBERED DEVICES", plan.items[2].label);
+    try t.expectEqual(@as(i32, 1), plan.items[3].dev);
 }
 
 test "settings-bluetooth: content height" {
@@ -1383,12 +1367,18 @@ test "settings-bluetooth: devices cat label flags truncation" {
     try t.expectEqualStrings("DEVICES \u{b7} 12 OF 15 SHOWN", devicesCatLabel(&buf, 12, 15));
 }
 
-test "settings-bluetooth: priority fill keeps paired rows past the cap" {
+test "settings-bluetooth: every scanned device gets a row" {
     const t = std.testing;
     var p = Page{};
+    p.alloc = t.allocator;
+    defer {
+        p.rows.deinit(t.allocator);
+        p.order.deinit(t.allocator);
+        p.entries.deinit(t.allocator);
+    }
     // Adversarial walk order: a flood of unpaired beacons first, the one
-    // paired headset last — a first-N fill evicts it, the two-pass fill
-    // must keep it.
+    // paired headset last. The two-pass fill keeps paired rows first, and
+    // nothing is dropped now that rows are uncapped.
     var devs = @as([14]live_bt.Device, @splat(.{}));
     for (devs[0..13]) |*d| {
         d.address = "BE:AC:ON:00:00:00";
@@ -1396,7 +1386,7 @@ test "settings-bluetooth: priority fill keeps paired rows past the cap" {
     }
     devs[13] = .{ .address = "AA:BB:CC:DD:EE:FF", .alias = "Headset", .paired = true };
     p.fillRows(&devs);
-    try t.expectEqual(k_max_rows, p.rows_len);
+    try t.expectEqual(devs.len, p.rows.items.len);
     var kept = false;
     for (p.rows_()) |*r| {
         if (r.paired) kept = true;
@@ -1431,11 +1421,11 @@ test "settings-bluetooth: page paints the connected fixture" {
     defer p.deinit();
     try t.expect(p.available);
     try t.expect(p.powered);
-    try t.expect(p.rows_len >= 5);
+    try t.expect(p.rows.items.len >= 5);
     try t.expectEqual(@as(i32, 5), p.paired_count);
     try t.expectEqual(@as(i32, 4), p.connected_count);
     // Connected rows sort first, paired-only after.
-    try t.expect(p.rows[p.order[0]].connected);
+    try t.expect(p.rows.items[p.order.items[0]].connected);
 
     const surf = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, 700, 900);
     defer cairo.cairo_surface_destroy(surf);

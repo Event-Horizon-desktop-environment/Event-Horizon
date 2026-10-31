@@ -85,6 +85,21 @@ pub fn bandLabel(freq: u32) []const u8 {
     return if (freq < 3000) "2.4G" else if (freq < 6000) "5G" else "6G";
 }
 
+/// Action button width for an AP row — the bluetooth page's rule exactly:
+/// measured label at 12/500 plus 24px, so paint and hit agree and the
+/// right-aligned buttons never collide.
+fn apPillW(label: []const u8) i32 {
+    return ui_paint.measureTextWidth(label, 12, 500) + 24;
+}
+
+/// Signal % colour — the bluetooth page's battery ladder, so quality
+/// reads at a glance.
+fn signalColor(pct: i32) Col {
+    if (pct <= 20) return .{ .r = 1.00, .g = 0.43, .b = 0.38 };
+    if (pct <= 50) return .{ .r = 0.96, .g = 0.72, .b = 0.30 };
+    return .{ .r = 0.45, .g = 0.85, .b = 0.50 };
+}
+
 // ---------------------------------------------------------------------------
 // Layout models
 // ---------------------------------------------------------------------------
@@ -100,7 +115,6 @@ const WifiLay = struct {
     list_y: i32,
     ap_h: i32,
     right_x: i32,
-    btn_x: i32,
     rows: usize,
     connected: bool,
 };
@@ -131,7 +145,6 @@ fn wifiLay(q: ?*const live_net.SettingsSnapshot, g: Geo) WifiLay {
         .list_y = ap_y + k_ap_header_h,
         .ap_h = k_ap_header_h + @as(i32, @intCast(rows)) * k_ap_row_h,
         .right_x = right_x,
-        .btn_x = right_x - 22 - 64 - 10,
         .rows = rows,
         .connected = connected,
     };
@@ -143,15 +156,6 @@ fn apRowRect(l: WifiLay, i: usize) common.Rect {
         .y = l.list_y + @as(i32, @intCast(i)) * k_ap_row_h,
         .w = l.card_w - 2 * k_pad,
         .h = k_ap_row_h,
-    };
-}
-
-fn apBtnRect(l: WifiLay, i: usize) common.Rect {
-    return .{
-        .x = l.btn_x,
-        .y = l.list_y + @as(i32, @intCast(i)) * k_ap_row_h + 5,
-        .w = 64,
-        .h = 24,
     };
 }
 
@@ -620,6 +624,10 @@ pub const Page = struct {
     last_vpn_req_ms: i64 = 0,
 
     scan_until_ms: i64 = 0,
+    /// Request-time `LastScan` baseline from the scan worker; the Scanning
+    /// label ends when a snapshot's `wifi_last_scan` passes it (0 = pending
+    /// or unknown, covered by the wall-clock cap above).
+    scan_baseline: u64 = 0,
 
     vpn_rows: std.ArrayList(VpnRow) = .empty,
     /// True once at least one VPN poll answered, so an empty list is not
@@ -644,6 +652,9 @@ pub const Page = struct {
     status_len: usize = 0,
     status_failed: bool = false,
     status_until_ms: i64 = 0,
+    /// Which card the line belongs to — VPN writes land under the VPN card,
+    /// a scan failure under the Wi-Fi card.
+    status_src: enum(u8) { none, vpn, scan } = .none,
 
     pick_buf: [1024]u8 = undefined,
 
@@ -670,7 +681,15 @@ pub const Page = struct {
     }
 
     fn scanning(self: *const Page) bool {
-        return nowMs() < self.scan_until_ms;
+        if (nowMs() >= self.scan_until_ms) return false;
+        // Faithful to the reference: `Scanning` ends when a snapshot reports
+        // `LastScan` newer than the request-time baseline — the label tracks
+        // the real scan, not a blind timer. The wall-clock window is only a
+        // safety cap so a wedged device cannot hold the button forever.
+        if (self.scan_baseline != 0 and self.have_q) {
+            if (self.q.wifi_last_scan > self.scan_baseline) return false;
+        }
+        return true;
     }
 
     /// Poll the live backends. Throttled: the D-Bus snapshot every 1.5 s and
@@ -679,7 +698,32 @@ pub const Page = struct {
     fn refresh(self: *Page, force: bool) void {
         if (!self.inited) return;
         const now = nowMs();
-        if (force or now - self.last_query_ms >= 1500) {
+        // Scan result first: a failed request reverts the button at once, and
+        // a completed one is worth an immediate re-read instead of waiting
+        // out the 1.5 s snapshot tick.
+        var scan_force = false;
+        {
+            var sbuf: [96]u8 = undefined;
+            var ok = false;
+            var baseline: u64 = 0;
+            if (live_net.takeScanResult(&sbuf, &ok, &baseline)) |n| {
+                // The request-time `LastScan` baseline is what ends the
+                // button's Scanning state once a snapshot passes it.
+                self.scan_baseline = if (ok) baseline else 0;
+                if (ok) {
+                    scan_force = true;
+                } else {
+                    const c_len = @min(n, self.status_buf.len);
+                    @memcpy(self.status_buf[0..c_len], sbuf[0..c_len]);
+                    self.status_len = c_len;
+                    self.status_failed = true;
+                    self.status_src = .scan;
+                    self.status_until_ms = now + 6000;
+                    self.scan_until_ms = 0;
+                }
+            }
+        }
+        if (force or scan_force or now - self.last_query_ms >= 1500) {
             self.last_query_ms = now;
             if (live_net.settingsQuery(self.alloc)) |q| {
                 if (self.have_q) self.q.deinit();
@@ -704,6 +748,7 @@ pub const Page = struct {
             @memcpy(self.status_buf[0..n], sbuf[0..n]);
             self.status_len = n;
             self.status_failed = failed;
+            self.status_src = .vpn;
             self.status_until_ms = now + 6000;
         }
     }
@@ -874,6 +919,23 @@ pub const Page = struct {
                 ui_paint.paintBtn(c, sr.x, sr.y, sr.w, sr.h, "Scan", hovered);
             }
         }
+        // A failed scan request explains itself right here (the C++ error
+        // line lives in the same card), in red.
+        if (self.status_src == .scan and self.status_len > 0 and nowMs() < self.status_until_ms) {
+            ui_paint.showTextW(
+                c,
+                f(l.card_x + k_pad),
+                f(k_top + 64),
+                self.status_buf[0..self.status_len],
+                11,
+                400,
+                f(l.card_w - 2 * k_pad),
+                0.95,
+                0.35,
+                0.30,
+                0.9,
+            );
+        }
 
         if (!on) return;
 
@@ -904,44 +966,61 @@ pub const Page = struct {
         for (aps, 0..) |ap, i| {
             if (i >= l.rows) break;
             const row = apRowRect(l, i);
+            // Bluetooth-list hover: a flat 5% wash across the card, no box.
             if (inRect(px, ly, row)) {
-                ui_paint.glassBox(c, f(row.x + 2), f(row.y), f(row.w - 4), f(row.h), 8, t.bg_r, t.bg_g, t.bg_b, 0.18);
+                cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.05);
+                cairo.cairo_rectangle(c, f(l.card_x), f(row.y), f(l.card_w), f(row.h));
+                cairo.cairo_fill(c);
             }
             const cy = row.y + @divTrunc(k_ap_row_h, 2);
             ui_paint.glyph(c, f(row.x + 20), f(cy), 20, "wifi", t.text_r, t.text_g, t.text_b, 1.0);
 
-            const ssid_x = row.x + 48;
-            const ssid_y = cy + 6;
-            ui_paint.showText(c, f(ssid_x), f(ssid_y), ap.ssid, 13, 400, t.text_r, t.text_g, t.text_b, 1.0);
-            const ssid_w = ui_paint.measureTextWidth(ap.ssid, 13, 400);
-            var label_x = ssid_x + 4 + ssid_w + 4;
+            // Right side first: the bluetooth rows' outlined button —
+            // auto-width from the measured label at 12/500, vertically
+            // centred, one spacing_s inside the card's right edge; the
+            // left text run keeps clear of it.
+            const label = if (ap.active) "Disconnect" else "Connect";
+            const act_h: i32 = 24;
+            const act_y: i32 = row.y + @divTrunc(k_ap_row_h - act_h, 2);
+            const act_w = apPillW(label);
+            const act_x: i32 = l.right_x - common.spacing_s - act_w;
+            const run_max = f(act_x) - 20.0;
+
+            // SSID + band + security + signal %, one inline run like the
+            // bluetooth alias + battery line; the % borrows the battery
+            // colour ladder so quality reads at a glance.
+            const run_left = f(row.x + 48);
+            const ssid_max = run_max - run_left;
+            ui_paint.showTextW(c, run_left, f(cy + 6), ap.ssid, 13, 400, ssid_max, t.text_r, t.text_g, t.text_b, 1.0);
+            var lx = run_left + @min(f(ui_paint.measureTextWidth(ap.ssid, 13, 400)), ssid_max) + 4.0;
             const band = bandLabel(ap.frequency);
             if (band.len > 0) {
-                ui_paint.showText(c, f(label_x), f(cy + 4), band, 9, 400, t.text_r, t.text_g, t.text_b, 1.0);
-                label_x += ui_paint.measureTextWidth(band, 9, 400) + 4;
+                const bw = f(ui_paint.measureTextWidth(band, 9, 400));
+                if (lx + bw + 20.0 <= run_max) {
+                    ui_paint.showText(c, lx, f(cy + 4), band, 9, 400, t.text_r, t.text_g, t.text_b, 1.0);
+                    lx += bw + 4.0;
+                }
             }
             const sec = ap.security.label();
             if (sec.len > 0) {
-                ui_paint.showText(c, f(label_x), f(cy + 4), sec, 9, 400, t.text_r, t.text_g, t.text_b, 1.0);
+                const sw = f(ui_paint.measureTextWidth(sec, 9, 400));
+                if (lx + sw + 20.0 <= run_max) {
+                    ui_paint.showText(c, lx, f(cy + 4), sec, 9, 400, t.text_r, t.text_g, t.text_b, 1.0);
+                    lx += sw + 6.0;
+                }
             }
-
             var pbuf: [16]u8 = undefined;
             const pct = std.fmt.bufPrint(&pbuf, "{d}%", .{ap.strength}) catch "";
-            const pct_w = ui_paint.measureTextWidth(pct, 10, 400);
-            ui_paint.showText(c, f(l.right_x - pct_w), f(cy + 5), pct, 10, 400, t.text_r, t.text_g, t.text_b, 1.0);
-
-            const br = apBtnRect(l, i);
-            const label = if (ap.active) "Disconnect" else "Connect";
-            const col = if (ap.active)
-                Col{ .r = 0.95, .g = 0.30, .b = 0.25 }
-            else
-                Col{ .r = t.acc_r, .g = t.acc_g, .b = t.acc_b };
-            paintPillBtn(c, br.x, br.y, br.w, br.h, label, inRect(px, ly, br), true, col);
-            if (ap.active) {
-                cairo.cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.95);
-                cairo.cairo_arc(c, f(br.x - 42), f(cy), 4, 0, 6.283185307179586);
-                cairo.cairo_fill(c);
+            if (pct.len > 0) {
+                const pw = f(ui_paint.measureTextWidth(pct, 10, 400));
+                if (lx + pw + 4.0 <= run_max) {
+                    const sc = signalColor(@as(i32, ap.strength));
+                    ui_paint.showText(c, lx, f(cy + 5), pct, 10, 500, sc.r, sc.g, sc.b, 0.95);
+                }
             }
+
+            const act_hov = inRect(px, ly, .{ .x = act_x, .y = act_y, .w = act_w, .h = act_h });
+            ui_paint.paintBtn(c, act_x, act_y, act_w, act_h, label, act_hov);
         }
     }
 
@@ -992,13 +1071,17 @@ pub const Page = struct {
             const on = if (q) |s| s.wireless_enabled else true;
             _ = live_net.setWifiEnabled(self.io, !on);
             self.scan_until_ms = 0;
+            self.scan_baseline = 0;
             self.refresh(true);
             return .repaint;
         }
         if (l.scan) |sr| {
             if (inRect(px, ly, sr) and !self.scanning()) {
-                live_net.rescanThread(self.io);
-                self.scan_until_ms = nowMs() + 6000;
+                live_net.rescanThread();
+                // Fresh request, fresh baseline: the worker publishes the
+                // request-time `LastScan` with the outcome a moment later.
+                self.scan_baseline = 0;
+                self.scan_until_ms = nowMs() + 15000;
                 return .repaint;
             }
         }
@@ -1362,8 +1445,9 @@ pub const Page = struct {
         const add_x = card_x + card_w - k_pad - add_w;
         ui_paint.paintBtn(c, add_x, add_y, add_w, 24, "+ Add VPN", inRect(px, ly, .{ .x = add_x, .y = add_y, .w = add_w, .h = 24 }));
 
-        // Async verb / import result, transient.
-        if (self.status_len > 0 and nowMs() < self.status_until_ms) {
+        // Async verb / import result, transient (only VPN messages belong
+        // here; a scan failure paints under the Wi-Fi card instead).
+        if (self.status_src == .vpn and self.status_len > 0 and nowMs() < self.status_until_ms) {
             const col = if (self.status_failed)
                 Col{ .r = 0.95, .g = 0.35, .b = 0.30 }
             else

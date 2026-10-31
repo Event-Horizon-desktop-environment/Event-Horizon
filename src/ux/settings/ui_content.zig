@@ -296,6 +296,12 @@ pub const Content = struct {
     /// the C++ `sync_dropdown` reads) — see `Win.syncDesktopOutputs`.
     dwt_outputs: [16][]const u8 = @as([16][]const u8, @splat("")),
     dwt_outputs_len: usize = 0,
+    /// Live output names for the Dock / Panel / Taskbar / Notifications
+    /// "Display" combos. Filled from the window's bound Wayland outputs so
+    /// the user's real displays enumerate instead of hardcoded DP-*/HDMI-*
+    /// names. See `Win.syncBarOutputs`.
+    bar_outputs: [16][]const u8 = @as([16][]const u8, @splat("")),
+    bar_outputs_len: usize = 0,
     /// The monitors page rebuilt into these buffers each relayout (the card
     /// lists everywhere else are compile-time constants, so the one data-
     /// driven page owns its own storage).
@@ -387,6 +393,26 @@ pub const Content = struct {
 
     pub fn dwtOutputs(self: *const Content) []const []const u8 {
         return self.dwt_outputs[0..self.dwt_outputs_len];
+    }
+
+    pub fn barOutputs(self: *const Content) []const []const u8 {
+        return self.bar_outputs[0..self.bar_outputs_len];
+    }
+
+    /// The option list a combo paints. The Dock/Panel/Taskbar/Notifications
+    /// "Display" rows enumerate the live bound outputs; everything else keeps
+    /// its static list. Falls back to the static list when no output is
+    /// bound yet, so the combo is never empty.
+    pub fn optionsFor(self: *const Content, cb: rows_mod.ComboRow) []const []const u8 {
+        const live = switch (cb.field) {
+            fields.Field.dock_output_name,
+            fields.Field.panel_output_name,
+            fields.Field.taskbar_output_name,
+            fields.Field.notifications_output => self.barOutputs(),
+            else => cb.options,
+        };
+        if (live.len == 0) return cb.options;
+        return live;
     }
 
     /// The Desktop Widgets page when it owns this tab, else null. Same
@@ -894,8 +920,9 @@ pub const Content = struct {
     /// Select `idx` in the currently open popup (window routes it here).
     pub fn selectComboIndex(self: *Content, idx: usize) bool {
         const pop = self.open_combo orelse return false;
-        if (idx >= pop.combo.options.len) return false;
-        self.setComboIndex(pop.combo.field, pop.combo.options, idx);
+        const opts = self.optionsFor(pop.combo);
+        if (idx >= opts.len) return false;
+        self.setComboIndex(pop.combo.field, opts, idx);
         self.open_combo = null;
         return true;
     }
@@ -914,6 +941,7 @@ pub const Content = struct {
     pub fn comboPopupRect(self: *const Content, cb: rows_mod.ComboRow) ?ComboPopup {
         const band_top = self.y0();
         const band_bot = self.win_h - common.spacing_l;
+        const opts = self.optionsFor(cb);
         for (self.placed[0..self.placed_len]) |p| {
             const r = p.row;
             if (r != .combo) continue;
@@ -923,7 +951,7 @@ pub const Content = struct {
             const cw: i32 = if (cb.field == fields.Field.hypr_general_layout) hyprland_tab.layout_combo_w else common.settings_combo_w;
             const cx = p.x + p.w - common.card_pad - cw;
             const cy = row_y + @divTrunc(p.h - common.settings_combo_h, 2) + common.settings_combo_h + 4;
-            const rows_n: i32 = @intCast(cb.options.len);
+            const rows_n: i32 = @intCast(opts.len);
             const ph = rows_n * common.settings_dd_row_h + 8;
             const flip = cy + ph > band_bot;
             const py = if (flip) row_y - ph - 4 else cy;
@@ -1420,8 +1448,9 @@ pub const Content = struct {
                 const by = p.y + @divTrunc(p.h - bh, 2);
                 const open = self.open_combo != null and std.meta.eql(self.open_combo.?.combo, cb);
                 const hov = common.pointInRect(self.pointer_x, self.pointer_ly, .{ .x = bx, .y = by, .w = bw, .h = bh });
-                const idx_opt = self.comboIndex(cb.field, cb.options);
-                const disp = comboLabel(cb, idx_opt);
+                const opts = self.optionsFor(cb);
+                const idx_opt = self.comboIndex(cb.field, opts);
+                const disp = comboLabel(cb, idx_opt, opts);
                 drawCombo(c, bx, by, bw, bh, disp, open or hov);
             },
             .tile_slider => |sl| {
@@ -1677,8 +1706,9 @@ pub const Content = struct {
             t.bg_b * 0.25,
             0.97,
         );
-        const cur = self.comboIndex(pop.combo.field, pop.combo.options);
-        for (pop.combo.options, 0..) |_, i| {
+        const opts = self.optionsFor(pop.combo);
+        const cur = self.comboIndex(pop.combo.field, opts);
+        for (opts, 0..) |_, i| {
             const ry = r.y + 4 + @as(i32, @intCast(i)) * common.settings_dd_row_h;
             const hov = common.pointInRect(self.pointer_x, self.pointer_y, .{
                 .x = r.x,
@@ -1704,7 +1734,7 @@ pub const Content = struct {
                 cr,
                 @floatFromInt(r.x + 14),
                 @floatFromInt(ry + 18),
-                comboLabel(pop.combo, i),
+                comboLabel(pop.combo, i, opts),
                 12,
                 if (i == cur) 600 else 400,
                 t.text_r,
@@ -1717,9 +1747,9 @@ pub const Content = struct {
 };
 
 /// Display string for option `i` (combo label overrides when provided).
-fn comboLabel(cb: rows_mod.ComboRow, i: usize) []const u8 {
+fn comboLabel(cb: rows_mod.ComboRow, i: usize, opts: []const []const u8) []const u8 {
     if (cb.labels.len > 0 and i < cb.labels.len) return cb.labels[i];
-    if (i < cb.options.len) return cb.options[i];
+    if (i < opts.len) return opts[i];
     return "";
 }
 

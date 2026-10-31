@@ -712,7 +712,7 @@ const Dock = struct {
     /// caches; the host deep-copies on open/refresh, so these only need to
     /// survive the call).
     cc_snap_aps: [8]cc_data.WifiAp = @splat(.{}),
-    cc_snap_bt: [8]cc_data.BluetoothDevice = @splat(.{}),
+    cc_snap_bt: std.ArrayList(cc_data.BluetoothDevice) = .empty,
     cc_snap_outdev: [12]cc_data.OutputDevice = @splat(.{}),
     cc_snap_indev: [12]cc_data.InputDevice = @splat(.{}),
     cc_snap_outs: [8]cc_data.MixerStream = @splat(.{}),
@@ -1989,24 +1989,22 @@ const Dock = struct {
         var lowest_bat: i32 = -1;
         if (self.cc_bt) |*q| {
             snap.bt = .{ .powered = q.snap.powered, .connected = false, .discovering = q.snap.discovering };
-            var n: usize = 0;
+            self.cc_snap_bt.clearRetainingCapacity();
             for (q.device_list.items) |d| {
                 if (d.paired) paired_count += 1;
                 if (d.connected) {
                     snap.bt.connected = true;
                     if (d.battery_pct >= 0 and (lowest_bat < 0 or d.battery_pct < lowest_bat)) lowest_bat = d.battery_pct;
                 }
-                if (n >= self.cc_snap_bt.len) continue;
-                self.cc_snap_bt[n] = .{
+                self.cc_snap_bt.append(self.app.gpa, .{
                     .address = d.address,
                     .alias = d.name,
                     .paired = d.paired,
                     .connected = d.connected,
                     .battery_pct = d.battery_pct,
-                };
-                n += 1;
+                }) catch {};
             }
-            snap.bt_devs = self.cc_snap_bt[0..@min(n, self.cc_snap_bt.len)];
+            snap.bt_devs = self.cc_snap_bt.items;
             snap.bt.paired_count = paired_count;
             snap.bt.battery_pct = lowest_bat;
         }
@@ -2187,6 +2185,7 @@ const Dock = struct {
         self.pear_backlight.deinit(self.app.gpa);
         self.redeye_inhibit.deinit();
         self.freeCcLive();
+        self.cc_snap_bt.deinit(self.app.gpa);
         // Join before the allocator goes: the VPN worker borrows it. The
         // widget rows it feeds went with `freeCcBt` a line above.
         cc_live_vpn.shutdown();
@@ -5670,7 +5669,7 @@ const Dock = struct {
                 self.cc.state.net_anim_start_ms = now_ms;
                 self.cc.state.net_anim_from_expanded = !self.cc.state.network_expanded;
                 self.cc.state.net_anim_to_expanded = self.cc.state.network_expanded;
-                if (self.cc.state.network_expanded) cc_live_network.rescanThread(self.app.io);
+                if (self.cc.state.network_expanded) cc_live_network.rescanThread();
                 self.ccResize(now_ms);
                 self.ccRefresh();
                 logz.log("control-center: network_expanded={s}", .{if (self.cc.state.network_expanded) "on" else "off"});
@@ -5974,7 +5973,7 @@ const Dock = struct {
             .dismiss => self.closePear(),
             .open_networks_overlay => {
                 self.pear.state.networks_overlay = true;
-                cc_live_network.rescanThread(self.app.io);
+                cc_live_network.rescanThread();
                 self.pearResize(now_ms);
                 logz.log("pear: networks overlay open", .{});
             },

@@ -33,6 +33,7 @@ const templates_tab = @import("templates_tab.zig");
 const time_tab = @import("time_tab.zig");
 const accounts_tab = @import("accounts_tab.zig");
 const time_persist = @import("time_persist.zig");
+const nightlight_persist = @import("nightlight_persist.zig");
 const desktop_widgets_persist = @import("desktop_widgets_persist.zig");
 const desktop_widgets_tab = @import("desktop_widgets_tab.zig");
 const notifications_persist = @import("notifications_persist.zig");
@@ -81,6 +82,7 @@ const kDesktopWidgetsTab: i32 = 27;
 const kLauncherTab: i32 = 9;
 const kNotificationsTab: i32 = 5;
 const kDefaultAppsTab: i32 = 10;
+const kNightlightTab: i32 = 19;
 /// The Appearance rail category's four pages (General | Opacity | Color |
 /// Templates). They write the same `appearance.toml` the Launcher/Desktop
 /// flushes touch, so their guards live side by side with those.
@@ -396,6 +398,9 @@ pub const Win = struct {
             self.bufH(),
         });
 
+        // Seed the Dock/Taskbar/Notifications Display lists before the first
+        // frame; later tab entries and combo opens refresh them.
+        self.syncBarOutputs();
         self.content.win_h = self.win_h;
         self.content.content_w = self.win_w - self.content.content_x - common.spacing_l;
         self.content.relayout();
@@ -525,6 +530,9 @@ pub const Win = struct {
             // Time seeds from the decoded `[time]` section, so the tab opens
             // on the format every clock face is actually rendering.
             time_persist.load(a.allocator(), &self.settings, &loaded.cfg.time);
+            // Nightlight seeds from `[nightlight]` — the gamma client is
+            // fed by this file's writes (runner `NightHost`).
+            nightlight_persist.load(a.allocator(), &self.settings, &loaded.cfg.night_light);
         }
     }
 
@@ -595,6 +603,35 @@ pub const Win = struct {
         const state = self.state_dir orelse return;
         time_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
             logz.err("settings: time settings save failed: {s}", .{@errorName(e)});
+        };
+    }
+
+    /// Write the Nightlight tab's `[nightlight]` back to
+    /// `general/general.toml` — the same file the dock/taskbar night
+    /// toggles write, and the one the supervisor's gamma client is re-read
+    /// from (runner `NightHost`), so a committed edit lands on the display
+    /// within the supervisor's next config watch.
+    fn flushNightlightTab(self: *Win) void {
+        if (self.content.active_tab != kNightlightTab) return;
+        const state = self.state_dir orelse return;
+        nightlight_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
+            logz.err("settings: nightlight save failed: {s}", .{@errorName(e)});
+        };
+    }
+
+    /// A Nightlight slider drag's throttled write: temperature and window
+    /// edits preview on the display while dragging (the gamma client
+    /// re-animates from each applied value), only committing at the
+    /// throttle cadence to avoid a TOML rewrite per pointer move.
+    fn flushNightlightLive(self: *Win) void {
+        if (self.last_live_flush_ns != 0) {
+            const now = liveNowNs();
+            if (now - self.last_live_flush_ns < kLiveFlushNs) return;
+        }
+        self.last_live_flush_ns = liveNowNs();
+        const state = self.state_dir orelse return;
+        nightlight_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
+            logz.err("settings: nightlight live save failed: {s}", .{@errorName(e)});
         };
     }
 
@@ -996,7 +1033,7 @@ pub const Win = struct {
                 self.settings.wallpaper_mode = std.math.clamp(mode, 0, 4);
                 self.flushWallpaperTab();
             },
-            .pick_folder => self.pickWallpaperFolder(),
+            .pick_folder => self.wall.openFolderBrowser(),
             .select_image => |idx| {
                 if (idx >= self.wall.gallery.entries.items.len) return;
                 self.setWallpaperImage(self.wall.gallery.entries.items[idx].path);
@@ -1004,6 +1041,28 @@ pub const Win = struct {
             .clear_image => {
                 self.settings.wallpaper_image = "";
                 self.settings.wallpaper_enabled = false;
+                self.flushWallpaperTab();
+            },
+            // The custom in-app browser confirmed its cwd; adopt it as the
+            // wallpaper folder (the page closed its own modal already).
+            .use_folder => {
+                if (self.wall.fb_cwd.items.len == 0) return;
+                const alloc = if (self.str_arena) |*a| a.allocator() else return;
+                const owned = alloc.dupe(u8, self.wall.fb_cwd.items) catch return;
+                self.settings.wallpaper_folder = owned;
+                self.flushWallpaperTab();
+            },
+            // And its picked image: the gallery path flow plus the parent
+            // folder, so the gallery keeps working next launch.
+            .use_image => |idx| {
+                if (idx >= self.wall.fb_imgs.items.len) return;
+                const full = self.wall.fb_imgs.items[idx].full;
+                self.setWallpaperImage(full);
+                if (std.fs.path.dirname(full)) |parent| {
+                    const alloc = if (self.str_arena) |*a| a.allocator() else return;
+                    const owned = alloc.dupe(u8, parent) catch return;
+                    self.settings.wallpaper_folder = owned;
+                }
                 self.flushWallpaperTab();
             },
         }
@@ -1553,6 +1612,8 @@ pub const Win = struct {
         // Entering a Hyprland section (re)reads the compositor files, unless
         // an edit is pending — skipping reload while a slider drag is in flight.
         if (t == kDesktopWidgetsTab) self.syncDesktopOutputs();
+        if (t == app_mod.TabId.dock or t == app_mod.TabId.taskbar or t == app_mod.TabId.notifications)
+            self.syncBarOutputs();
         if (hyprland_tab.isSectionTab(t) and self.content.drag == null) {
             hyprland_data.ensureLoaded(self.io);
             self.content.relayout();
@@ -1757,6 +1818,10 @@ pub const Win = struct {
                 self.ptr_y,
             );
         }
+        // The custom in-app folder browser on top of everything.
+        if (self.wall.fb_open) {
+            self.wall.paintFolderBrowser(cr, self.win_w, self.win_h, self.ptr_x, self.ptr_y);
+        }
 
         drawClose(cr, self.win_w);
 
@@ -1924,6 +1989,7 @@ pub const Win = struct {
                 self.flushLauncherLive();
                 self.flushNotificationsLive();
                 self.flushAppearanceLive();
+                self.flushNightlightLive();
             }
         }
         // Widget-board drag: track the drop slot and the lifted card.
@@ -1995,6 +2061,7 @@ pub const Win = struct {
                 self.flushLauncherTab();
                 self.flushNotificationsTab();
                 self.flushAppearanceTab();
+                self.flushNightlightTab();
                 self.repaint();
             }
             // Hyprland sections: slider drags batch until release and toggle
@@ -2073,6 +2140,18 @@ pub const Win = struct {
             self.repaint();
             return;
         }
+        // 0c. the custom wallpaper folder browser: everything the modal
+        // needs happens inside the page; confirming flows out through
+        // `onWallpaperAction` (`use_folder` / `use_image`).
+        if (self.wall.fb_open) {
+            const act = self.wall.clickFolderBrowser(self.win_w, self.win_h, x, y);
+            if (act) |a| {
+                self.onWallpaperAction(a);
+            } else {
+                self.repaint();
+            }
+            return;
+        }
         // 1. window close affordance (top-right pill).
         if (inCloseRect(x, y, self.win_w)) {
             self.running = false;
@@ -2119,6 +2198,7 @@ pub const Win = struct {
             self.flushNotificationsTab();
             self.flushAppearanceTab();
             self.flushDefaultAppsTab();
+            self.flushNightlightTab();
             if (slot) |c| self.dapps.markPick(c);
             // The Default Apps page rebuilds its row tables for the new
             // stored id (no-op relayout cost on other tabs).
@@ -2171,8 +2251,16 @@ pub const Win = struct {
                 }
             },
             // Opening a combo changes nothing — only its pick does, and that
-            // is handled above.
-            .combo => _ = self.content.applyHit(ch, x),
+            // is handled above. Refresh the live output list first so a
+            // hot-plugged (or newly disabled) display shows up in the Display
+            // dropdown immediately.
+            .combo => |cb| {
+                switch (cb.field) {
+                    .dock_output_name, .taskbar_output_name, .notifications_output => self.syncBarOutputs(),
+                    else => {},
+                }
+                _ = self.content.applyHit(ch, x);
+            },
             .slider => |d| {
                 self.content.drag = d;
                 _ = self.content.applyHit(ch, x);
@@ -2339,6 +2427,7 @@ pub const Win = struct {
                 self.flushLauncherTab();
                 self.flushNotificationsTab();
                 self.flushAppearanceTab();
+                self.flushNightlightTab();
             },
             else => {
                 _ = self.content.applyHit(ch, x);
@@ -2349,6 +2438,7 @@ pub const Win = struct {
                 self.flushLauncherTab();
                 self.flushNotificationsTab();
                 self.flushAppearanceTab();
+                self.flushNightlightTab();
             },
         }
         self.repaint();
@@ -2366,6 +2456,25 @@ pub const Win = struct {
                     widget_add.scrollByPx(st, lay, @as(i32, @intFromFloat(@round(step))));
                 }
                 // Over the rest of the panel: absorb the wheel.
+                self.repaint();
+                return;
+            }
+        }
+        // Wallpaper folder browser: the wheel scrolls its body.
+        if (self.wall.fb_open) {
+            if (self.wall.fbAxis(
+                self.win_w,
+                self.win_h,
+                self.ptr_x,
+                self.ptr_y,
+                @as(i64, @intFromFloat(@round(step))),
+            )) {
+                self.repaint();
+                return;
+            }
+            // Absorb the rest of the wheel over the panel so the page behind
+            // doesn't move under the modal.
+            if (self.wall.fbPanelHovered(self.win_w, self.win_h, self.ptr_x, self.ptr_y)) {
                 self.repaint();
                 return;
             }
@@ -2462,6 +2571,31 @@ pub const Win = struct {
         self.repaint();
     }
 
+    /// Fill the Dock/Taskbar/Notifications Display lists from the window's
+    /// bound Wayland outputs. Refreshed on tab entry and when a Display combo
+    /// opens, so the user's real monitors enumerate instead of hardcoded
+    /// DP-*/HDMI-* names. If no output globals are available, fall back to
+    /// the Monitors page roster (hyprctl + monitors.lua).
+    fn syncBarOutputs(self: *Win) void {
+        _ = self.conn.roundtrip();
+        var names: [16][]const u8 = undefined;
+        var n: usize = 0;
+        for (self.bound.outputs.items) |o| {
+            if (n >= names.len) break;
+            if (o.name.len == 0) continue;
+            names[n] = o.name;
+            n += 1;
+        }
+        // No Wayland output globals? Fall back to the same roster the
+        // Monitors page builds from hyprctl + monitors.lua, so the dropdown
+        // still detects the configured displays instead of inventing names.
+        if (n == 0) {
+            if (!self.monitors.did_refresh) self.monitors.refresh();
+            n = self.monitors.copyOutputNames(&names);
+        }
+        self.content.setBarOutputs(names[0..n]);
+    }
+
     /// Fill the Desktop Widgets display names from the window's bound
     /// Wayland outputs, refreshed on open — hence the roundtrip here).
     fn syncDesktopOutputs(self: *Win) void {
@@ -2472,6 +2606,10 @@ pub const Win = struct {
             if (o.name.len == 0) continue;
             self.content.dwt_outputs[n] = o.name;
             n += 1;
+        }
+        if (n == 0) {
+            if (!self.monitors.did_refresh) self.monitors.refresh();
+            n = self.monitors.copyOutputNames(&self.content.dwt_outputs);
         }
         self.content.dwt_outputs_len = n;
     }

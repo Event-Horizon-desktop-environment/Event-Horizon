@@ -50,7 +50,6 @@ const live_bt = @import("../../controlcenter/live_bluetooth.zig");
 
 pub const popup_w: f64 = 360.0;
 
-const k_max_rows: usize = 7;
 const k_header_h: f64 = 56.0;
 const k_status_h: f64 = 34.0;
 const k_row_h: f64 = 48.0;
@@ -760,8 +759,8 @@ fn inRect(px: f64, py: f64, r: [4]f64) bool {
 }
 
 /// `plan_popup_items` — connected, remembered, nearby, in that order, with
-/// section headers only when more than one group is non-empty, capped at 7
-/// device rows. Indices point into `devices`.
+/// section headers only when more than one group is non-empty. Every device
+/// is listed (a scan must never hide a result). Indices point into `devices`.
 pub fn planPopupItems(alloc: std.mem.Allocator, snap: *const Snapshot, devices: []const Device) ![]PopupItem {
     var out = std.ArrayList(PopupItem).empty;
     errdefer out.deinit(alloc);
@@ -773,7 +772,6 @@ pub fn planPopupItems(alloc: std.mem.Allocator, snap: *const Snapshot, devices: 
         hasGroup(devices, .nearby),
     }) |g| groups += if (g) 1 else 0;
     const show_headers = groups > 1;
-    var budget: usize = k_max_rows;
     const kinds = [_]struct { group: DeviceGroup, label: []const u8 }{
         .{ .group = .connected, .label = "CONNECTED" },
         .{ .group = .remembered, .label = "REMEMBERED DEVICES" },
@@ -783,15 +781,11 @@ pub fn planPopupItems(alloc: std.mem.Allocator, snap: *const Snapshot, devices: 
         var header_done = false;
         for (devices, 0..) |*d, i| {
             if (!inGroup(d, k.group)) continue;
-            // Headers do not consume the row budget, but a group that opens
-            // with no budget left contributes nothing at all.
-            if (budget == 0) break;
             if (!header_done and show_headers) {
                 try out.append(alloc, .{ .header = true, .label = k.label });
                 header_done = true;
             }
             try out.append(alloc, .{ .dev = i });
-            budget -= 1;
         }
     }
     return out.toOwnedSlice(alloc);
@@ -1421,7 +1415,7 @@ test "bluetooth: debug fixtures cover the lookup tables" {
     try t.expectEqual(@as(usize, 3), off.len);
 }
 
-test "bluetooth: popup plans groups with headers and a 7-row budget" {
+test "bluetooth: popup plans groups with headers and every device" {
     const t = std.testing;
     const devs = [_]Device{
         dev("/a", "A", .headphones, true, true, -1),
@@ -1450,6 +1444,11 @@ test "bluetooth: popup plans groups with headers and a 7-row budget" {
     const off_items = try planPopupItems(t.allocator, &off_snap, &devs);
     defer t.allocator.free(off_items);
     try t.expectEqual(@as(usize, 0), off_items.len);
+    // A scan flood is never truncated: all 12 nearby devices get a row.
+    const many = @as([12]Device, @splat(.{}));
+    const many_items = try planPopupItems(t.allocator, &snap, &many);
+    defer t.allocator.free(many_items);
+    try t.expectEqual(many.len, many_items.len);
 }
 
 test "bluetooth: popup height follows state" {

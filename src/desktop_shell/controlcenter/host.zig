@@ -297,7 +297,7 @@ pub const Host = struct {
         self.syncPw();
         self.counts = .{
             .net_rows = @intCast(@min(src.aps.len, 8)),
-            .bt_rows = @intCast(@min(src.bt_devs.len, 8)),
+            .bt_rows = @intCast(src.bt_devs.len),
             .out_dev_rows = @intCast(@min(src.out_devs.len, 12)),
             .in_dev_rows = @intCast(@min(src.in_devs.len, 12)),
             .mix_total_out = @intCast(src.out_streams.len),

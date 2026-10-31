@@ -3,7 +3,9 @@ const common = @import("common.zig");
 const ui_paint = @import("ui_paint.zig");
 const cairo = @import("../../wl/buffer/shm.zig").cairo;
 const scan = @import("wallpaper_scan.zig");
+const browser = @import("wallpaper_browser.zig");
 const thumbs = @import("wallpaper_thumbs.zig");
+const icon_cache = @import("../../desktop_shell/common/icon_cache.zig");
 
 // The Wallpaper tab.
 //
@@ -27,21 +29,39 @@ const thumbs = @import("wallpaper_thumbs.zig");
 /// Sidebar tab id.
 pub const tab_id: i32 = 6;
 
-const k_content_top: i32 = common.content_top; // 16
-const k_wallpaper_toggle_band_h: i32 = 80;
+const k_content_top: i32 = common.content_top; // 48
 const k_spacing_xl: i32 = common.spacing_xl; // 24
 const k_card_pad: i32 = common.card_pad; // 16
-const k_hero_h: i32 = 300;
-const k_hero_radius: f64 = 20.0;
-const k_tool_bar_h: i32 = 56;
-const k_tool_btn_s: i32 = 40;
-const k_tool_combo_w: i32 = 128;
-const k_tool_combo_h: i32 = 34;
-const k_picker_h: i32 = 48;
-const k_gallery_bar_h: i32 = 32;
+
+// Page geometry (the "Wallpaper Settings Redesign" mock, adapted to the
+// content column): the card interior is a single column, top to bottom:
+//
+//   header row  — title + subtitle, enable switch centred on it
+//   tabs row    — Wallpaper | Gallery settings, hairline rule
+//   current card— 16:9 thumb + info column (name, counter, Fit, buttons)
+//   view panel  — optional Adjust panel
+//   library     — header row + segmented sort control, then the tile grid
+const k_page_pad: i32 = 20; // inset of the page column inside the outer card
+const k_hdr_gap_tabs: i32 = 24; // header row to tabs row
+const k_tabs_h: i32 = 48; // tab row height (text pad 12, rule at the bottom)
+const k_sec_gap: i32 = 24; // between stacked sections (mock `gap: 24`)
+const k_title_lh: i32 = 30; // nominal 22px/600 line box
+const k_sub_lh: i32 = 18; // nominal 13px line box
+const k_name_lh: i32 = 22; // nominal 16px/600 line box
+const k_lib_lh: i32 = 22; // "Library" 16px/600
+const k_cur_pad: i32 = 20; // current-card padding
+const k_thumb_w: i32 = 400; // current-card thumb target width (16:9)
+const k_fit_w: i32 = 150;
+const k_fit_h: i32 = 36;
+const k_btn_h: i32 = 36; // action buttons row (mock .btn height)
+const k_btn_gap: i32 = 8;
+const k_btn_pad_x: i32 = 16;
+const k_seg_h: i32 = 36; // segmented control outer (3+30+3)
+const k_seg_pad: i32 = 3;
+const k_seg_btn_h: i32 = 30;
+const k_seg_btn_pad_x: i32 = 14;
 const k_view_panel_h: i32 = 148;
-const k_thumb_gap: i32 = 6;
-const k_thumb_label_h: i32 = 0;
+const k_thumb_gap: i32 = 16; // grid gutter, both axes (mock 16)
 const k_dd_row_h: i32 = common.settings_dd_row_h; // 26
 /// Page-nav buttons under the grid (`WallpaperTabLayout::kNavW/kNavH`).
 const nav_w: i32 = 80;
@@ -63,7 +83,6 @@ pub const mode_labels = [_][]const u8{ "Fill", "Fit", "Stretch", "Center", "Tile
 /// `wallpaper_folder_picker_row_label`.
 pub const picker_labels = [_][]const u8{ "Native dialog", "KDE — kdialog", "Qt — qarma", "GTK — zenity" };
 const sort_labels = [_][]const u8{ "Name", "Oldest", "Newest" };
-const sort_pill_w = [_]i32{ 72, 88, 88 };
 
 /// Everything the page needs from `Settings` for one frame. Synced by the
 /// window right before relayout so paint, hit-test and the scroll height all
@@ -90,6 +109,12 @@ pub const Action = union(enum) {
     select_image: usize,
     /// Delete button: clear the image and disable the wallpaper.
     clear_image,
+    /// The custom folder browser confirmed the current directory; the
+    /// window reads `Page.fb_cwd` (it holds the fronting Page instance).
+    use_folder,
+    /// The browser confirmed a picked image by index into `fb_imgs`; the
+    /// window takes `Page.fb_imgs.items[idx].full`.
+    use_image: usize,
 };
 
 /// Content-column geometry, passed in rather than read from `Content` so this
@@ -101,73 +126,110 @@ pub const Geo = struct {
 };
 
 pub const Metrics = struct {
+    /// Tabs row top. The Gallery settings blocks anchor off it.
     sub_tab_y: i32,
-    hero_x: f64,
-    hero_y: i32,
-    hero_w: i32,
-    hero_h: i32 = k_hero_h,
-    tool_bar_x: i32,
-    tool_bar_y: i32,
-    tool_bar_w: i32,
-    tool_bar_h: i32 = k_tool_bar_h,
-    tool_icon_y: i32,
-    tool_prev_x: i32,
-    tool_next_x: i32,
-    tool_delete_x: i32,
-    tool_folder_x: i32,
-    tool_tune_x: i32,
-    tool_combo_x: i32,
-    tool_combo_y: i32,
-    tool_combo_w: i32 = k_tool_combo_w,
-    tool_combo_h: i32 = k_tool_combo_h,
-    tool_text_x: i32,
-    tool_text_w: i32,
-    picker_y: i32,
-    gallery_toolbar_y: i32,
-    sort_pills_y: i32,
-    sort_pills_x: i32,
-    gallery_tune_x: i32,
+    /// Page column inside the outer card.
+    pg_x: i32,
+    pg_w: i32,
+    // Header: enable switch centred on the title block.
+    toggle_x: i32,
+    toggle_y: i32,
+    // Current-wallpaper card and its 16:9 thumb.
+    cur_x: i32,
+    cur_y: i32,
+    cur_h: i32,
+    thumb_x: i32,
+    thumb_y: i32,
+    thumb_w: i32,
+    thumb_h: i32,
+    /// Info column: the Fit combo and the action buttons row.
+    info_x: i32,
+    fit_x: i32,
+    fit_y: i32,
+    fit_w: i32 = k_fit_w,
+    fit_h: i32 = k_fit_h,
+    btns_y: i32,
+    choose_w: i32,
+    prev_w: i32,
+    next_w: i32,
+    adj_w: i32,
+    // View panel (Adjust).
     view_panel_y: i32,
     view_panel_h: i32,
+    // Library header + segmented sort control.
+    lib_y: i32,
+    lib_h: i32,
+    seg_x: i32,
+    seg_y: i32,
+    seg_w: i32,
+    seg_name_w: i32,
+    seg_oldest_w: i32,
+    seg_newest_w: i32,
     gallery_grid_top: i32,
 };
 
-/// `wallpaper_vertical_metrics`.
+/// Width of a text button measured without a paint context — `metrics()` is
+/// also called from `hit` and `totalHeight`, where no cr exists.
+fn textBtnW(label: []const u8, size: f32) i32 {
+    return ui_paint.measureTextWidth(label, size, 500) + 2 * k_btn_pad_x;
+}
+
+/// `wallpaper_vertical_metrics` — the whole Wallpaper tab stacked in one
+/// place so paint, hit-test and scroll height cannot disagree.
 pub fn metrics(content_x: f64, content_w: f64, view_open: bool) Metrics {
     var m: Metrics = undefined;
-    m.sub_tab_y = k_content_top + 96;
-    m.hero_x = content_x + @as(f64, @floatFromInt(k_card_pad));
-    m.hero_y = m.sub_tab_y + 52;
-    m.hero_w = @intFromFloat(content_w - 2.0 * @as(f64, @floatFromInt(k_card_pad)));
-    m.hero_h = k_hero_h;
+    const cx: i32 = @intFromFloat(content_x);
+    const cw: i32 = @intFromFloat(content_w);
+    m.pg_x = cx + k_page_pad;
+    m.pg_w = cw - 2 * k_page_pad;
 
-    m.tool_bar_h = k_tool_bar_h;
-    m.tool_bar_w = m.hero_w - 24;
-    m.tool_bar_x = @as(i32, @intFromFloat(m.hero_x)) + 12;
-    m.tool_bar_y = m.hero_y + k_hero_h - 12 - k_tool_bar_h;
-    m.tool_icon_y = m.tool_bar_y + @divTrunc(k_tool_bar_h - k_tool_btn_s, 2);
-    m.tool_prev_x = m.tool_bar_x + 8;
-    m.tool_next_x = m.tool_prev_x + k_tool_btn_s + 8;
-    m.tool_delete_x = m.tool_bar_x + m.tool_bar_w - 8 - k_tool_btn_s;
-    m.tool_folder_x = m.tool_delete_x - 8 - k_tool_btn_s;
-    m.tool_tune_x = m.tool_folder_x - 8 - k_tool_btn_s;
-    m.tool_combo_w = k_tool_combo_w;
-    m.tool_combo_h = k_tool_combo_h;
-    m.tool_combo_x = m.tool_tune_x - 8 - k_tool_combo_w;
-    m.tool_combo_y = m.tool_bar_y + @divTrunc(k_tool_bar_h - k_tool_combo_h, 2);
-    m.tool_text_x = m.tool_next_x + k_tool_btn_s + 12;
-    m.tool_text_w = @max(40, m.tool_combo_x - 8 - m.tool_text_x);
+    // Header row: title + subtitle stack, the toggle centred on it.
+    const hdr_top = k_content_top + k_page_pad;
+    const hdr_h = k_title_lh + 2 + k_sub_lh; // 50
+    m.sub_tab_y = hdr_top + hdr_h + k_hdr_gap_tabs;
+    m.toggle_x = m.pg_x + m.pg_w - k_toggle_w;
+    m.toggle_y = hdr_top + @divTrunc(hdr_h - k_toggle_h, 2);
 
-    m.picker_y = m.hero_y + k_hero_h + 12;
-    m.gallery_toolbar_y = m.picker_y + k_picker_h + 16;
-    m.sort_pills_y = m.gallery_toolbar_y + @divTrunc(k_gallery_bar_h - 28, 2);
-    // Right-aligned: Name(72) Oldest(88) Newest(88) + tune(40), 8px gaps.
-    m.sort_pills_x = @as(i32, @intFromFloat(m.hero_x)) + m.hero_w - (72 + 8 + 88 + 8 + 88 + 8 + 40);
-    m.gallery_tune_x = m.sort_pills_x + 72 + 8 + 88 + 8 + 88 + 8;
+    // Current-wallpaper card: 16:9 thumb left, info column right.
+    m.cur_x = m.pg_x;
+    m.cur_y = m.sub_tab_y + k_tabs_h + k_sec_gap;
+    const inner_w = m.pg_w - 2 * k_cur_pad;
+    // Button row width decides the worst case; the thumb shrinks before the
+    // info column ever starves (mock: 400px, `max-width:100%`).
+    m.choose_w = textBtnW("Choose Wallpaper", k_btn_font);
+    m.prev_w = textBtnW("Previous", k_btn_font);
+    m.next_w = textBtnW("Next", k_btn_font);
+    m.adj_w = textBtnW("Adjust", k_btn_font);
+    const row_w = m.choose_w + m.prev_w + m.next_w + m.adj_w + 3 * k_btn_gap;
+    m.thumb_w = std.math.clamp(inner_w - row_w - 24, 180, k_thumb_w);
+    m.thumb_h = @divTrunc(m.thumb_w * 9 + 8, 16);
+    m.thumb_x = m.cur_x + k_cur_pad;
+    m.thumb_y = m.cur_y + k_cur_pad;
+    m.cur_h = m.thumb_h + 2 * k_cur_pad;
+    m.info_x = m.thumb_x + m.thumb_w + 24;
 
-    m.view_panel_y = m.gallery_toolbar_y + k_gallery_bar_h + 12;
+    // Fit stack: name, counter, 20px gap, label, 6px gap, combo.
+    m.fit_x = m.info_x;
+    m.fit_w = k_fit_w;
+    m.fit_h = k_fit_h;
+    m.fit_y = m.thumb_y + k_name_lh + 4 + k_sub_lh + 20 + k_sub_lh + 6;
+    // The action row is pinned to the card's bottom edge (mock margin-top:auto).
+    m.btns_y = m.cur_y + m.cur_h - k_cur_pad - k_btn_h;
+
     m.view_panel_h = if (view_open) k_view_panel_h else 0;
-    m.gallery_grid_top = m.view_panel_y + (if (view_open) m.view_panel_h + 12 else 12);
+    m.view_panel_y = m.cur_y + m.cur_h + 12;
+    m.lib_y = if (view_open) m.view_panel_y + k_view_panel_h + 16 else m.cur_y + m.cur_h + k_sec_gap;
+    m.lib_h = k_lib_lh + 2 + k_sub_lh; // 42
+
+    // Segmented sort control (right-aligned, centred on the Library head).
+    m.seg_name_w = textBtnW("Name", k_seg_font);
+    m.seg_oldest_w = textBtnW("Oldest", k_seg_font);
+    m.seg_newest_w = textBtnW("Newest", k_seg_font);
+    m.seg_w = m.seg_name_w + m.seg_oldest_w + m.seg_newest_w + 2 * k_seg_pad;
+    m.seg_x = m.pg_x + m.pg_w - m.seg_w;
+    m.seg_y = m.lib_y + @divTrunc(m.lib_h - k_seg_h, 2);
+
+    m.gallery_grid_top = m.lib_y + m.lib_h + 16;
     return m;
 }
 
@@ -176,10 +238,36 @@ pub fn metrics(content_x: f64, content_w: f64, view_open: bool) Metrics {
 pub const ViewCell = struct { x: i32, minus_x: i32, plus_x: i32, btn_y: i32 };
 
 pub fn viewCell(m: *const Metrics, idx: i32) ViewCell {
-    const cell_w = @divTrunc(m.hero_w - 24 - 3 * 12, 4);
-    const cx = @as(i32, @intFromFloat(m.hero_x)) + 12 + idx * (cell_w + 12);
+    const cell_w = @divTrunc(m.pg_w - 3 * 12, 4);
+    const cx = m.pg_x + idx * (cell_w + 12);
     return .{ .x = cx, .minus_x = cx, .plus_x = cx + cell_w - 44, .btn_y = m.view_panel_y + 96 };
 }
+
+/// One segmented-control button's rect. Lefts are cumulative widths, so
+/// paint and hit can never disagree.
+fn segBtn(m: *const Metrics, pi: i32) common.Rect {
+    const ws = [3]i32{ m.seg_name_w, m.seg_oldest_w, m.seg_newest_w };
+    var left: i32 = 0;
+    for (0..@intCast(pi)) |i| left += ws[i];
+    return .{
+        .x = m.seg_x + k_seg_pad + left,
+        .y = m.seg_y + k_seg_pad,
+        .w = ws[@intCast(pi)],
+        .h = k_seg_btn_h,
+    };
+}
+
+/// Header toggle (mock `.tg`): 44x26.
+const k_toggle_w: i32 = 44;
+const k_toggle_h: i32 = 26;
+/// Button fonts — 13px labels, this close to the mock's 14px inheritance.
+const k_btn_font: f32 = 13;
+const k_seg_font: f32 = 13;
+/// Sub-tab labels (mock `.tab`: 15px, 12px vertical padding).
+const k_tab_font: f32 = 15;
+const k_tab_text_off: i32 = 12;
+const k_tab_lh: i32 = 20;
+const k_tab_gap: i32 = 28;
 
 pub const Grid = struct {
     gap: i32 = k_thumb_gap,
@@ -346,6 +434,31 @@ pub const Page = struct {
     /// persisted settings too — the slider is a live preview).
     opacity_pct: i32 = 100,
 
+    // ------------------------------------------------ custom folder browser
+    /// The in-app chooser state: window-space modal driven by
+    /// `openFolderBrowser` / `paintFolderBrowser` / `hitFolderBrowser`.
+    /// Listing arrays own their strings; the scan worker publishes via
+    /// `wallpaper_browser`'s mailbox and `drainFolderScan` adopts.
+    fb_open: bool = false,
+    fb_cwd: std.ArrayList(u8) = .empty,
+    fb_hidden: bool = false,
+    fb_scroll: i32 = 0,
+    fb_dirs: std.ArrayList(browser.DirEntry) = .empty,
+    fb_imgs: std.ArrayList(browser.DirEntry) = .empty,
+    fb_err: bool = false,
+    fb_loading: bool = false,
+    /// The in-flight listing request id; a stale mailbox payload is dropped.
+    fb_seq: u32 = 0,
+    fb_img_sel: i32 = -1,
+    /// Scratch buffer for footer/status strings (`std.fmt.bufPrint` target);
+    /// valid only until the next call — `fbFootLabel` consumers draw
+    /// immediately.
+    fb_stamp_buf: [512]u8 = undefined,
+    /// Borrowed system-icon pixels for the browser rail and folder rows,
+    /// keyed by icon name (page-owned dups) — the freedesktop icons the
+    /// user's theme provides, so the browser reads native.
+    fb_icons: std.StringHashMapUnmanaged(icon_cache.Owned) = .empty,
+
     gallery: scan.Gallery = undefined,
     sort_mode: i32 = 2,
     sort_applied: i32 = -1,
@@ -393,6 +506,16 @@ pub const Page = struct {
             self.alloc.free(k);
             self.folder_synced = null;
         }
+        self.fbCloseLists();
+        self.fb_cwd.deinit(self.alloc);
+        self.fb_cwd = .empty;
+        var it = self.fb_icons.iterator();
+        while (it.next()) |e| {
+            e.value_ptr.deinit(self.alloc);
+            self.alloc.free(e.key_ptr.*);
+        }
+        self.fb_icons.deinit(self.alloc);
+        self.fb_icons = .empty;
         self.inited = false;
     }
 
@@ -594,20 +717,20 @@ pub const Page = struct {
 
     /// `wallpaper_tab_layout` — the gallery grid's columns, tile size and
     /// page-nav placement for the current view options.
-    pub fn grid(self: *const Page, card_inset_x: i32, content_w: i32, gallery_top: i32) Grid {
-        const avail_w = content_w - 8 - 2 * k_card_pad;
+    pub fn grid(self: *const Page, pg_x: i32, pg_w: i32, gallery_top: i32) Grid {
         const cols: i32 = std.math.clamp(self.columns, 1, 10);
         const scale = @as(f64, @floatFromInt(std.math.clamp(self.scale_pct, 50, 200))) / 100.0;
         var tw: i32 = @intFromFloat(@ceil(
-            (@as(f64, @floatFromInt(avail_w - k_thumb_gap * (cols - 1))) /
+            (@as(f64, @floatFromInt(pg_w - k_thumb_gap * (cols - 1))) /
                 @as(f64, @floatFromInt(cols))) * scale,
         ));
         tw = @max(40, tw);
-        const thumb_h: i32 = @divTrunc(tw * 9 + 8, 16);
+        // 16:10 tiles (mock .th aspect-ratio).
+        const thumb_h: i32 = @divTrunc(tw * 10 + 15, 16);
         const rows: i32 = std.math.clamp(self.rows, 1, 10);
         const per_page: usize = @as(usize, @intCast(cols)) * @as(usize, @intCast(rows));
         const n: usize = self.gallery.entries.items.len;
-        const row_stride_nav = thumb_h + k_thumb_label_h + 6;
+        const row_stride_nav = thumb_h + k_thumb_gap;
         const grid_bottom_nav = gallery_top + rows * row_stride_nav;
         const nav_y = grid_bottom_nav + 14;
         const show_nav = n > per_page;
@@ -620,8 +743,8 @@ pub const Page = struct {
             .top = gallery_top,
             .nav_y = nav_y,
             .show_nav = show_nav,
-            .prev_x = card_inset_x + k_card_pad,
-            .next_x = card_inset_x + content_w - k_card_pad - nav_w,
+            .prev_x = pg_x,
+            .next_x = pg_x + pg_w - nav_w,
         };
     }
 
@@ -630,13 +753,13 @@ pub const Page = struct {
         if (!self.inited) return g.win_h;
         self.ensureGallery();
         const m = metrics(@floatFromInt(g.content_x), @floatFromInt(g.content_w), self.view_open);
-        const gr = self.grid(g.content_x + 8, g.content_w, m.gallery_grid_top);
+        const gr = self.grid(m.pg_x, m.pg_w, m.gallery_grid_top);
         const bottom_px: i32 = if (self.sub_tab == 1)
             m.sub_tab_y + 48 + 88 + 28 + 12 + 5 * 48 + 8 + 24
         else if (gr.show_nav)
             gr.nav_y + nav_h + 20
         else
-            gr.top + gr.rows * (gr.thumb_h + k_thumb_label_h + 6) + 28;
+            gr.top + gr.rows * (gr.thumb_h + k_thumb_gap) + 28;
         return @max(0, bottom_px - k_content_top + 12);
     }
 
@@ -818,8 +941,7 @@ pub const Page = struct {
 
         const t = common.Theme;
         const m = metrics(@floatFromInt(g.content_x), @floatFromInt(g.content_w), self.view_open);
-        const card_inset_x = g.content_x + 8;
-        const gr = self.grid(card_inset_x, g.content_w, m.gallery_grid_top);
+        const gr = self.grid(m.pg_x, m.pg_w, m.gallery_grid_top);
         self.clampPage(gr.per_page);
 
         // The card surface stretches to the logical content height.
@@ -828,7 +950,7 @@ pub const Page = struct {
         else if (gr.show_nav)
             gr.nav_y + nav_h + 20
         else
-            gr.top + gr.rows * (gr.thumb_h + k_thumb_label_h + 6) + 28;
+            gr.top + gr.rows * (gr.thumb_h + k_thumb_gap) + 28;
         const view_fill: i32 = g.win_h - k_content_top - k_spacing_xl;
         const card_h: i32 = @max(view_fill, bottom_px - k_content_top + 12);
         ui_paint.card(
@@ -840,47 +962,33 @@ pub const Page = struct {
             glass_ov,
         );
 
-        // Title.
-        ui_paint.showText(
-            c,
-            @floatFromInt(g.content_x + k_card_pad),
-            @floatFromInt(k_content_top + 36),
-            "Wallpaper",
-            17,
-            600,
-            t.text_r,
-            t.text_g,
-            t.text_b,
-            0.95,
-        );
-
-        // `settings_toggle` band: 52x26 at the right of the top row.
+        // Header row: 22px title over a dim subtitle, enable switch on the
+        // right, centred on the title block.
         {
-            const wg_w: i32 = 52;
-            const wg_h: i32 = 26;
-            const wg_x = card_inset_x + (g.content_w - 16) - wg_w - k_spacing_xl;
-            const wg_y = k_content_top + @divTrunc(k_wallpaper_toggle_band_h - wg_h, 2);
-            paintSwitch(c, wg_x, wg_y, wg_w, wg_h, self.snap.enabled);
+            drawTextTop(c, @floatFromInt(m.pg_x), @floatFromInt(k_content_top + k_page_pad), "Wallpaper", 22, 600, t.text_r, t.text_g, t.text_b, 0.95);
+            drawTextTop(c, @floatFromInt(m.pg_x), @floatFromInt(k_content_top + k_page_pad + k_title_lh + 2), "Choose what shows behind your windows.", 13, 400, t.text_r, t.text_g, t.text_b, 0.55);
+            paintSwitch(c, m.toggle_x, m.toggle_y, k_toggle_w, k_toggle_h, self.snap.enabled);
         }
 
-        // Underline sub-tab bar.
+        // Tabs row: hairline rule with accent underline under the active tab.
         {
-            const st_x: i32 = g.content_x + k_card_pad;
+            const st_x: i32 = m.pg_x;
             const st_y = m.sub_tab_y;
-            const st_h: i32 = 48;
             cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.25);
             cairo_set_line_width(c, 1.0);
-            const rule_y = @as(f64, @floatFromInt(st_y + st_h)) - 0.5;
+            const rule_y = @as(f64, @floatFromInt(st_y + k_tabs_h)) - 0.5;
             cairo_move_to(c, @floatFromInt(st_x), rule_y);
-            cairo_line_to(c, @floatFromInt(st_x + g.content_w - 2 * k_card_pad), rule_y);
+            cairo_line_to(c, @floatFromInt(st_x + m.pg_w), rule_y);
             cairo_stroke(c);
 
-            ui_paint.showText(c, @floatFromInt(st_x + 16), @floatFromInt(st_y + st_h / 2 + 6), "Wallpaper", 16, 500, t.text_r, t.text_g, t.text_b, if (self.sub_tab == 0) 0.95 else 0.5);
-            if (self.sub_tab == 0) paintUnderline(c, st_x + 16, st_y + st_h - 3, 100, t);
+            const t0_w = ui_paint.measureTextWidth("Wallpaper", k_tab_font, 500);
+            ui_paint.showText(c, @floatFromInt(st_x), @floatFromInt(st_y + k_tab_text_off + k_tab_lh - 2), "Wallpaper", k_tab_font, 500, t.text_r, t.text_g, t.text_b, if (self.sub_tab == 0) 0.95 else 0.5);
+            if (self.sub_tab == 0) paintUnderline(c, st_x, st_y + k_tabs_h - 3, t0_w, t);
 
-            const tab1_x = st_x + 100 + 24;
-            ui_paint.showText(c, @floatFromInt(tab1_x + 16), @floatFromInt(st_y + st_h / 2 + 6), "Gallery settings", 16, 500, t.text_r, t.text_g, t.text_b, if (self.sub_tab == 1) 0.95 else 0.5);
-            if (self.sub_tab == 1) paintUnderline(c, tab1_x + 16, st_y + st_h - 3, 160, t);
+            const t1_x = st_x + t0_w + k_tab_gap;
+            const t1_w = ui_paint.measureTextWidth("Gallery settings", k_tab_font, 500);
+            ui_paint.showText(c, @floatFromInt(t1_x), @floatFromInt(st_y + k_tab_text_off + k_tab_lh - 2), "Gallery settings", k_tab_font, 500, t.text_r, t.text_g, t.text_b, if (self.sub_tab == 1) 0.95 else 0.5);
+            if (self.sub_tab == 1) paintUnderline(c, t1_x, st_y + k_tabs_h - 3, t1_w, t);
         }
 
         if (self.sub_tab == 1) {
@@ -889,12 +997,12 @@ pub const Page = struct {
             self.paintWallpaperTab(c, g, &m, &gr, px, py, glass_ov);
         }
 
-        // The mode list hangs off the toolbar combo and scrolls with the page,
-        // (it is painted in layout space too).
+        // The Fit list hangs off the current-card combo and scrolls with the
+        // page (it is painted in layout space too).
         if (self.sub_tab == 0 and self.mode_drop_open) {
-            const dd_y = m.tool_combo_y + m.tool_combo_h + 2;
-            self.mode_drop_hover = ddHoverRow(px, py, m.tool_combo_x, dd_y, m.tool_combo_w);
-            paintComboPopup(c, m.tool_combo_x, dd_y, m.tool_combo_w, self.snap.mode, self.mode_drop_hover, t);
+            const dd_y = m.fit_y + m.fit_h + 2;
+            self.mode_drop_hover = ddHoverRow(px, py, m.fit_x, dd_y, m.fit_w);
+            paintComboPopup(c, m.fit_x, dd_y, m.fit_w, self.snap.mode, self.mode_drop_hover, t);
         }
     }
 
@@ -908,185 +1016,202 @@ pub const Page = struct {
         py: f64,
         glass_ov: f64,
     ) void {
+        // The old hero rims were the only consumer; the flat sub-card keeps
+        // the outer card's glass scaling.
+        _ = glass_ov;
         const t = common.Theme;
-        const hero_x: i32 = @intFromFloat(m.hero_x);
-        const hero_y = m.hero_y;
-        const hero_w = m.hero_w;
-        const hero_h = m.hero_h;
 
-        // Hero: clipped cover of the cached surface over a dark plate.
+        // ---- Current-wallpaper card (mock section.cur) ----
+        // Sub-card surface: glassy fill + hairline outline, radius 16.
+        ui_paint.glassBox(c, @floatFromInt(m.cur_x), @floatFromInt(m.cur_y), @floatFromInt(m.pg_w), @floatFromInt(m.cur_h), 16, 1, 1, 1, 0.07);
         cairo_save(c);
-        ui_paint.roundRect(c, @floatFromInt(hero_x), @floatFromInt(hero_y), @floatFromInt(hero_w), @floatFromInt(hero_h), k_hero_radius);
+        ui_paint.roundRect(c, @floatFromInt(m.cur_x), @floatFromInt(m.cur_y), @floatFromInt(m.pg_w), @floatFromInt(m.cur_h), 16.0);
+        cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.25);
+        cairo_set_line_width(c, 1.0);
+        cairo_stroke(c);
+        cairo_restore(c);
+
+        // 16:9 thumb, cover-fitted over a dark plate, clip-rounded.
+        ui_paint.roundRect(
+            c,
+            @as(f64, @floatFromInt(m.thumb_x)),
+            @as(f64, @floatFromInt(m.thumb_y)),
+            @as(f64, @floatFromInt(m.thumb_w)),
+            @as(f64, @floatFromInt(m.thumb_h)),
+            12.0,
+        );
+        cairo_set_source_rgba(c, t.bg_r * 0.35, t.bg_g * 0.35, t.bg_b * 0.35, 0.5);
+        cairo_fill(c);
+        cairo_save(c);
+        _ = ui_paint.roundRect(
+            c,
+            @as(f64, @floatFromInt(m.thumb_x)),
+            @as(f64, @floatFromInt(m.thumb_y)),
+            @as(f64, @floatFromInt(m.thumb_w)),
+            @as(f64, @floatFromInt(m.thumb_h)),
+            12.0,
+        );
         cairo_clip(c);
-        cairo_set_source_rgba(c, t.bg_r * 0.35, t.bg_g * 0.35, t.bg_b * 0.35, 0.94);
-        cairo_paint(c);
         if (self.surfaceFor(self.snap.image)) |surf| {
             cairo_surface_flush(surf);
             const iw = cairo_image_surface_get_width(surf);
             const ih = cairo_image_surface_get_height(surf);
             if (iw > 0 and ih > 0) {
-                const wf: f64 = @floatFromInt(hero_w);
-                const hf: f64 = @floatFromInt(hero_h);
+                const wf: f64 = @floatFromInt(m.thumb_w);
+                const hf: f64 = @floatFromInt(m.thumb_h);
                 const sc = @max(
                     wf / @as(f64, @floatFromInt(iw)),
                     hf / @as(f64, @floatFromInt(ih)),
                 );
-                const disp_w = @as(f64, @floatFromInt(iw)) * sc;
-                const disp_h = @as(f64, @floatFromInt(ih)) * sc;
-                const ox = @as(f64, @floatFromInt(hero_x)) + (wf - disp_w) * 0.5;
-                const oy = @as(f64, @floatFromInt(hero_y)) + (hf - disp_h) * 0.5;
+                const ox = @as(f64, @floatFromInt(m.thumb_x)) + (wf - @as(f64, @floatFromInt(iw)) * sc) * 0.5;
+                const oy = @as(f64, @floatFromInt(m.thumb_y)) + (hf - @as(f64, @floatFromInt(ih)) * sc) * 0.5;
                 cairo_translate(c, ox, oy);
                 cairo_scale(c, sc, sc);
                 cairo_set_source_surface(c, surf, 0, 0);
                 cairo_paint(c);
             }
+        } else {
+            ui_paint.glyph(
+                c,
+                @as(f64, @floatFromInt(m.thumb_x)) + @as(f64, @floatFromInt(m.thumb_w)) / 2.0,
+                @as(f64, @floatFromInt(m.thumb_y)) + @as(f64, @floatFromInt(m.thumb_h)) / 2.0,
+                40,
+                "wallpaper",
+                t.text_r,
+                t.text_g,
+                t.text_b,
+                0.25,
+            );
         }
         cairo_restore(c);
-
-        // Bright inner rim + dark hairline.
+        // Hairline around the thumb itself.
         cairo_save(c);
-        const rim = cairo_pattern_create_linear(0, @floatFromInt(hero_y), 0, @floatFromInt(hero_y + hero_h));
-        cairo_pattern_add_color_stop_rgba(rim, 0.0, 1.0, 1.0, 1.0, 0.38 * glass_ov);
-        cairo_pattern_add_color_stop_rgba(rim, 0.35, 1.0, 1.0, 1.0, 0.14 * glass_ov);
-        cairo_pattern_add_color_stop_rgba(rim, 0.7, 1.0, 1.0, 1.0, 0.05 * glass_ov);
-        cairo_pattern_add_color_stop_rgba(rim, 1.0, 1.0, 1.0, 1.0, 0.12 * glass_ov);
-        cairo_set_source(c, rim);
-        cairo_set_line_width(c, 1.0);
-        ui_paint.roundRect(c, @floatFromInt(hero_x + 1), @floatFromInt(hero_y + 1), @floatFromInt(hero_w - 2), @floatFromInt(hero_h - 2), k_hero_radius - 1.0);
-        cairo_stroke(c);
-        cairo_pattern_destroy(rim);
-        cairo_restore(c);
-
-        cairo_save(c);
-        ui_paint.roundRect(c, @as(f64, @floatFromInt(hero_x)) + 0.5, @as(f64, @floatFromInt(hero_y)) + 0.5, @floatFromInt(hero_w - 1), @floatFromInt(hero_h - 1), k_hero_radius);
-        cairo_set_source_rgba(c, 0, 0, 0, 0.25);
-        cairo_set_line_width(c, 1.0);
-        cairo_stroke(c);
-        cairo_restore(c);
-
-        // Top/bottom scrims.
-        {
-            const gtop = cairo_pattern_create_linear(@floatFromInt(hero_x), @floatFromInt(hero_y), @floatFromInt(hero_x), @floatFromInt(hero_y + 64));
-            cairo_pattern_add_color_stop_rgba(gtop, 0, 0, 0, 0, 0.5);
-            cairo_pattern_add_color_stop_rgba(gtop, 1, 0, 0, 0, 0);
-            cairo_set_source(c, gtop);
-            cairo_rectangle(c, @floatFromInt(hero_x), @floatFromInt(hero_y), @floatFromInt(hero_w), 64);
-            cairo_fill(c);
-            cairo_pattern_destroy(gtop);
-
-            const gbot = cairo_pattern_create_linear(@floatFromInt(hero_x), @floatFromInt(hero_y + hero_h - 72), @floatFromInt(hero_x), @floatFromInt(hero_y + hero_h));
-            cairo_pattern_add_color_stop_rgba(gbot, 0, 0, 0, 0, 0);
-            cairo_pattern_add_color_stop_rgba(gbot, 1, 0, 0, 0, 0.55);
-            cairo_set_source(c, gbot);
-            cairo_rectangle(c, @floatFromInt(hero_x), @floatFromInt(hero_y + hero_h - 72), @floatFromInt(hero_w), 72);
-            cairo_fill(c);
-            cairo_pattern_destroy(gbot);
-        }
-
-        // "In use" badge over the hero.
-        if (self.snap.image.len > 0) {
-            ui_paint.glassBox(c, @floatFromInt(hero_x + 12), @floatFromInt(hero_y + 12), 62, 24, 9, 0.55, 0.53, 0.58, 0.35);
-            ui_paint.showText(c, @floatFromInt(hero_x + 20), @floatFromInt(hero_y + 29), "In use", 10, 500, 1, 1, 1, 1.0);
-        }
-
-        // Floating toolbar over the hero bottom.
-        ui_paint.glassBox(
+        ui_paint.roundRect(
             c,
-            @floatFromInt(m.tool_bar_x),
-            @floatFromInt(m.tool_bar_y),
-            @floatFromInt(m.tool_bar_w),
-            @floatFromInt(m.tool_bar_h),
-            14,
-            0,
-            0,
-            0,
-            0.45,
+            @as(f64, @floatFromInt(m.thumb_x)) + 0.5,
+            @as(f64, @floatFromInt(m.thumb_y)) + 0.5,
+            @as(f64, @floatFromInt(m.thumb_w)) - 1.0,
+            @as(f64, @floatFromInt(m.thumb_h)) - 1.0,
+            12.0,
         );
-        paintGlyphBtn(c, m.tool_prev_x, m.tool_icon_y, "chevron_left", false, inR(px, py, m.tool_prev_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s), t);
-        paintGlyphBtn(c, m.tool_next_x, m.tool_icon_y, "chevron_right", false, inR(px, py, m.tool_next_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s), t);
+        cairo_set_source_rgba(c, 1, 1, 1, 0.12);
+        cairo_set_line_width(c, 1.0);
+        cairo_stroke(c);
+        cairo_restore(c);
 
-        // Current file name + position counter.
+        // "In use" chip over the thumb (accent pill, dark 12/600 text).
+        if (self.snap.image.len > 0) {
+            paintChip(c, @floatFromInt(m.thumb_x + 10), @floatFromInt(m.thumb_y + 10), 12.0, t);
+        }
+
+        // Info column: file name + counter, the Fit combo, then the action
+        // row pinned to the card's bottom edge.
         {
-            const n_total: usize = self.gallery.entries.items.len;
-            const cur = if (self.snap.image.len > 0) self.indexOfImage(self.snap.image) else null;
             const base: []const u8 = if (self.snap.image.len == 0)
                 "No wallpaper selected"
             else
                 std.fs.path.basename(self.snap.image);
-            var name_buf: [96]u8 = undefined;
-            const max_c: usize = @intCast(std.math.clamp(@divTrunc(m.tool_text_w, 7), 12, 64));
-            const shown = truncateVisual(&name_buf, base, max_c);
-            ui_paint.showText(c, @floatFromInt(m.tool_text_x), @floatFromInt(m.tool_bar_y + 24), shown, 14, 600, 1, 1, 1, 0.95);
-            var pos_buf: [48]u8 = undefined;
-            if (cur) |ci| {
-                const pos = std.fmt.bufPrint(&pos_buf, "{d} / {d}", .{ ci + 1, n_total }) catch "";
-                ui_paint.showText(c, @floatFromInt(m.tool_text_x), @floatFromInt(m.tool_bar_y + 42), pos, 12, 400, 1, 1, 1, 0.65);
-            } else if (n_total > 0) {
-                const pos = std.fmt.bufPrint(&pos_buf, "{d} wallpapers", .{n_total}) catch "";
-                ui_paint.showText(c, @floatFromInt(m.tool_text_x), @floatFromInt(m.tool_bar_y + 42), pos, 12, 400, 1, 1, 1, 0.65);
-            }
+            const name_top: f64 = @floatFromInt(m.thumb_y);
+            ui_paint.showTextW(
+                c,
+                @floatFromInt(m.info_x),
+                name_top + @as(f64, @floatFromInt(k_name_lh)) - 2.0,
+                base,
+                16,
+                600,
+                @floatFromInt(@max(80, m.pg_x + m.pg_w - k_cur_pad - m.info_x)),
+                t.text_r,
+                t.text_g,
+                t.text_b,
+                0.95,
+            );
+
+            const cur_idx = if (self.snap.image.len > 0) self.indexOfImage(self.snap.image) else null;
+            const n_total: usize = self.gallery.entries.items.len;
+            const folder_disp: []const u8 = if (self.snap.folder.len == 0)
+                "no folder"
+            else
+                std.fs.path.basename(self.snap.folder);
+            var pos_buf: [160]u8 = undefined;
+            const pos: []const u8 = if (cur_idx) |ci|
+                std.fmt.bufPrint(&pos_buf, "{d} of {d} in {s}", .{ ci + 1, n_total, folder_disp }) catch ""
+            else if (n_total > 0)
+                std.fmt.bufPrint(&pos_buf, "{s} · {d} wallpapers", .{ folder_disp, n_total }) catch ""
+            else
+                folder_disp;
+            drawTextTop(c, @floatFromInt(m.info_x), @floatFromInt(m.thumb_y + k_name_lh + 4), pos, 13, 400, t.text_r, t.text_g, t.text_b, 0.55);
         }
 
-        // Fill-mode combo.
+        // Fit label + combo.
+        drawTextTop(c, @floatFromInt(m.fit_x), @floatFromInt(m.fit_y - k_sub_lh - 6), "Fit", 13, 400, t.text_r, t.text_g, t.text_b, 0.55);
+
+        // Fit combo (closed state; the popup paints back in `paint`).
         {
             const mm: usize = @intCast(std.math.clamp(self.snap.mode, 0, 4));
-            const hov = inR(px, py, m.tool_combo_x, m.tool_combo_y, m.tool_combo_w, m.tool_combo_h);
-            paintCombo(c, m.tool_combo_x, m.tool_combo_y, m.tool_combo_w, m.tool_combo_h, mode_labels[mm], hov or self.mode_drop_open, t);
+            const hov = inR(px, py, m.fit_x, m.fit_y, m.fit_w, m.fit_h);
+            paintCombo(c, m.fit_x, m.fit_y, m.fit_w, m.fit_h, mode_labels[mm], hov or self.mode_drop_open, t);
         }
 
-        paintGlyphBtn(c, m.tool_tune_x, m.tool_icon_y, "tune", self.view_open, inR(px, py, m.tool_tune_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s), t);
-        paintGlyphBtn(c, m.tool_folder_x, m.tool_icon_y, "folder", false, inR(px, py, m.tool_folder_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s), t);
-        paintGlyphBtn(c, m.tool_delete_x, m.tool_icon_y, "delete", false, inR(px, py, m.tool_delete_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s), t);
-
-        // Full-width primary button under the hero.
-        paintBtn(
-            c,
-            hero_x,
-            m.picker_y,
-            hero_w,
-            k_picker_h,
-            "Open Picker…",
-            true,
-            inR(px, py, hero_x, m.picker_y, hero_w, k_picker_h),
-            t,
-        );
-
-        // Gallery toolbar: folder path + count left, sort pills + tune right.
+        // Action row: primary Choose Wallpaper opens the folder browser;
+        // Previous/Next step the gallery; Adjust toggles the view panel.
         {
-            var hd_buf: [256]u8 = undefined;
+            var bx = m.info_x;
+            const by = m.btns_y;
+            paintBtn(c, bx, by, m.choose_w, k_btn_h, "Choose Wallpaper", true, inR(px, py, bx, by, m.choose_w, k_btn_h), t);
+            bx += m.choose_w + k_btn_gap;
+            paintBtn(c, bx, by, m.prev_w, k_btn_h, "Previous", false, inR(px, py, bx, by, m.prev_w, k_btn_h), t);
+            bx += m.prev_w + k_btn_gap;
+            paintBtn(c, bx, by, m.next_w, k_btn_h, "Next", false, inR(px, py, bx, by, m.next_w, k_btn_h), t);
+            bx += m.next_w + k_btn_gap;
+            paintBtn(c, bx, by, m.adj_w, k_btn_h, "Adjust", false, inR(px, py, bx, by, m.adj_w, k_btn_h), t);
+        }
+
+        // Library header: title + dim "path, N wallpapers" line; the segmented
+        // sort control rides on the right.
+        drawTextTop(c, @floatFromInt(m.pg_x), @floatFromInt(m.lib_y), "Library", 16, 600, t.text_r, t.text_g, t.text_b, 0.95);
+        {
             const folder_disp: []const u8 = if (self.snap.folder.len == 0) "No folder" else self.snap.folder;
-            const hd_full = std.fmt.bufPrint(&hd_buf, "{s}  ·  {d} wallpapers", .{ folder_disp, self.gallery.entries.items.len }) catch "";
-            const max_c: usize = @intCast(std.math.clamp(@divTrunc(m.sort_pills_x - 12 - hero_x, 7), 16, 120));
-            var hd_out: [320]u8 = undefined;
-            const shown = truncateVisual(&hd_out, hd_full, max_c);
-            ui_paint.showText(c, @floatFromInt(hero_x), m.gallery_toolbar_y + 21, shown, 13, 500, t.text_r, t.text_g, t.text_b, 0.7);
+            var hd_buf: [512]u8 = undefined;
+            const hd_full = std.fmt.bufPrint(&hd_buf, "{s}, {d} wallpapers", .{ folder_disp, self.gallery.entries.items.len }) catch "";
+            const max_w: i32 = @max(80, m.seg_x - 12 - m.pg_x);
+            drawTextTopW(c, @floatFromInt(m.pg_x), @floatFromInt(m.lib_y + k_lib_lh + 2), hd_full, 13, 400, @floatFromInt(max_w), t.text_r, t.text_g, t.text_b, 0.55);
         }
-        {
-            var px_i = m.sort_pills_x;
-            for (sort_labels, 0..) |lab, pi| {
-                const sel = self.sort_mode == @as(i32, @intCast(pi));
-                paintBtn(
-                    c,
-                    px_i,
-                    m.sort_pills_y,
-                    sort_pill_w[pi],
-                    28,
-                    lab,
-                    sel,
-                    inR(px, py, px_i, m.sort_pills_y, sort_pill_w[pi], 28),
-                    t,
-                );
-                px_i += sort_pill_w[pi] + 8;
+
+        // Segmented sort control (mock .seg): pill container, active knob.
+        ui_paint.glassBox(c, @floatFromInt(m.seg_x), @floatFromInt(m.seg_y), @floatFromInt(m.seg_w), @floatFromInt(k_seg_h), 12, 1, 1, 1, 0.06);
+        cairo_save(c);
+        ui_paint.roundRect(c, @floatFromInt(m.seg_x), @floatFromInt(m.seg_y), @floatFromInt(m.seg_w), @floatFromInt(k_seg_h), 12.0);
+        cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.35);
+        cairo_set_line_width(c, 1.0);
+        cairo_stroke(c);
+        cairo_restore(c);
+        for (sort_labels, 0..) |lab, pi| {
+            const cell = segBtn(m, @intCast(pi));
+            const sel = self.sort_mode == @as(i32, @intCast(pi));
+            if (sel) {
+                ui_paint.glassBox(c, @floatFromInt(cell.x), @floatFromInt(cell.y), @floatFromInt(cell.w), @floatFromInt(cell.h), 9, t.acc_r, t.acc_g, t.acc_b, 0.18);
             }
-            const hov = inR(px, py, m.gallery_tune_x, m.sort_pills_y, 40, 28);
-            paintGlyphBtnWide(c, m.gallery_tune_x, m.sort_pills_y, 40, 28, "tune", self.view_open, hov, t);
+            const ts = ui_paint.textSizePx(c, lab, k_seg_font, 500);
+            const top = @as(f64, @floatFromInt(cell.y)) + (@as(f64, @floatFromInt(cell.h)) - @as(f64, @floatFromInt(ts.h))) / 2.0;
+            ui_paint.showText(
+                c,
+                @as(f64, @floatFromInt(cell.x)) + (@as(f64, @floatFromInt(cell.w)) - @as(f64, @floatFromInt(ts.w))) / 2.0,
+                top + @as(f64, @floatFromInt(ts.h)) - 2.0,
+                lab,
+                k_seg_font,
+                if (sel) 600 else 400,
+                t.acc_r,
+                t.acc_g,
+                t.acc_b,
+                if (sel) 0.95 else 0.55,
+            );
         }
 
         // Collapsible view-options panel.
         if (self.view_open) {
-            const panel_x = hero_x;
+            const panel_x = m.pg_x;
             const panel_y = m.view_panel_y;
-            const panel_w = hero_w;
+            const panel_w = m.pg_w;
             ui_paint.glassBox(c, @floatFromInt(panel_x), @floatFromInt(panel_y), @floatFromInt(panel_w), k_view_panel_h, 20, 1, 1, 1, 0.07);
             cairo_save(c);
             ui_paint.roundRect(c, @floatFromInt(panel_x), @floatFromInt(panel_y), @floatFromInt(panel_w), k_view_panel_h, 20.0);
@@ -1104,8 +1229,7 @@ pub const Page = struct {
                 ui_paint.showText(c, @floatFromInt(cell.x), panel_y + 62, lab, 12, 400, t.text_r, t.text_g, t.text_b, 0.6);
                 var val_buf: [16]u8 = undefined;
                 const val = self.viewValue(@intCast(vi), &val_buf) catch "";
-                ui_paint.showText(c, @floatFromInt(cell.x + 44 + 8), panel_y + 92, val, 15, 600, t.text_r, t.text_g, t.text_b, 1.0);
-                const hov_m = inR(px, py, cell.minus_x, cell.btn_y, 44, 32);
+                ui_paint.showText(c, @floatFromInt(cell.x + 44 + 8), panel_y + 92, val, 15, 600, t.text_r, t.text_g, t.text_b, 1.0);                const hov_m = inR(px, py, cell.minus_x, cell.btn_y, 44, 32);
                 const hov_p = inR(px, py, cell.plus_x, cell.btn_y, 44, 32);
                 paintStepperIcon(c, cell.minus_x, cell.btn_y, 44, 32, false, hov_m, t);
                 paintStepperIcon(c, cell.plus_x, cell.btn_y, 44, 32, true, hov_p, t);
@@ -1120,7 +1244,7 @@ pub const Page = struct {
             const gall_off: usize = @as(usize, @intCast(@max(0, self.page_idx))) * gr.per_page;
             const n_total: usize = self.gallery.entries.items.len;
             const n_slots: usize = if (gall_off >= n_total) 0 else @min(gr.per_page, n_total - gall_off);
-            const row_stride = gr.thumb_h + k_thumb_label_h + 6;
+            const row_stride = gr.thumb_h + k_thumb_gap;
             const tile_rad: f64 = @floatFromInt(std.math.clamp(self.radius_px, 0, 48));
             // Advance the pop before the loop so this frame paints the freshest
             // scale; `hovered_slot` is filled in by the loop and the transition
@@ -1178,29 +1302,24 @@ pub const Page = struct {
                 cairo_restore(c);
 
                 const selected = std.mem.eql(u8, fp, self.snap.image);
-                if (selected) {
-                    cairo_save(c);
-                    ui_paint.roundRect(c, gx, gy_f, @floatFromInt(gr.thumb), @floatFromInt(gr.thumb_h), tile_rad);
-                    cairo_clip(c);
-                    cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.22);
-                    cairo_set_operator(c, CAIRO_OPERATOR_OVER);
-                    cairo_paint(c);
-                    cairo_restore(c);
-                }
 
+                // Hairline border: the tile edge, dimmer when selected (the
+                // selection rings own the contrast then).
                 cairo_save(c);
                 ui_paint.roundRect(c, gx, gy_f, @floatFromInt(gr.thumb), @floatFromInt(gr.thumb_h), tile_rad);
-                cairo_set_line_width(c, if (selected) 2.3 else 1.0);
+                cairo_set_line_width(c, 1.0);
                 if (selected)
-                    cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.72)
+                    cairo_set_source_rgba(c, 1, 1, 1, 0.06)
                 else
                     cairo_set_source_rgba(c, 1, 1, 1, 0.12);
                 cairo_stroke(c);
                 cairo_restore(c);
 
+                // Selected: the mock's double ring — a 2px dark band right at
+                // the edge wrapped by a 4px accent band.
                 if (selected) {
-                    ui_paint.glassBox(c, gx + 6, gy_f + 6, 54, 18, 6, 0.55, 0.53, 0.58, 0.35);
-                    ui_paint.showText(c, gx + 10, gy_f + 19, "In use", 9, 400, t.text_r, t.text_g, t.text_b, 1.0);
+                    paintSelectedRings(c, gx, gy_f, @floatFromInt(gr.thumb), @floatFromInt(gr.thumb_h), tile_rad, t);
+                    paintChip(c, gx + 8, gy_f + 8, 12.0, t);
                 }
 
                 if (hovered) {
@@ -1370,46 +1489,41 @@ pub const Page = struct {
     pub fn hit(self: *Page, g: Geo, px: f64, ly: f64) ?Action {
         if (!self.inited) return null;
         const m = metrics(@floatFromInt(g.content_x), @floatFromInt(g.content_w), self.view_open);
-        const card_inset_x = g.content_x + 8;
-        const gr = self.grid(card_inset_x, g.content_w, m.gallery_grid_top);
+        const gr = self.grid(m.pg_x, m.pg_w, m.gallery_grid_top);
         self.clampPage(gr.per_page);
 
         // The open mode list eats every press while it is up.
         // handles it before the tab's own handler).
         if (self.sub_tab == 0 and self.mode_drop_open) {
-            const dd_y = m.tool_combo_y + m.tool_combo_h + 2;
+            const dd_y = m.fit_y + m.fit_h + 2;
             const lh = 5 * k_dd_row_h;
             self.mode_drop_open = false;
-            if (inR(px, ly, m.tool_combo_x, dd_y, m.tool_combo_w, lh)) {
+            if (inR(px, ly, m.fit_x, dd_y, m.fit_w, lh)) {
                 const rr: i32 = @divTrunc(@as(i32, @intFromFloat(ly)) - dd_y, k_dd_row_h);
                 if (rr >= 0 and rr <= 4) return .{ .set_mode = rr };
             }
             return .repaint;
         }
 
-        // Sub-tab underline.
+        // Sub-tab labels.
         {
-            const st_x: i32 = g.content_x + k_card_pad;
+            const st_x: i32 = m.pg_x;
             const st_y = m.sub_tab_y;
-            const st_h: i32 = 48;
-            if (inR(px, ly, st_x + 16, st_y, 100, st_h)) {
+            const t0_w = ui_paint.measureTextWidth("Wallpaper", k_tab_font, 500);
+            if (inR(px, ly, st_x, st_y, t0_w, k_tabs_h)) {
                 self.sub_tab = 0;
                 return .repaint;
             }
-            if (inR(px, ly, st_x + 100 + 24 + 16, st_y, 160, st_h)) {
+            const t1_x = st_x + t0_w + k_tab_gap;
+            const t1_w = ui_paint.measureTextWidth("Gallery settings", k_tab_font, 500);
+            if (inR(px, ly, t1_x, st_y, t1_w, k_tabs_h)) {
                 self.sub_tab = 1;
                 return .repaint;
             }
         }
 
         // Wallpaper enabled switch.
-        {
-            const wg_w: i32 = 52;
-            const wg_h: i32 = 26;
-            const wg_x = card_inset_x + (g.content_w - 16) - wg_w - k_spacing_xl;
-            const wg_y = k_content_top + @divTrunc(k_wallpaper_toggle_band_h - wg_h, 2);
-            if (inR(px, ly, wg_x, wg_y, wg_w, wg_h)) return .toggle_enabled;
-        }
+        if (inR(px, ly, m.toggle_x, m.toggle_y, k_toggle_w, k_toggle_h)) return .toggle_enabled;
 
         if (self.sub_tab == 1) {
             const gs_x: i32 = g.content_x + k_card_pad;
@@ -1454,39 +1568,28 @@ pub const Page = struct {
             return .repaint;
         }
 
-        // Toolbar chevrons step through the gallery.
-        if (inR(px, ly, m.tool_prev_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s)) return .{ .cycle = -1 };
-        if (inR(px, ly, m.tool_next_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s)) return .{ .cycle = 1 };
-
-        // Fill-mode combo: open the list.
-        if (inR(px, ly, m.tool_combo_x, m.tool_combo_y, m.tool_combo_w, m.tool_combo_h)) {
+        // Current card: Fit combo, then the action row.
+        if (inR(px, ly, m.fit_x, m.fit_y, m.fit_w, m.fit_h)) {
             self.mode_drop_open = true;
             return .repaint;
         }
-
-        // Toolbar tune / folder / delete.
-        if (inR(px, ly, m.tool_tune_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s)) {
-            self.view_open = !self.view_open;
-            return .repaint;
-        }
-        if (inR(px, ly, m.tool_folder_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s)) return .pick_folder;
-        if (inR(px, ly, m.tool_delete_x, m.tool_icon_y, k_tool_btn_s, k_tool_btn_s)) return .clear_image;
-
-        // Open Picker… opens the folder-dialog chooser.
-        if (inR(px, ly, @as(i32, @intFromFloat(m.hero_x)), m.picker_y, m.hero_w, k_picker_h)) {
-            self.picker_modal_open = true;
-            return .repaint;
-        }
-
-        // Gallery toolbar: view-options toggle.
-        if (inR(px, ly, m.gallery_tune_x, m.sort_pills_y, 40, 28)) {
-            self.view_open = !self.view_open;
-            return .repaint;
+        {
+            var bx = m.info_x;
+            if (inR(px, ly, bx, m.btns_y, m.choose_w, k_btn_h)) return .pick_folder;
+            bx += m.choose_w + k_btn_gap;
+            if (inR(px, ly, bx, m.btns_y, m.prev_w, k_btn_h)) return .{ .cycle = -1 };
+            bx += m.prev_w + k_btn_gap;
+            if (inR(px, ly, bx, m.btns_y, m.next_w, k_btn_h)) return .{ .cycle = 1 };
+            bx += m.next_w + k_btn_gap;
+            if (inR(px, ly, bx, m.btns_y, m.adj_w, k_btn_h)) {
+                self.view_open = !self.view_open;
+                return .repaint;
+            }
         }
 
         // View-options panel: the "All settings" link and the steppers.
         if (self.view_open) {
-            const link_x = @as(i32, @intFromFloat(m.hero_x)) + m.hero_w - 20 - 118;
+            const link_x = m.pg_x + m.pg_w - 20 - 118;
             if (inR(px, ly, link_x, m.view_panel_y + 8, 118, 26)) {
                 self.sub_tab = 1;
                 return .repaint;
@@ -1504,30 +1607,27 @@ pub const Page = struct {
             }
         }
 
-        // Sort pills.
-        {
-            var px_i = m.sort_pills_x;
-            for (sort_pill_w, 0..) |w, pi| {
-                if (inR(px, ly, px_i, m.sort_pills_y, w, 28)) {
-                    const pi32: i32 = @intCast(pi);
-                    if (self.sort_mode != pi32) {
-                        self.sort_mode = pi32;
-                        scan.sortEntries(self.gallery.entries.items, self.sort_mode);
-                        self.sort_applied = self.sort_mode;
-                        self.page_idx = 0;
-                    }
-                    return .repaint;
+        // Segmented sort control.
+        for (0..3) |pi| {
+            const cell = segBtn(&m, @intCast(pi));
+            if (inR(px, ly, cell.x, cell.y, cell.w, cell.h)) {
+                const pi32: i32 = @intCast(pi);
+                if (self.sort_mode != pi32) {
+                    self.sort_mode = pi32;
+                    scan.sortEntries(self.gallery.entries.items, self.sort_mode);
+                    self.sort_applied = self.sort_mode;
+                    self.page_idx = 0;
                 }
-                px_i += w + 8;
+                return .repaint;
             }
         }
 
         // Thumbnail selection.
         {
-            const gx0 = @as(f64, @floatFromInt(card_inset_x + k_card_pad));
+            const gx0 = @as(f64, @floatFromInt(gr.prev_x));
             const gall_off: usize = @as(usize, @intCast(@max(0, self.page_idx))) * gr.per_page;
             const n_total: usize = self.gallery.entries.items.len;
-            const row_stride = gr.thumb_h + k_thumb_label_h + 6;
+            const row_stride = gr.thumb_h + k_thumb_gap;
             var ii: usize = 0;
             while (ii < gr.per_page) : (ii += 1) {
                 const gi = gall_off + ii;
@@ -1574,7 +1674,697 @@ pub const Page = struct {
         self.opacity_pct = @intFromFloat(@round(@min(1.0, @max(0.0, nt)) * 100.0));
         self.opacity_pct = std.math.clamp(self.opacity_pct, 10, 100);
     }
+
+    // ------------------------------------------------- custom folder browser
+
+    /// The in-app folder chooser. The old flow shelled out to kdialog/qarma/
+    /// zenity and blocked the UI thread; this modal is drawn by the page and
+    /// reads the filesystem off the UI thread.
+    pub fn openFolderBrowser(self: *Page) void {
+        if (!self.inited) return;
+        const start = if (self.snap.folder.len > 0) self.snap.folder else browserHome();
+        self.fb_open = true;
+        self.browseTo(start);
+    }
+
+    /// The modal's start point: the configured folder, else HOME.
+    fn browserHome() []const u8 {
+        const h = getenv("HOME") orelse "/";
+        return std.mem.span(h);
+    }
+
+    /// System-icon pixels for a freedesktop name (`folder`, `user-home`, …),
+    /// fetched once through the shell's shared icon cache and kept for the
+    /// page's life. Falls back to null → the caller draws its own glyph.
+    fn fbIcon(self: *Page, name: []const u8) ?*const icon_cache.Owned {
+        if (name.len == 0) return null;
+        if (self.fb_icons.getEntry(name)) |e| return &e.value_ptr.*;
+        const ic = icon_cache.shared() orelse return null;
+        const owned = ic.getOwned(.app, name, 32) orelse return null;
+        const key = self.alloc.dupe(u8, name) catch {
+            var o = owned;
+            o.deinit(self.alloc);
+            return null;
+        };
+        const gop = self.fb_icons.getOrPut(self.alloc, key) catch {
+            self.alloc.free(key);
+            var o = owned;
+            o.deinit(self.alloc);
+            return null;
+        };
+        if (gop.found_existing) {
+            self.alloc.free(key);
+            var o = owned;
+            o.deinit(self.alloc);
+            return gop.value_ptr;
+        }
+        gop.key_ptr.* = key;
+        gop.value_ptr.* = owned;
+        return gop.value_ptr;
+    }
+
+    /// Free both entry lists (each owns its name/path strings).
+    fn fbCloseLists(self: *Page) void {
+        for (self.fb_dirs.items) |d| {
+            self.alloc.free(d.full);
+            if (d.name.ptr != d.full.ptr) self.alloc.free(d.name);
+        }
+        self.fb_dirs.deinit(self.alloc);
+        self.fb_dirs = .empty;
+        for (self.fb_imgs.items) |d| {
+            self.alloc.free(d.full);
+            if (d.name.ptr != d.full.ptr) self.alloc.free(d.name);
+        }
+        self.fb_imgs.deinit(self.alloc);
+        self.fb_imgs = .empty;
+    }
+
+    /// Point the browser at `dir` and kick the listing worker.
+    fn browseTo(self: *Page, dir: []const u8) void {
+        const key = scan.folderKey(self.alloc, dir) catch return;
+        self.fb_cwd.deinit(self.alloc);
+        self.fb_cwd = .empty;
+        self.fb_cwd.appendSlice(self.alloc, key) catch {
+            self.alloc.free(key);
+            return;
+        };
+        self.alloc.free(key);
+        self.fbCloseLists();
+        self.fb_err = false;
+        self.fb_loading = true;
+        self.fb_img_sel = -1;
+        self.fb_scroll = 0;
+        self.fb_seq +%= 1;
+        browser.requestListing(self.io, self.fb_cwd.items, self.fb_hidden, self.fb_seq);
+    }
+
+    /// Up = the parent of the current directory (root stays root).
+    fn fbUp(self: *Page) void {
+        const parent = std.fs.path.dirname(self.fb_cwd.items) orelse return;
+        self.browseTo(parent);
+    }
+
+    /// Adopt a published listing. Older or mismatched sequences are dropped,
+    /// so a fast navigation cannot land a slow directory's entries late.
+    fn drainFolderScan(self: *Page) void {
+        if (!self.inited or !self.fb_open) return;
+        while (browser.take()) |l| {
+            defer l.freeListing();
+            if (l.seq != self.fb_seq) continue;
+            if (!std.mem.eql(u8, l.root, self.fb_cwd.items)) continue;
+            self.fbCloseLists();
+            for (l.dirs) |*d| self.adoptEntry(&self.fb_dirs, d) catch break;
+            for (l.imgs) |*d| self.adoptEntry(&self.fb_imgs, d) catch break;
+            self.fb_err = !l.ok;
+            self.fb_loading = false;
+        }
+    }
+
+    fn adoptEntry(self: *Page, list: *std.ArrayList(browser.DirEntry), d: *browser.DirEntry) !void {
+        const full = self.alloc.dupe(u8, d.full) catch return error.OutOfMemory;
+        errdefer self.alloc.free(full);
+        var name = full;
+        const base = std.fs.path.basename(full);
+        if (base.len != full.len) name = self.alloc.dupe(u8, base) catch return error.OutOfMemory;
+        // The thumb cache keys off `full`; the label can share it whenever
+        // the basename is the whole path (one free site).
+        errdefer if (name.ptr != full.ptr) self.alloc.free(name);
+        try list.append(self.alloc, .{
+            .full = full,
+            .name = name,
+            .mtime_ns = d.mtime_ns,
+            .size = d.size,
+        });
+    }
+
+    /// Wheel over the modal's list region scrolls it; `true` when absorbed.
+    pub fn fbAxis(self: *Page, win_w: i32, win_h: i32, px: f64, py: f64, step: i64) bool {
+        if (!self.fb_open) return false;
+        const g = fbGeom(win_w, win_h);
+        if (!common.pointInRect(px, py, fbBodyRect(g))) return false;
+        self.fb_scroll = @max(0, self.fb_scroll + @as(i32, @intCast(@max(-4096, @min(4096, step)))));
+        return true;
+    }
+
+    /// `true` when the pointer is anywhere over the modal panel (the window
+    /// absorbs wheel events there so the page behind stays put).
+    pub fn fbPanelHovered(self: *const Page, win_w: i32, win_h: i32, px: f64, py: f64) bool {
+        if (!self.fb_open) return false;
+        const g = fbGeom(win_w, win_h);
+        return common.pointInRect(px, py, .{ .x = g.x, .y = g.y, .w = g.w, .h = g.h });
+    }
+
+    /// Content height of the browser body (folder rows + the image grid).
+    fn fbContentH(self: *Page, g: FbGeom) i32 {
+        const dirs_h: i32 = @as(i32, @intCast(self.fb_dirs.items.len)) * fb_row_h;
+        var h: i32 = dirs_h;
+        if (self.fb_imgs.items.len > 0) {
+            const rows: i32 = @intCast((self.fb_imgs.items.len +
+                @as(usize, @intCast(g.tile_cols)) - 1) / @as(usize, @intCast(g.tile_cols)));
+            h += fb_sec_h + rows * (fb_tile_h + fb_cap_h);
+        }
+        return h;
+    }
+
+    /// Clamp `fb_scroll` against the real window size and copy it into the
+    /// frame geometry so paint and hit read the same offset.
+    fn fbPrepGeom(self: *Page, g: FbGeom) FbGeom {
+        const content = self.fbContentH(g);
+        self.fb_scroll = std.math.clamp(self.fb_scroll, 0, @max(0, content - g.body_h));
+        var g2 = g;
+        g2.scroll = self.fb_scroll;
+        return g2;
+    }
+
+    /// The modal: dim backdrop, glass panel, places rail, a toolbar (Up,
+    /// path readout, hidden toggle, refresh), the scrolled folder/image body
+    /// and the footer actions. Hit terrain in `clickFolderBrowser` mirrors
+    /// the rects here.
+    pub fn paintFolderBrowser(self: *Page, cr: ?*cairo.cairo_t, win_w: i32, win_h: i32, px: f64, py: f64) void {
+        const c = cr orelse return;
+        if (!self.inited) return;
+        const t = common.Theme;
+        const g = self.fbPrepGeom(fbGeom(win_w, win_h));
+        self.drainFolderScan();
+
+        cairo_set_source_rgba(c, 0, 0, 0, 0.40);
+        cairo_rectangle(c, 0, 0, @as(f64, @floatFromInt(win_w)), @as(f64, @floatFromInt(win_h)));
+        cairo_fill(c);
+
+        ui_paint.glassBox(
+            c,
+            @as(f64, @floatFromInt(g.x)),
+            @as(f64, @floatFromInt(g.y)),
+            @as(f64, @floatFromInt(g.w)),
+            @as(f64, @floatFromInt(g.h)),
+            16,
+            t.bg_r,
+            t.bg_g,
+            t.bg_b,
+            0.96,
+        );
+
+        // Title + close.
+        ui_paint.showText(
+            c,
+            @as(f64, @floatFromInt(g.x + fb_pad)),
+            @as(f64, @floatFromInt(g.y + fb_title_h - 14)),
+            "Choose a wallpaper folder",
+            14,
+            700,
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            1.0,
+        );
+        paintGlyphBtnWide(c, g.x + g.w - fb_pad - 28, g.y + fb_pad, 28, 28, "close", false, inR(px, py, g.x + g.w - fb_pad - 28, g.y + fb_pad, 28, 28), t);
+
+        // Toolbar: Up, path, hidden toggle, refresh.
+        const root = self.fb_cwd.items.len == 0 or std.mem.eql(u8, self.fb_cwd.items, "/");
+        paintGlyphBtnWide(c, g.body_x, g.tool_y, 30, 30, "arrow_back", false, inR(px, py, g.body_x, g.tool_y, 30, 30), t);
+        paintGlyphBtnWide(c, g.refresh_x, g.tool_y, 30, 30, "autorenew", false, inR(px, py, g.refresh_x, g.tool_y, 30, 30), t);
+        const hid_x = g.refresh_x - 10 - fb_hidden_w;
+        paintBtn(c, hid_x, g.tool_y, fb_hidden_w, 30, "Hidden", self.fb_hidden, inR(px, py, hid_x, g.tool_y, fb_hidden_w, 30), t);
+        if (self.fb_hidden) {
+            ui_paint.glyph(
+                c,
+                @as(f64, @floatFromInt(hid_x + fb_hidden_w - 18)),
+                @as(f64, @floatFromInt(g.tool_y + 15)),
+                12,
+                "check",
+                t.acc_r,
+                t.acc_g,
+                t.acc_b,
+                1.0,
+            );
+        }
+        const path_w: f64 = @floatFromInt(hid_x - 10 - (g.body_x + 42));
+        ui_paint.showTextW(
+            c,
+            @as(f64, @floatFromInt(g.body_x + 42)),
+            @as(f64, @floatFromInt(g.tool_y + 21)),
+            if (self.fb_cwd.items.len > 0) self.fb_cwd.items else "/",
+            11,
+            400,
+            @max(40.0, path_w),
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            if (root) 0.45 else 0.8,
+        );
+
+        // Places rail.
+        var place_buf: [512]u8 = undefined;
+        for (fb_places, 0..) |p, i| {
+            const ry = g.body_y + @as(i32, @intCast(i)) * fb_place_h;
+            const hov = inR(px, py, g.side_x, ry, g.side_w, fb_place_h);
+            if (hov) {
+                ui_paint.glassBox(c, @as(f64, @floatFromInt(g.side_x)), @as(f64, @floatFromInt(ry)), @as(f64, @floatFromInt(g.side_w)), @as(f64, @floatFromInt(fb_place_h)), 8, 1, 1, 1, 0.05);
+            }
+            if (self.fbIcon(p.icon)) |ic| {
+                fbBlitIcon(c, ic, @as(f64, @floatFromInt(g.side_x + 10)), @as(f64, @floatFromInt(ry + (fb_place_h - 18) / 2)), 18);
+            } else {
+                ui_paint.glyph(c, @as(f64, @floatFromInt(g.side_x + 22)), @as(f64, @floatFromInt(ry + fb_place_h / 2)), 14, p.glyph, t.text_r, t.text_g, t.text_b, if (hov) 0.95 else 0.7);
+            }
+            ui_paint.showText(c, @as(f64, @floatFromInt(g.side_x + 44)), @as(f64, @floatFromInt(ry + fb_place_h / 2 + 8)), p.label, 12, 400, t.text_r, t.text_g, t.text_b, if (hov) 1.0 else 0.8);
+        }
+        const counts = std.fmt.bufPrint(
+            &place_buf,
+            "{d} folders · {d} images",
+            .{ self.fb_dirs.items.len, self.fb_imgs.items.len },
+        ) catch "";
+        const counts_y = g.body_y + @as(i32, @intCast(fb_places.len)) * fb_place_h + 22;
+        ui_paint.showTextW(
+            c,
+            @as(f64, @floatFromInt(g.side_x + 8)),
+            @as(f64, @floatFromInt(counts_y)),
+            counts,
+            10,
+            400,
+            @as(f64, @floatFromInt(g.side_w - 16)),
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            0.45,
+        );
+        // Rail separator.
+        cairo_save(c);
+        cairo_move_to(c, @as(f64, @floatFromInt(g.side_x + g.side_w + 7)), @as(f64, @floatFromInt(g.body_y)));
+        cairo_line_to(c, @as(f64, @floatFromInt(g.side_x + g.side_w + 7)), @as(f64, @floatFromInt(g.body_y + g.body_h)));
+        cairo_set_line_width(c, 1.0);
+        cairo_set_source_rgba(c, 1, 1, 1, 0.08);
+        cairo_stroke(c);
+        cairo_restore(c);
+
+        // Scrolled body (clipped).
+        cairo_save(c);
+        ui_paint.roundRect(
+            c,
+            @as(f64, @floatFromInt(g.body_x)),
+            @as(f64, @floatFromInt(g.body_y)),
+            @as(f64, @floatFromInt(g.body_w)),
+            @as(f64, @floatFromInt(g.body_h)),
+            10.0,
+        );
+        cairo_clip(c);
+        const base_y: i32 = g.body_y - g.scroll;
+        const loading = self.fb_loading and self.fb_dirs.items.len == 0 and self.fb_imgs.items.len == 0;
+
+        if (self.fb_err and !loading) {
+            ui_paint.showText(c, @as(f64, @floatFromInt(g.body_x + 12)), @as(f64, @floatFromInt(g.body_y + 26)), "Could not open this folder.", 12, 400, t.text_r, t.text_g, t.text_b, 0.6);
+        } else if (loading) {
+            ui_paint.showText(c, @as(f64, @floatFromInt(g.body_x + 12)), @as(f64, @floatFromInt(g.body_y + 26)), "Listing…", 12, 400, t.text_r, t.text_g, t.text_b, 0.5);
+        } else if (self.fb_dirs.items.len == 0 and self.fb_imgs.items.len == 0) {
+            ui_paint.showText(c, @as(f64, @floatFromInt(g.body_x + 12)), @as(f64, @floatFromInt(g.body_y + 26)), "No folders or images here.", 12, 400, t.text_r, t.text_g, t.text_b, 0.5);
+        }
+
+        // Folder rows.
+        for (self.fb_dirs.items, 0..) |d, i| {
+            const ry = base_y + @as(i32, @intCast(i)) * fb_row_h;
+            if (ry > g.body_y + g.body_h or ry + fb_row_h < g.body_y) continue;
+            const rx = g.body_x;
+            const hov = inR(px, py, rx, ry, g.body_w, fb_row_h);
+            if (hov) {
+                ui_paint.glassBox(c, @as(f64, @floatFromInt(rx)), @as(f64, @floatFromInt(ry)), @as(f64, @floatFromInt(g.body_w)), @as(f64, @floatFromInt(fb_row_h)), 8, 1, 1, 1, 0.05);
+            }
+            if (self.fbIcon("folder")) |ic| {
+                fbBlitIcon(c, ic, @as(f64, @floatFromInt(rx + 14)), @as(f64, @floatFromInt(ry + (fb_row_h - 20) / 2)), 20);
+            } else {
+                paintFolderIcon(c, @as(f64, @floatFromInt(rx + 16)), @as(f64, @floatFromInt(ry + fb_row_h / 2 - 7)), t, if (hov) 0.95 else 0.7);
+            }
+            ui_paint.showTextW(
+                c,
+                @as(f64, @floatFromInt(rx + 44)),
+                @as(f64, @floatFromInt(ry + fb_row_h / 2 + 8)),
+                d.name,
+                12,
+                400,
+                @as(f64, @floatFromInt(g.body_w - 64)),
+                t.text_r,
+                t.text_g,
+                t.text_b,
+                if (hov) 1.0 else 0.85,
+            );
+            ui_paint.glyph(
+                c,
+                @as(f64, @floatFromInt(rx + g.body_w - 20)),
+                @as(f64, @floatFromInt(ry + fb_row_h / 2)),
+                12,
+                "expand_more",
+                t.text_r,
+                t.text_g,
+                t.text_b,
+                0.35,
+            );
+        }
+
+        // Image tiles.
+        if (self.fb_imgs.items.len > 0) {
+            const sec_y = base_y + @as(i32, @intCast(self.fb_dirs.items.len)) * fb_row_h;
+            const hdr = std.fmt.bufPrint(&place_buf, "Images ({d})", .{self.fb_imgs.items.len}) catch "Images";
+            ui_paint.showText(c, @as(f64, @floatFromInt(g.body_x + 4)), @as(f64, @floatFromInt(sec_y + 18)), hdr, 11, 600, t.text_r, t.text_g, t.text_b, 0.55);
+            const tiles_top = sec_y + fb_sec_h;
+            const cap_top_extra = fb_tile_h + 14;
+            for (self.fb_imgs.items, 0..) |d, i| {
+                const m: usize = @intCast(g.tile_cols);
+                const tx = g.body_x +
+                    @as(i32, @intCast(i % m)) * (fb_tile_w + fb_gap);
+                const ty = tiles_top +
+                    @as(i32, @intCast(i / m)) * (fb_tile_h + fb_cap_h);
+                if (ty > g.body_y + g.body_h or ty + fb_tile_h < g.body_y) continue;
+                const sel = @as(i32, @intCast(i)) == self.fb_img_sel;
+                const hov = inR(px, py, tx, ty, fb_tile_w, fb_tile_h + fb_cap_h);
+                // Thumb: cover-fit like the gallery, requested off-thread.
+                self.requestOrRetry(d.full, fbThumbPx());
+                // Plate behind (outside the clip — `cairo_fill` clears the
+                // current path, which is exactly what blanked every tile in
+                // the first build: the fill ran before the clip and the clip
+                // then clipped to an empty path).
+                ui_paint.roundRect(c, @as(f64, @floatFromInt(tx)), @as(f64, @floatFromInt(ty)), @as(f64, @floatFromInt(fb_tile_w)), @as(f64, @floatFromInt(fb_tile_h)), 9.0);
+                cairo_set_source_rgba(c, t.bg_r, t.bg_g, t.bg_b, 0.5);
+                cairo_fill(c);
+                cairo_save(c);
+                ui_paint.roundRect(c, @as(f64, @floatFromInt(tx)), @as(f64, @floatFromInt(ty)), @as(f64, @floatFromInt(fb_tile_w)), @as(f64, @floatFromInt(fb_tile_h)), 9.0);
+                cairo_clip(c);
+                if (self.surfaceFor(d.full)) |surf| {
+                    cairo_surface_flush(surf);
+                    const iw = cairo_image_surface_get_width(surf);
+                    const ih = cairo_image_surface_get_height(surf);
+                    if (iw > 0 and ih > 0) {
+                        const twf: f64 = @floatFromInt(fb_tile_w);
+                        const thf: f64 = @floatFromInt(fb_tile_h);
+                        const sc = @max(twf / @as(f64, @floatFromInt(iw)), thf / @as(f64, @floatFromInt(ih)));
+                        cairo_set_operator(c, CAIRO_OPERATOR_OVER);
+                        cairo_translate(
+                            c,
+                            @as(f64, @floatFromInt(tx)) + (twf - @as(f64, @floatFromInt(iw)) * sc) * 0.5,
+                            @as(f64, @floatFromInt(ty)) + (thf - @as(f64, @floatFromInt(ih)) * sc) * 0.5,
+                        );
+                        cairo_scale(c, sc, sc);
+                        cairo_set_source_surface(c, surf, 0, 0);
+                        cairo_paint(c);
+                    }
+                } else {
+                    ui_paint.glyph(
+                        c,
+                        @as(f64, @floatFromInt(tx + fb_tile_w / 2)),
+                        @as(f64, @floatFromInt(ty + fb_tile_h / 2)),
+                        20,
+                        "photo_library",
+                        1,
+                        1,
+                        1,
+                        0.25,
+                    );
+                }
+                cairo_restore(c);
+                if (hov and !sel) {
+                    ui_paint.roundRect(c, @as(f64, @floatFromInt(tx)), @as(f64, @floatFromInt(ty)), @as(f64, @floatFromInt(fb_tile_w)), @as(f64, @floatFromInt(fb_tile_h)), 9.0);
+                    cairo_set_source_rgba(c, 1, 1, 1, 0.35);
+                    cairo_set_line_width(c, 1.0);
+                    cairo_stroke(c);
+                }
+                if (sel) {
+                    ui_paint.roundRect(c, @as(f64, @floatFromInt(tx - 1)), @as(f64, @floatFromInt(ty - 1)), @as(f64, @floatFromInt(fb_tile_w + 2)), @as(f64, @floatFromInt(fb_tile_h + 2)), 10.0);
+                    cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 1.0);
+                    cairo_set_line_width(c, 2.0);
+                    cairo_stroke(c);
+                }
+                ui_paint.showTextW(
+                    c,
+                    @as(f64, @floatFromInt(tx + 2)),
+                    @as(f64, @floatFromInt(ty + cap_top_extra)),
+                    d.name,
+                    10,
+                    400,
+                    @as(f64, @floatFromInt(fb_tile_w - 4)),
+                    t.text_r,
+                    t.text_g,
+                    t.text_b,
+                    if (sel) 1.0 else 0.7,
+                );
+            }
+        }
+        cairo_restore(c);
+
+        // Footer: status + Cancel + Use.
+        ui_paint.showTextW(
+            c,
+            @as(f64, @floatFromInt(g.x + fb_pad)),
+            @as(f64, @floatFromInt(g.foot_y + 32)),
+            self.fbFootLabel(),
+            11,
+            400,
+            @as(f64, @floatFromInt(fbFootStatusW(g))),
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            0.55,
+        );
+        paintBtn(c, g.cancel_x, g.foot_y, 90, 34, "Cancel", false, inR(px, py, g.cancel_x, g.foot_y, 90, 34), t);
+        const use_label: []const u8 = if (self.fb_img_sel >= 0) "Use image" else "Use folder";
+        paintBtn(c, g.use_x, g.foot_y, fb_use_w, 34, use_label, true, inR(px, py, g.use_x, g.foot_y, fb_use_w, 34), t);
+    }
+
+    fn fbFootLabel(self: *Page) []const u8 {
+        const is_img = self.fb_img_sel >= 0;
+        const safe: bool = is_img and @as(usize, @intCast(self.fb_img_sel)) < self.fb_imgs.items.len;
+        if (is_img) {
+            if (!safe) return "Image";
+            const name = self.fb_imgs.items[@intCast(self.fb_img_sel)].name;
+            return std.fmt.bufPrint(&self.fb_stamp_buf, "Image · {s}", .{name}) catch "Image";
+        }
+        const cwd: []const u8 = if (self.fb_cwd.items.len > 0) self.fb_cwd.items else "/";
+        return std.fmt.bufPrint(&self.fb_stamp_buf, "Folder · {s}", .{cwd}) catch "Folder";
+    }
+
+    /// What one click does inside the modal. The page moves its own session
+    /// state and closes itself; `use_folder`/`use_image` tell the window to
+    /// commit the choice (it reads `fb_cwd` / `fb_imgs`).
+    pub fn clickFolderBrowser(self: *Page, win_w: i32, win_h: i32, px: f64, py: f64) ?Action {
+        const g = self.fbPrepGeom(fbGeom(win_w, win_h));
+
+        if (inR(px, py, g.x + g.w - fb_pad - 28, g.y + fb_pad, 28, 28)) {
+            self.fb_open = false;
+            return null; // repaint only
+        }
+        if (inR(px, py, g.body_x, g.tool_y, 30, 30)) {
+            self.fbUp();
+            return null;
+        }
+        if (inR(px, py, g.refresh_x, g.tool_y, 30, 30)) {
+            self.browseTo(self.fb_cwd.items);
+            return null;
+        }
+        const hid_x = g.refresh_x - 10 - fb_hidden_w;
+        if (inR(px, py, hid_x, g.tool_y, fb_hidden_w, 30)) {
+            self.fb_hidden = !self.fb_hidden;
+            self.browseTo(self.fb_cwd.items);
+            return null;
+        }
+        for (fb_places, 0..) |p, i| {
+            const ry = g.body_y + @as(i32, @intCast(i)) * fb_place_h;
+            if (inR(px, py, g.side_x, ry, g.side_w, fb_place_h)) {
+                var buf: [512]u8 = undefined;
+                self.browseTo(fbPlacePath(buf[0..], p.sub));
+                return null;
+            }
+        }
+        if (inR(px, py, g.body_x, g.body_y, g.body_w, g.body_h)) {
+            // Folder rows, then the image grid, both relative to scroll.
+            if (self.fb_dirs.items.len > 0) {
+                const dir_cnt = self.fb_dirs.items.len;
+                const y = py - @as(f64, @floatFromInt(g.body_y + g.scroll));
+                if (y >= 0) {
+                    const idx: usize = @intFromFloat(y / @as(f64, @floatFromInt(fb_row_h)));
+                    if (idx < dir_cnt and !self.fb_loading) {
+                        self.browseTo(self.fb_dirs.items[idx].full);
+                        return null;
+                    }
+                }
+            }
+            if (self.fb_imgs.items.len > 0) {
+                const tiles_top = g.body_y + g.scroll +
+                    @as(i32, @intCast(self.fb_dirs.items.len)) * fb_row_h + fb_sec_h;
+                const rel_y = py - @as(f64, @floatFromInt(tiles_top));
+                const pitch_x: i32 = fb_tile_w + fb_gap;
+                const cols = g.tile_cols;
+                // Reverse base: from the pixel back to col/row/index.
+                const any_col = @as(i32, @intFromFloat((px - @as(f64, @floatFromInt(g.body_x))) / @as(f64, @floatFromInt(pitch_x))));
+                if (rel_y >= 0 and any_col < cols) {
+                    const row: i32 = @intFromFloat(rel_y / @as(f64, @floatFromInt(fb_tile_h + fb_cap_h)));
+                    const col: i32 = std.math.clamp(any_col, 0, cols - 1);
+                    const idx = row * cols + col;
+                    if (idx >= 0 and idx < @as(i32, @intCast(self.fb_imgs.items.len))) {
+                        const in_click = inR(px, py, g.body_x + col * pitch_x, tiles_top + row * (fb_tile_h + fb_cap_h), fb_tile_w, fb_tile_h + fb_cap_h);
+                        if (in_click) {
+                            self.fb_img_sel = idx;
+                            return null;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+        // Footer.
+        if (inR(px, py, g.cancel_x, g.foot_y, 90, 34)) {
+            self.fb_open = false;
+            return null;
+        }
+        if (inR(px, py, g.use_x, g.foot_y, fb_use_w, 34)) {
+            if (self.fb_img_sel >= 0) {
+                const idx: usize = @intCast(self.fb_img_sel);
+                if (idx >= self.fb_imgs.items.len) return null;
+                self.fb_open = false;
+                return .{ .use_image = idx };
+            }
+            self.fb_open = false;
+            return .use_folder;
+        }
+        // Clicks over the toolbar, places or title bar, or outside: absorbed.
+        return null;
+    }
+
 };
+
+/// Draw a system-icon pixel buffer at `size`, centred in the box at (x, y).
+/// Same shape as the Sound tab's `blitIcon`.
+fn fbBlitIcon(c: *cairo.cairo_t, icon: *const icon_cache.Owned, x: f64, y: f64, size: f64) void {
+    if (icon.pixels.len == 0 or icon.w <= 0 or icon.h <= 0) return;
+    const sf = size / @as(f64, @floatFromInt(@max(1, @max(icon.w, icon.h))));
+    const tw: i32 = @max(1, @as(i32, @intFromFloat(@ceil(@as(f64, @floatFromInt(icon.w)) * sf))));
+    const th: i32 = @max(1, @as(i32, @intFromFloat(@ceil(@as(f64, @floatFromInt(icon.h)) * sf))));
+    const tmp = cairo.cairo_image_surface_create_for_data(
+        @constCast(icon.pixels.ptr),
+        cairo.CAIRO_FORMAT_ARGB32,
+        icon.w,
+        icon.h,
+        icon.w * 4,
+    );
+    defer cairo.cairo_surface_destroy(tmp);
+    if (cairo.cairo_surface_status(tmp) != cairo.CAIRO_STATUS_SUCCESS) return;
+    cairo.cairo_save(c);
+    cairo.cairo_translate(c, x + (size - @as(f64, @floatFromInt(tw))) * 0.5, y + (size - @as(f64, @floatFromInt(th))) * 0.5);
+    cairo.cairo_scale(c, sf, sf);
+    cairo.cairo_set_source_surface(c, tmp, 0, 0);
+    cairo.cairo_paint(c);
+    cairo.cairo_restore(c);
+}
+
+/// Hand-drawn folder glyph (fallback when the icon theme has no `folder`):
+/// a filled tab over an outlined rounded body.
+fn paintFolderIcon(c: anytype, x: f64, y: f64, t: anytype, a: f64) void {
+    ui_paint.roundRect(c, x, y, 8, 5, 1.5);
+    cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, a * 0.9);
+    cairo_fill(c);
+    ui_paint.roundRect(c, x, y + 3, 18, 11, 3);
+    cairo_set_line_width(c, 1.0);
+    cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, a);
+    cairo_stroke(c);
+}
+
+/// Sidebar quick targets, all rooted at HOME (`sub == ""` is HOME itself).
+/// `icon` is the freedesktop name the user's theme supplies; `glyph` is the
+/// Lucide fallback.
+const FbPlace = struct { label: []const u8, glyph: []const u8, icon: []const u8, sub: []const u8 };
+const fb_places = [_]FbPlace{
+    .{ .label = "Home", .glyph = "home", .icon = "user-home", .sub = "" },
+    .{ .label = "Pictures", .glyph = "photo_library", .icon = "folder-pictures", .sub = "Pictures" },
+    .{ .label = "Downloads", .glyph = "download", .icon = "folder-download", .sub = "Downloads" },
+    .{ .label = "Desktop", .glyph = "desktop_windows", .icon = "user-desktop", .sub = "Desktop" },
+};
+
+fn fbPlacePath(buf: []u8, sub: []const u8) []const u8 {
+    const home = std.mem.span(getenv("HOME") orelse "/");
+    if (sub.len == 0) return std.fmt.bufPrint(buf, "{s}", .{home}) catch "/";
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ home, sub }) catch "/";
+}
+
+extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+/// The modal's window-space layout. `scroll` is filled per frame by
+/// `fbPrepGeom` so every rect helper stays a pure function of one struct.
+pub const FbGeom = struct {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    pad: i32,
+    side_x: i32,
+    side_w: i32,
+    body_x: i32,
+    body_y: i32,
+    body_w: i32,
+    body_h: i32,
+    tool_y: i32,
+    refresh_x: i32,
+    foot_y: i32,
+    cancel_x: i32,
+    use_x: i32,
+    tile_cols: i32,
+    scroll: i32 = 0,
+};
+
+const fb_pad: i32 = 16;
+const fb_title_h: i32 = 46;
+const fb_tool_h: i32 = 42;
+const fb_foot_h: i32 = 56;
+const fb_side_w: i32 = 172;
+const fb_row_h: i32 = 38;
+const fb_place_h: i32 = 34;
+const fb_sec_h: i32 = 30;
+const fb_tile_w: i32 = 120;
+const fb_tile_h: i32 = 75;
+const fb_cap_h: i32 = 18;
+const fb_gap: i32 = 10;
+const fb_hidden_w: i32 = 76;
+const fb_use_w: i32 = 116;
+
+fn fbGeom(win_w: i32, win_h: i32) FbGeom {
+    const w: i32 = @min(880, win_w - 100);
+    const h: i32 = @min(640, win_h - 90);
+    const x = @max(10, @divTrunc(win_w - w, 2));
+    const y = @max(10, @divTrunc(win_h - h, 2));
+    const body_x = x + fb_pad + fb_side_w + 14;
+    const body_w = x + w - fb_pad - body_x;
+    const body_y = y + fb_title_h + fb_tool_h;
+    const foot_y = y + h - fb_foot_h;
+    const use_x = x + w - fb_pad - fb_use_w;
+    return .{
+        .x = x,
+        .y = y,
+        .w = w,
+        .h = h,
+        .pad = fb_pad,
+        .side_x = x + fb_pad,
+        .side_w = fb_side_w,
+        .body_x = body_x,
+        .body_y = body_y,
+        .body_w = body_w,
+        .body_h = foot_y - body_y,
+        .tool_y = y + fb_title_h + (fb_tool_h - 30) / 2,
+        .refresh_x = x + w - fb_pad - 30,
+        .foot_y = foot_y + 6,
+        .cancel_x = use_x - 10 - 90,
+        .use_x = use_x,
+        .tile_cols = @max(1, @divTrunc(body_w + fb_gap, fb_tile_w + fb_gap)),
+    };
+}
+
+fn fbBodyRect(g: FbGeom) common.Rect {
+    return .{ .x = g.body_x, .y = g.body_y, .w = g.body_w, .h = g.body_h };
+}
+
+fn fbFootStatusW(g: FbGeom) i32 {
+    return g.cancel_x - 10 - (g.x + fb_pad);
+}
+
+/// Decode size for one browser tile: the same `cache_px` the gallery and
+/// hero use, so a browse always reuses the cached surface for that path
+/// (one decode, one disk-cache entry) instead of rendering a second size.
+fn fbThumbPx() u32 {
+    return cache_px;
+}
 
 /// `wallpaper_folder_picker_modal_geom`: a centred window-space panel listing
 /// how the folder button should open. It is a modal, so the window paints and
@@ -1657,6 +2447,58 @@ fn inR(px: f64, py: f64, x: i32, y: i32, w: i32, h: i32) bool {
     return common.pointInRect(px, py, .{ .x = x, .y = y, .w = w, .h = h });
 }
 
+/// Show text with `top_y` as the visual top of the first line. `showText`
+/// anchors its layout top at `y - lh + 2`, so this measures once and passes
+/// `top + lh - 2` — layout math can then stack runs without drift.
+fn drawTextTop(c: anytype, x: f64, top_y: f64, str: []const u8, size: f32, weight: c_uint, r: f64, g: f64, b: f64, a: f64) void {
+    const ts = ui_paint.textSizePx(c, str, size, weight);
+    ui_paint.showText(c, x, top_y + @as(f64, @floatFromInt(ts.h)) - 2.0, str, size, weight, r, g, b, a);
+}
+
+/// `drawTextTop` with an ellipsis width clamp (single-line runs, so the
+/// unclamped measurement carries the same line box the clamped one uses).
+fn drawTextTopW(c: anytype, x: f64, top_y: f64, str: []const u8, size: f32, weight: c_uint, max_w: f64, r: f64, g: f64, b: f64, a: f64) void {
+    const ts = ui_paint.textSizePx(c, str, size, weight);
+    ui_paint.showTextW(c, x, top_y + @as(f64, @floatFromInt(ts.h)) - 2.0, str, size, weight, max_w, r, g, b, a);
+}
+
+/// The mock's "In use" chip: an accent pill with dark 600 text at `size`.
+fn paintChip(c: anytype, x: f64, y: f64, size: f32, t: anytype) void {
+    const label = "In use";
+    const ts = ui_paint.textSizePx(c, label, size, 600);
+    const w: f64 = @as(f64, @floatFromInt(ts.w)) + 16.0;
+    const h: f64 = @as(f64, @floatFromInt(ts.h)) + 6.0;
+    ui_paint.glassBox(c, x, y, w, h, h / 2.0, t.acc_r, t.acc_g, t.acc_b, 1.0);
+    const top = y + (h - @as(f64, @floatFromInt(ts.h))) / 2.0;
+    ui_paint.showText(
+        c,
+        x + w / 2.0 - @as(f64, @floatFromInt(ts.w)) / 2.0,
+        top + @as(f64, @floatFromInt(ts.h)) - 2.0,
+        label,
+        size,
+        600,
+        t.bg_r,
+        t.bg_g,
+        t.bg_b,
+        1.0,
+    );
+}
+
+/// The mock's `.th.s` selection: a 2px dark band hugging the edge wrapped by
+/// a 4px accent band.
+fn paintSelectedRings(c: anytype, x: f64, y: f64, w: f64, h: f64, rad: f64, t: anytype) void {
+    cairo_save(c);
+    ui_paint.roundRect(c, x - 3.0, y - 3.0, w + 6.0, h + 6.0, rad + 3.0);
+    cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.95);
+    cairo_set_line_width(c, 5.0);
+    cairo_stroke(c);
+    ui_paint.roundRect(c, x - 1.0, y - 1.0, w + 2.0, h + 2.0, rad + 1.0);
+    cairo_set_source_rgba(c, t.bg_r * 0.15, t.bg_g * 0.15, t.bg_b * 0.15, 1.0);
+    cairo_set_line_width(c, 2.0);
+    cairo_stroke(c);
+    cairo_restore(c);
+}
+
 fn paintUnderline(c: anytype, x: i32, y: i32, w: i32, t: anytype) void {
     ui_paint.roundRect(c, @floatFromInt(x), @floatFromInt(y), @floatFromInt(w), 3, 1.5);
     cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.9);
@@ -1697,6 +2539,8 @@ fn paintBtn(
     const ts = ui_paint.textSizePx(c, label, font_px, 500);
     const cx = xf + (wf - @as(f64, @floatFromInt(ts.w))) / 2.0;
     const top = yf + (hf - @as(f64, @floatFromInt(ts.h))) / 2.0;
+    // Mock .btn.p: accent fill with dark ink; outlined variants keep accent.
+    const ink: [3]f64 = if (filled) .{ t.bg_r, t.bg_g, t.bg_b } else .{ t.acc_r, t.acc_g, t.acc_b };
     ui_paint.showText(
         c,
         cx,
@@ -1704,18 +2548,14 @@ fn paintBtn(
         label,
         font_px,
         500,
-        if (filled) 1.0 else t.acc_r,
-        if (filled) 1.0 else t.acc_g,
-        if (filled) 1.0 else t.acc_b,
+        ink[0],
+        ink[1],
+        ink[2],
         1.0,
     );
 }
 
-/// Glyph button sized to a square (the toolbar icons).
-fn paintGlyphBtn(c: anytype, x: i32, y: i32, lig: []const u8, filled: bool, hovered: bool, t: anytype) void {
-    paintGlyphBtnWide(c, x, y, k_tool_btn_s, k_tool_btn_s, lig, filled, hovered, t);
-}
-
+/// Glyph button, wide shape — the browser modal's icon buttons use it.
 fn paintGlyphBtnWide(
     c: anytype,
     x: i32,
@@ -1799,7 +2639,9 @@ fn paintStepperIcon(
     );
 }
 
-/// Toolbar mode combo in its closed state (`settings_paint_combo_closed`).
+/// The Fit combo in its closed state. Same clip + centre idiom as the
+/// Sound tab's combo: `showText` anchors its layout top at `y - lh + 2`, so
+/// passing `top + lh - 2` pins the ink dead-centre in the box.
 fn paintCombo(
     c: anytype,
     x: i32,
@@ -1814,17 +2656,30 @@ fn paintCombo(
     const yf: f64 = @floatFromInt(y);
     const wf: f64 = @floatFromInt(w);
     const hf: f64 = @floatFromInt(h);
-    ui_paint.glassBox(c, xf, yf, wf, hf, 8, 1, 1, 1, if (hovered) 0.14 else 0.06);
-    cairo_save(c);
-    ui_paint.roundRect(c, xf + 0.5, yf + 0.5, wf - 1.0, hf - 1.0, 7.5);
+    ui_paint.roundRect(c, xf, yf, wf, hf, 10.0);
+    cairo_set_source_rgba(c, 1, 1, 1, if (hovered) 0.10 else 0.06);
+    cairo.cairo_fill_preserve(c);
     cairo_set_line_width(c, 1.0);
-    cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, if (hovered) 0.95 else 0.6);
+    cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, if (hovered) 0.9 else 0.45);
     cairo_stroke(c);
-    cairo_restore(c);
+    // The label is clipped to the space left of the chevron, ellipsised.
     cairo_save(c);
     cairo_rectangle(c, xf + 8, yf + 2, wf - 30, hf - 4);
     cairo_clip(c);
-    ui_paint.showText(c, xf + 12, yf + hf - 8.0, text, 12, 400, t.text_r, t.text_g, t.text_b, 0.92);
+    const ts = ui_paint.textSizePx(c, text, 12, 500);
+    const top = yf + (hf - @as(f64, @floatFromInt(ts.h))) / 2.0;
+    ui_paint.showText(
+        c,
+        xf + 12,
+        top + @as(f64, @floatFromInt(ts.h)) - 2.0,
+        text,
+        12,
+        500,
+        t.text_r,
+        t.text_g,
+        t.text_b,
+        0.92,
+    );
     cairo_restore(c);
     ui_paint.glyph(c, xf + wf - 14.0, yf + hf / 2.0, 16, "expand_more", t.text_r, t.text_g, t.text_b, 0.7);
 }
@@ -1900,22 +2755,6 @@ fn paintSwitch(c: anytype, x: i32, y: i32, w: i32, h: i32, on: bool) void {
     cairo_fill(c);
 }
 
-/// `wallpaper_truncate_visual`: cut to `max_c` characters, with an ellipsis
-/// in the middle when it had to cut.
-fn truncateVisual(buf: []u8, s: []const u8, max_c: usize) []const u8 {
-    if (s.len <= max_c) return s;
-    if (max_c < 12) return s[0..max_c];
-    if (buf.len < max_c + 4) return s[0..@min(s.len, max_c)];
-    const head = max_c / 2 - 2;
-    const tail = max_c - head - 3;
-    @memcpy(buf[0..head], s[0..head]);
-    buf[head] = 0xE2;
-    buf[head + 1] = 0x80;
-    buf[head + 2] = 0xA6; // U+2026
-    @memcpy(buf[head + 3 .. head + 3 + tail], s[s.len - tail ..]);
-    return buf[0 .. head + 3 + tail];
-}
-
 fn nowNs() u64 {
     var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
     if (std.os.linux.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
@@ -1954,33 +2793,30 @@ test "wallpaper-tab: metrics match the specified vertical rhythm" {
     const t = std.testing;
     // contentX 292, contentW 592 (900 - 292 - 16).
     const m = metrics(292.0, 592.0, false);
-    try t.expectEqual(@as(i32, 144), m.sub_tab_y); // kContentTop + 96
-    try t.expectEqual(@as(f64, 308.0), m.hero_x); // contentX + kCardPad
-    try t.expectEqual(@as(i32, 196), m.hero_y); // subTabY + 52
-    try t.expectEqual(@as(i32, 560), m.hero_w); // contentW - 2*kCardPad
-    try t.expectEqual(@as(i32, 300), m.hero_h);
-    // Toolbar: 12 inset, 12 above the hero bottom.
-    try t.expectEqual(@as(i32, 320), m.tool_bar_x);
-    try t.expectEqual(@as(i32, 196 + 300 - 12 - 56), m.tool_bar_y);
-    try t.expectEqual(@as(i32, 560 - 24), m.tool_bar_w);
-    try t.expectEqual(@as(i32, m.tool_bar_y + 8), m.tool_icon_y); // (56-40)/2
-    // Combo sits 8 left of the tune button.
-    try t.expectEqual(@as(i32, m.tool_tune_x - 8 - 128), m.tool_combo_x);
-    // Picker under the hero, gallery row 16 below that.
-    try t.expectEqual(@as(i32, 196 + 300 + 12), m.picker_y);
-    try t.expectEqual(@as(i32, m.picker_y + 48 + 16), m.gallery_toolbar_y);
-    try t.expectEqual(@as(i32, m.gallery_toolbar_y + 2), m.sort_pills_y);
-    // Right-aligned pill block: 72+8+88+8+88+8+40 = 312.
-    try t.expectEqual(@as(i32, 308 + 560 - 312), m.sort_pills_x);
-    try t.expectEqual(@as(i32, m.sort_pills_x + 72 + 8 + 88 + 8 + 88 + 8), m.gallery_tune_x);
-    try t.expectEqual(@as(i32, m.gallery_toolbar_y + 32 + 12), m.view_panel_y);
+    const pg_w: i32 = 592 - 2 * k_page_pad;
+    const hdr_top = k_content_top + k_page_pad;
+    const hdr_h = k_title_lh + 2 + k_sub_lh;
+    try t.expectEqual(@as(i32, hdr_top + hdr_h + k_hdr_gap_tabs), m.sub_tab_y);
+    try t.expectEqual(@as(i32, 292 + k_page_pad), m.pg_x);
+    try t.expectEqual(@as(i32, pg_w), m.pg_w);
+    // Toggle centred on the title block, flush right.
+    try t.expectEqual(@as(i32, 292 + k_page_pad + pg_w - k_toggle_w), m.toggle_x);
+    try t.expectEqual(@as(i32, hdr_top + @divTrunc(hdr_h - k_toggle_h, 2)), m.toggle_y);
+    // Current card: tabs + gap lands the card, thumb 16:9 inside the pad.
+    try t.expectEqual(@as(i32, m.sub_tab_y + k_tabs_h + k_sec_gap), m.cur_y);
+    try t.expectEqual(@as(i32, m.cur_y + k_cur_pad), m.thumb_y);
+    try t.expectEqual(@as(i32, m.thumb_h + 2 * k_cur_pad), m.cur_h);
+    try t.expectEqual(@as(i32, m.thumb_y + k_name_lh + 4 + k_sub_lh + 20 + k_sub_lh + 6), m.fit_y);
+    try t.expectEqual(@as(i32, m.cur_y + m.cur_h - k_cur_pad - k_btn_h), m.btns_y);
+    // Closed panel: grid starts below the library head.
     try t.expectEqual(@as(i32, 0), m.view_panel_h);
-    // Closed panel: grid starts 12 below the row.
-    try t.expectEqual(@as(i32, m.view_panel_y + 12), m.gallery_grid_top);
+    try t.expectEqual(@as(i32, m.cur_y + m.cur_h + k_sec_gap), m.lib_y);
+    try t.expectEqual(@as(i32, m.lib_y + m.lib_h + 16), m.gallery_grid_top);
 
     const mo = metrics(292.0, 592.0, true);
     try t.expectEqual(@as(i32, 148), mo.view_panel_h);
-    try t.expectEqual(@as(i32, mo.view_panel_y + 148 + 12), mo.gallery_grid_top);
+    try t.expectEqual(@as(i32, mo.view_panel_y + 148 + 16), mo.lib_y);
+    try t.expectEqual(@as(i32, mo.lib_y + mo.lib_h + 16), mo.gallery_grid_top);
 }
 
 test "wallpaper-tab: grid tiles at the specified size" {
@@ -1991,16 +2827,16 @@ test "wallpaper-tab: grid tiles at the specified size" {
     p.columns = 4;
     p.rows = 3;
     p.scale_pct = 100;
-    // availW = 592 - 8 - 32 = 552; (552 - 18) / 4 = 133.5 -> ceil 134.
-    const gr = p.grid(300, 592, 400);
+    // pgW = 552: (552 - 48) / 4 = 126.
+    const gr = p.grid(300, 552, 400);
     try t.expectEqual(@as(i32, 4), gr.cols);
     try t.expectEqual(@as(i32, 3), gr.rows);
-    try t.expectEqual(@as(i32, 134), gr.thumb);
-    try t.expectEqual(@as(i32, (134 * 9 + 8) / 16), gr.thumb_h);
+    try t.expectEqual(@as(i32, 126), gr.thumb);
+    try t.expectEqual(@as(i32, (126 * 10 + 15) / 16), gr.thumb_h);
     try t.expectEqual(@as(usize, 12), gr.per_page);
-    try t.expectEqual(@as(i32, 400 + 3 * (gr.thumb_h + 6) + 14), gr.nav_y);
-    try t.expectEqual(@as(i32, 300 + 16), gr.prev_x);
-    try t.expectEqual(@as(i32, 300 + 592 - 16 - 80), gr.next_x);
+    try t.expectEqual(@as(i32, 400 + 3 * (gr.thumb_h + 16) + 14), gr.nav_y);
+    try t.expectEqual(@as(i32, 300), gr.prev_x);
+    try t.expectEqual(@as(i32, 300 + 552 - 80), gr.next_x);
     // An empty gallery never shows the pager.
     try t.expect(!gr.show_nav);
 }
@@ -2173,17 +3009,6 @@ test "wallpaper-tab: picker modal geometry matches the specified layout" {
     // Inside the panel but not on a row (header) dismisses without a pick.
     try t.expectEqual(@as(?i32, -1), hitPickerModal(900, 980, g.x + 20, g.y + 4)); // header
     try t.expect(hitPickerModal(10, 10, 4, 4) == null); // outside the clamped panel
-}
-
-test "wallpaper-tab: truncation cuts in the middle with an ellipsis" {
-    const t = std.testing;
-    var buf: [80]u8 = undefined;
-    try t.expectEqualStrings("short.png", truncateVisual(&buf, "short.png", 20));
-    const out = truncateVisual(&buf, "abcdefghijklmnopqrstuvwxyz.png", 20);
-    try t.expect(out.len <= 20);
-    try t.expect(std.mem.indexOf(u8, out, "\xE2\x80\xA6") != null);
-    // max_c 16 -> head 6 chars, ellipsis, tail 7 chars.
-    try t.expectEqualStrings("abcdef…xyz.png", truncateVisual(&buf, "abcdefghijklmnopqrstuvwxyz.png", 16));
 }
 
 test "wallpaper-tab: mode labels are the specified set" {

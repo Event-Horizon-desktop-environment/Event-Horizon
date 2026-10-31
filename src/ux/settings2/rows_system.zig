@@ -7,7 +7,11 @@ const Card = rows.Card;
 // card per concern, controls on the right, descriptions under labels.
 
 pub const toast_positions = [_][]const u8{ "top_right", "top_left", "bottom_right", "bottom_left", "top_center", "bottom_center" };
-pub const notif_output_options = [_][]const u8{ "auto", "all", "DP-1", "DP-2", "HDMI-A-1" };
+// The daemon stores lowercase "auto"/"all"; live output names are appended
+// by `Content.optionsFor`. The labels below keep the dropdown title-cased
+// without changing the persisted values.
+pub const notif_output_options = [_][]const u8{ "auto", "all" };
+const notif_output_labels = [_][]const u8{ "Auto", "All" };
 
 pub const notifications = [_]Card{
     .{
@@ -29,7 +33,7 @@ pub const notifications = [_]Card{
             .{ .slider = .{ .label = "Max width", .desc = "Widest a banner grows with its title.", .field = .notifications_max_width_px, .min = 200, .max = 900, .unit = "px" } },
             .{ .toggle = .{ .label = "Layer-shell toasts", .desc = "Draw banners as layer-shell surfaces.", .field = .notifications_layer_shell } },
             .{ .combo = .{ .label = "Toast position", .desc = "Corner the banner stack anchors to.", .field = .notifications_toast_position, .options = &toast_positions } },
-            .{ .combo = .{ .label = "Display", .desc = "Auto = primary monitor.", .field = .notifications_output, .options = &notif_output_options } },
+            .{ .combo = .{ .label = "Display", .desc = "Auto = primary monitor.", .field = .notifications_output, .options = &notif_output_options, .labels = &notif_output_labels } },
         },
     },
     .{

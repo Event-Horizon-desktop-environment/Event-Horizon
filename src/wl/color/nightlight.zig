@@ -1,6 +1,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const wl = @import("../connection.zig").wl;
+const logz = @import("../../logz.zig");
 
 const gamma = @import("../c.zig").wl;
 
@@ -56,6 +57,9 @@ const OutputGamma = struct {
 fn onGammaSize(data: ?*anyopaque, ctrl: ?*gamma.zwlr_gamma_control_v1, size: u32) callconv(.c) void {
     _ = ctrl;
     const og: *OutputGamma = @ptrCast(@alignCast(data orelse return));
+    if (!og.ready and size > 0) {
+        logz.log("nightlight: gamma_size {d} (output obj 0x{x}, {d} of {d} bound)", .{ size, @intFromPtr(og.output), countBound(og.owner) + 1, og.owner.outputs.items.len });
+    }
     og.gamma_size = size;
     og.ready = true;
     // The cold->warm transition is already walking by now; without this the
@@ -69,6 +73,7 @@ fn onGammaSize(data: ?*anyopaque, ctrl: ?*gamma.zwlr_gamma_control_v1, size: u32
 fn onGammaFailed(data: ?*anyopaque, ctrl: ?*gamma.zwlr_gamma_control_v1) callconv(.c) void {
     _ = ctrl;
     const og: *OutputGamma = @ptrCast(@alignCast(data orelse return));
+    logz.log("nightlight: gamma control FAILED for an output (had {d} ready)", .{countBound(og.owner)});
     og.ready = false;
 }
 
@@ -76,6 +81,14 @@ const gamma_listener = gamma.zwlr_gamma_control_v1_listener{
     .gamma_size = onGammaSize,
     .failed = onGammaFailed,
 };
+
+fn countBound(owner: *GammaService) usize {
+    var n: usize = 0;
+    for (owner.outputs.items) |*og| {
+        if (og.ready) n += 1;
+    }
+    return n;
+}
 
 pub const GammaService = struct {
     alloc: std.mem.Allocator,

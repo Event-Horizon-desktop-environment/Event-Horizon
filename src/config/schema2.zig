@@ -219,20 +219,32 @@ pub const VramBoostSettings = struct {
 
 pub const NightLightSettings = struct {
     enabled: bool = false,
+    // The UI sliders run 2500–7500K on both channels (the legacy C++ schema
+    // clamped night to 4000K, which silently contradicted its own slider);
+    // the gamma service itself accepts 1000–10000K either way.
     day_temperature: i32 = 6500,
     night_temperature: i32 = 4000,
     schedule_mode: i32 = 0,
     schedule_start_min: i32 = 1200,
     schedule_end_min: i32 = 360,
+    // Sunset-to-sunrise scheduling. The C++ never executed its schedule at
+    // all; `use_location` opts the schedule into NOAA sun math at lat/lon,
+    // off falls back to the start/end time window.
+    use_location: bool = false,
+    latitude: i32 = 0,
+    longitude: i32 = 0,
 };
 
 pub fn decodeNightLight(t: *const T, s: *NightLightSettings) !void {
     setBool(t, "enabled", &s.enabled);
-    setInt(t, "day_temperature", &s.day_temperature, 4000, 6500);
-    setInt(t, "night_temperature", &s.night_temperature, 2500, 4000);
+    setInt(t, "day_temperature", &s.day_temperature, 2500, 7500);
+    setInt(t, "night_temperature", &s.night_temperature, 2500, 7500);
     setInt(t, "schedule_mode", &s.schedule_mode, 0, 2);
     setInt(t, "schedule_start_min", &s.schedule_start_min, 0, 1439);
     setInt(t, "schedule_end_min", &s.schedule_end_min, 0, 1439);
+    setBool(t, "use_location", &s.use_location);
+    setInt(t, "latitude", &s.latitude, -90, 90);
+    setInt(t, "longitude", &s.longitude, -180, 180);
 }
 
 pub const IdleBehavior = struct {

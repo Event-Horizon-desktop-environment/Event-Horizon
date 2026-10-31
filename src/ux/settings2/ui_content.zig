@@ -365,6 +365,18 @@ pub const Content = struct {
     /// — see `Win.syncDesktopOutputs`.
     dwt_outputs: [16][]const u8 = @as([16][]const u8, @splat("")),
     dwt_outputs_len: usize = 0,
+    /// Live output names for the Dock / Taskbar / Notifications "Display"
+    /// combos. Filled from the window's bound Wayland outputs — see
+    /// `Win.syncBarOutputs`.
+    bar_outputs: [16][]const u8 = @as([16][]const u8, @splat("")),
+    bar_outputs_len: usize = 0,
+    /// Paint lists built from `bar_outputs`: Auto, All, then every output.
+    /// The bars persist "Auto"/"All"; notifications persist the daemon's
+    /// lowercase "auto"/"all" tokens.
+    bar_options: [18][]const u8 = @as([18][]const u8, @splat("")),
+    bar_options_len: usize = 0,
+    notif_bar_options: [18][]const u8 = @as([18][]const u8, @splat("")),
+    notif_bar_options_len: usize = 0,
     /// The monitors page rebuilt into these buffers each relayout (the card
     /// lists everywhere else are compile-time constants, so the one data-
     /// driven page owns its own storage).
@@ -567,6 +579,53 @@ pub const Content = struct {
 
     pub fn dwtOutputs(self: *const Content) []const []const u8 {
         return self.dwt_outputs[0..self.dwt_outputs_len];
+    }
+
+    pub fn barOutputs(self: *const Content) []const []const u8 {
+        return self.bar_outputs[0..self.bar_outputs_len];
+    }
+
+    /// Replace the live output names and rebuild both Display option lists.
+    /// Called from `Win.syncBarOutputs` on tab entry and when a Display combo
+    /// opens, so hot-plugged or disabled outputs are reflected immediately.
+    pub fn setBarOutputs(self: *Content, names: []const []const u8) void {
+        var n: usize = 0;
+        for (names) |name| {
+            if (name.len == 0) continue;
+            if (n >= self.bar_outputs.len) break;
+            self.bar_outputs[n] = name;
+            n += 1;
+        }
+        self.bar_outputs_len = n;
+
+        self.bar_options[0] = "Auto";
+        self.bar_options[1] = "All";
+        self.notif_bar_options[0] = "auto";
+        self.notif_bar_options[1] = "all";
+        for (self.bar_outputs[0..n], 0..) |name, i| {
+            self.bar_options[2 + i] = name;
+            self.notif_bar_options[2 + i] = name;
+        }
+        self.bar_options_len = 2 + n;
+        self.notif_bar_options_len = 2 + n;
+    }
+
+    /// The option list a combo paints. The Dock/Taskbar/Notifications
+    /// "Display" rows enumerate Auto/All plus the live outputs; everything
+    /// else keeps its static list. Falls back to the row's own options before
+    /// the first sync, so a dropdown is never empty.
+    pub fn optionsFor(self: *const Content, cb: rows_mod.ComboRow) []const []const u8 {
+        return switch (cb.field) {
+            .dock_output_name, .taskbar_output_name => if (self.bar_options_len > 0)
+                self.bar_options[0..self.bar_options_len]
+            else
+                cb.options,
+            .notifications_output => if (self.notif_bar_options_len > 0)
+                self.notif_bar_options[0..self.notif_bar_options_len]
+            else
+                cb.options,
+            else => cb.options,
+        };
     }
 
     /// The Desktop Widgets page when it owns this tab, else null. Same
@@ -863,7 +922,8 @@ pub const Content = struct {
             if (self.comboPopupRect(pop.combo)) |r| {
                 if (common.pointInRect(px, py, .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h })) {
                     const idx: i32 = @divTrunc(@as(i32, @intFromFloat(py)) - r.y - 4, common.settings_dd_row_h);
-                    if (idx >= 0 and idx < pop.combo.options.len) {
+                    const opts = self.optionsFor(pop.combo);
+                    if (idx >= 0 and idx < opts.len) {
                         return .{ .combo_pick = @intCast(idx) };
                     }
                     return .none;
@@ -1206,8 +1266,9 @@ pub const Content = struct {
     /// Select `idx` in the currently open popup (window routes it here).
     pub fn selectComboIndex(self: *Content, idx: usize) bool {
         const pop = self.open_combo orelse return false;
-        if (idx >= pop.combo.options.len) return false;
-        self.setComboIndex(pop.combo.field, pop.combo.options, idx);
+        const opts = self.optionsFor(pop.combo);
+        if (idx >= opts.len) return false;
+        self.setComboIndex(pop.combo.field, opts, idx);
         self.open_combo = null;
         return true;
     }
@@ -1235,7 +1296,7 @@ pub const Content = struct {
             const cw: i32 = if (cb.field == fields.Field.hypr_general_layout) hyprland_tab.layout_combo_w else common.settings_combo_w;
             const cx = p.x + p.w - common.card_pad - cw;
             const cy = row_y + @divTrunc(p.h - common.settings_combo_h, 2) + common.settings_combo_h + 4;
-            const rows_n: i32 = @intCast(cb.options.len);
+            const rows_n: i32 = @intCast(self.optionsFor(cb).len);
             const ph = rows_n * common.settings_dd_row_h + 8;
             const flip = cy + ph > band_bot;
             const py = if (flip) row_y - ph - 4 else cy;
@@ -1794,8 +1855,9 @@ pub const Content = struct {
                 const by = p.y + @divTrunc(p.h - bh, 2);
                 const open = self.open_combo != null and std.meta.eql(self.open_combo.?.combo, cb);
                 const hov = common.pointInRect(self.pointer_x, self.pointer_ly, .{ .x = bx, .y = by, .w = bw, .h = bh });
-                const idx_opt = self.comboIndex(cb.field, cb.options);
-                const disp = comboLabel(cb, idx_opt);
+                const opts = self.optionsFor(cb);
+                const idx_opt = self.comboIndex(cb.field, opts);
+                const disp = comboLabel(cb, idx_opt, opts);
                 drawCombo(c, bx, by, bw, bh, disp, open or hov, comboIcon(self, cb, idx_opt), cb.icons.len > 0);
             },
             .tile_slider => |sl| {
@@ -2050,8 +2112,9 @@ pub const Content = struct {
             t.bg_b * 0.25,
             0.97,
         );
-        const cur = self.comboIndex(pop.combo.field, pop.combo.options);
-        for (pop.combo.options, 0..) |_, i| {
+        const opts = self.optionsFor(pop.combo);
+        const cur = self.comboIndex(pop.combo.field, opts);
+        for (opts, 0..) |_, i| {
             const ry = r.y + 4 + @as(i32, @intCast(i)) * common.settings_dd_row_h;
             const hov = common.pointInRect(self.pointer_x, self.pointer_y, .{
                 .x = r.x,
@@ -2100,7 +2163,7 @@ pub const Content = struct {
                 cr,
                 @floatFromInt(tx),
                 @floatFromInt(ry + 18),
-                comboLabel(pop.combo, i),
+                comboLabel(pop.combo, i, opts),
                 12,
                 if (i == cur) 600 else 400,
                 t.text_r,
@@ -2114,9 +2177,9 @@ pub const Content = struct {
 };
 
 /// Display string for option `i` (combo label overrides when provided).
-fn comboLabel(cb: rows_mod.ComboRow, i: usize) []const u8 {
+fn comboLabel(cb: rows_mod.ComboRow, i: usize, opts: []const []const u8) []const u8 {
     if (cb.labels.len > 0 and i < cb.labels.len) return cb.labels[i];
-    if (i < cb.options.len) return cb.options[i];
+    if (i < opts.len) return opts[i];
     return "";
 }
 
@@ -2755,4 +2818,47 @@ test "settings-ui-content: a Hyprland section page places, hits and dispatches" 
     try t.expect(content.applyHit(.{ .toggle = tg.field }, 0));
     try t.expectEqual(!before, content.getBool(tg.field));
     hyprland_data.load(std.testing.io);
+}
+
+test "settings-ui-content: Display combos follow the live outputs" {
+    const t = std.testing;
+    var s = app_mod.Settings{};
+    var content = Content{ .settings = &s };
+    content.setBarOutputs(&.{ "DP-1", "DP-2", "DP-3" });
+
+    var dock_cb: ?rows_mod.ComboRow = null;
+    for (rows_mod.cardsFor(app_mod.TabId.dock, 0)) |card| {
+        for (card.rows) |row| {
+            if (row == .combo and row.combo.field == .dock_output_name) dock_cb = row.combo;
+        }
+    }
+    const dcb = dock_cb orelse return error.TestUnexpectedResult;
+    const dopts = content.optionsFor(dcb);
+    try t.expectEqual(@as(usize, 5), dopts.len);
+    try t.expectEqualStrings("Auto", dopts[0]);
+    try t.expectEqualStrings("All", dopts[1]);
+    try t.expectEqualStrings("DP-1", dopts[2]);
+    try t.expectEqualStrings("DP-3", dopts[4]);
+    try t.expectEqualStrings("DP-3", comboLabel(dcb, 4, dopts));
+
+    var notif_cb: ?rows_mod.ComboRow = null;
+    for (rows_mod.cardsFor(app_mod.TabId.notifications, 0)) |card| {
+        for (card.rows) |row| {
+            if (row == .combo and row.combo.field == .notifications_output) notif_cb = row.combo;
+        }
+    }
+    const ncb = notif_cb orelse return error.TestUnexpectedResult;
+    const nopts = content.optionsFor(ncb);
+    try t.expectEqual(@as(usize, 5), nopts.len);
+    // Stored tokens stay lowercase for the daemon; labels stay title-cased.
+    try t.expectEqualStrings("auto", nopts[0]);
+    try t.expectEqualStrings("all", nopts[1]);
+    try t.expectEqualStrings("Auto", comboLabel(ncb, 0, nopts));
+    try t.expectEqualStrings("All", comboLabel(ncb, 1, nopts));
+    try t.expectEqualStrings("DP-2", comboLabel(ncb, 3, nopts));
+
+    content.setComboIndex(.dock_output_name, dopts, 3);
+    try t.expectEqualStrings("DP-2", s.dock_output_name);
+    content.setComboIndex(.notifications_output, nopts, 1);
+    try t.expectEqualStrings("all", s.notifications_output);
 }

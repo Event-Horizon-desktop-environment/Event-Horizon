@@ -1209,6 +1209,8 @@ pub const Win = struct {
         // an edit is pending — the Zig side of C++ `draw()`'s per-frame
         // reload guarded by `hyprland_m3_has_active_slider`.
         if (t == kDesktopWidgetsTab) self.syncDesktopOutputs();
+        if (t == app_mod.TabId.dock or t == app_mod.TabId.panel or t == app_mod.TabId.notifications or t == app_mod.TabId.taskbar)
+            self.syncBarOutputs();
         if (t == hyprland_tab.tab_id and self.content.drag == null) {
             hyprland_data.ensureLoaded(self.io);
             self.content.relayout();
@@ -1656,8 +1658,13 @@ pub const Win = struct {
                 }
             },
             // Opening a combo changes nothing — only its pick does, and that
-            // is handled above.
-            .combo => _ = self.content.applyHit(ch, x),
+            // is handled above. Refresh the live output list first so
+            // hot-plugged displays show up in the dropdown (C++
+            // `sync_dropdown` refreshes `logical_outputs` on open).
+            .combo => {
+                self.syncBarOutputs();
+                _ = self.content.applyHit(ch, x);
+            },
             .slider => |d| {
                 self.content.drag = d;
                 _ = self.content.applyHit(ch, x);
@@ -1881,6 +1888,22 @@ pub const Win = struct {
     /// Fill the Desktop Widgets display names from the window's bound
     /// Wayland outputs (C++ `sync_dropdown` reads the same live list, and
     /// refreshes it on open — hence the roundtrip here).
+    /// Fill the Dock/Panel/Taskbar/Notifications "Display" lists from the
+    /// window's bound Wayland outputs (the same source the C++
+    /// `sync_dropdown` reads), so the user's real displays enumerate instead
+    /// of hardcoded names.
+    fn syncBarOutputs(self: *Win) void {
+        _ = self.conn.roundtrip();
+        var n: usize = 0;
+        for (self.bound.outputs.items) |o| {
+            if (n >= self.content.bar_outputs.len) break;
+            if (o.name.len == 0) continue;
+            self.content.bar_outputs[n] = o.name;
+            n += 1;
+        }
+        self.content.bar_outputs_len = n;
+    }
+
     fn syncDesktopOutputs(self: *Win) void {
         _ = self.conn.roundtrip();
         var n: usize = 0;

@@ -10,7 +10,11 @@ const Card = rows.Card;
 // paint_dock_appearance_tab / paintAppearance.
 
 const width_mode_options = [_][]const u8{ "Floating", "Edge-to-edge", "Fill" };
-const output_options = [_][]const u8{ "Auto", "All", "DP-1", "DP-2", "HDMI-A-1" };
+// "Auto" (one monitor) and "All" (every display) are universal; the real
+// Wayland output names are appended live from `bound.outputs` by
+// `Content.optionsFor` — never hardcode DP-*/HDMI-* names here, or a display
+// that is not in the list can never be selected.
+const output_options = [_][]const u8{ "Auto", "All" };
 
 pub const dock_settings = [_]Card{
     .{
