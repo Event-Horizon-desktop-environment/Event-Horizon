@@ -5,9 +5,9 @@ const Card = rows.Card;
 // Panels & UI pages — Dock, Taskbar, Launcher, Desktop, Desktop Widgets.
 // Row lists mirror the paint order in dock_tab_m3 / taskbar_tab_m3
 // (Settings / Widgets / Appearance child tabs): Visibility card with 60px
-// bands and dividers, then the Renderer card; Widgets = embedded toggle +
-// three-column widget board; Appearance = the slider set from
-// paint_dock_appearance_tab / paintAppearance.
+// bands and dividers; Widgets = embedded toggle + three-column widget board;
+// Appearance = the slider set from paint_dock_appearance_tab /
+// paintAppearance.
 
 const width_mode_options = [_][]const u8{ "Floating", "Edge-to-edge", "Fill" };
 // "Auto" (one monitor) and "All" (every display) are universal; the real
@@ -29,19 +29,6 @@ pub const dock_settings = [_]Card{
             .{ .toggle = .{ .label = "Pinned apps tray pill", .desc = "One capsule behind consecutive pinned icons (like the tray).", .field = .dock_pinned_apps_tray_pill } },
             .{ .toggle = .{ .label = "Running apps tray pill", .desc = "One capsule behind consecutive running app icons.", .field = .dock_running_apps_tray_pill } },
             .{ .combo = .{ .label = "Display", .desc = "Auto = one monitor, All = every display.", .field = .dock_output_name, .options = &output_options } },
-        },
-    },
-    .{
-        .title = "Renderer",
-        .subtitle = "Vulkan uses the GPU pipeline; Cairo renders in software with far lower memory.",
-        .rows = &[_]Row{
-            .{ .combo = .{
-                .label = "Shell renderer",
-                .desc = "Applies live; switching to Vulkan maps GPU drivers on next frame.",
-                .field = .renderer,
-                .options = &.{ "vulkan", "cairo" },
-                .labels = &.{ "Vulkan (GPU)", "Cairo (CPU, low memory)" },
-            } },
         },
     },
 };

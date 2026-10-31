@@ -934,8 +934,7 @@ pub fn setStr(s: *app_mod.Settings, f: Field, v: []const u8) void {
 }
 
 /// Combo index for a row: int fields store the index directly, string fields
-/// store the selected option text (matched, defaulting to 0
-/// `rendererIndex()` helper in dock_tab.zig).
+/// store the selected option text (matched, defaulting to 0).
 pub fn comboIndex(s: *const app_mod.Settings, f: Field, options: []const []const u8) usize {
     if (f.kind() == .str) {
         const cur = getStr(s, f);
@@ -986,6 +985,7 @@ test "settings-fields: get/set round-trip" {
 test "settings-fields: combo index for int and str fields" {
     const t = std.testing;
     var s = app_mod.Settings{};
+    s.renderer = "vulkan";
     const opts = [_][]const u8{ "vulkan", "cairo" };
     try t.expectEqual(@as(usize, 0), comboIndex(&s, .renderer, &opts));
     setComboIndex(&s, .renderer, &opts, 1);

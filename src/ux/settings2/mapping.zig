@@ -16,7 +16,6 @@ pub const dock_keys = [_]TomlKey{
     .{ .section = "dock", .key = "radius" },
     .{ .section = "dock", .key = "icon_size" },
     .{ .section = "dock", .key = "opacity" },
-    .{ .section = "dock", .key = "renderer" },
 };
 
 pub const audio_keys = [_]TomlKey{
@@ -92,7 +91,7 @@ pub fn clampSettings(s: *app_mod.Settings) void {
 
 test "settings-mapping: keys + preview + clamp" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 6), dock_keys.len);
+    try t.expectEqual(@as(usize, 5), dock_keys.len);
     try t.expectEqual(@as(usize, 5), audio_keys.len);
     var s = app_mod.Settings{};
     s.dock_icon_size = 44;

@@ -55,8 +55,8 @@ pub const ComboRow = struct {
     field: Field,
     options: []const []const u8,
     /// Optional display strings (dropdowns show labels while storing
-    /// values, e.g. renderer vulkan -> "Vulkan (GPU)"); falls back to
-    /// `options` when empty.
+    /// values, e.g. notification "all" -> "All"); falls back to `options`
+    /// when empty.
     labels: []const []const u8 = &.{},
     /// Optional themed icon names parallel to `options` (the default-apps
     /// dropdown shows each application's icon). Empty = no icons; a "" entry

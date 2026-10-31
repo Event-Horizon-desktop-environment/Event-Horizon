@@ -456,7 +456,6 @@ test {
     _ = @import("ux/settings2/events.zig");
     _ = @import("ux/settings2/fields.zig");
     _ = @import("ux/settings2/general_persist.zig");
-    _ = @import("ux/settings2/gpu.zig");
     _ = @import("ux/settings2/hyprland_anim_popup.zig");
     _ = @import("ux/settings2/hyprland_bezier.zig");
     _ = @import("ux/settings2/hyprland_data.zig");
@@ -491,7 +490,6 @@ test {
     _ = @import("ux/settings2/scroll.zig");
     _ = @import("ux/settings2/search.zig");
     _ = @import("ux/settings2/serialize.zig");
-    _ = @import("ux/settings2/shell_persist.zig");
     _ = @import("ux/settings2/slider_appliers.zig");
     _ = @import("ux/settings2/sound_tab.zig");
     _ = @import("ux/settings2/subtabs.zig");

@@ -146,7 +146,7 @@ pub const Settings = struct {
     dock_opacity: i32 = 72,
     dock_border_enabled: bool = false,
     dock_border_size: i32 = 1,
-    renderer: []const u8 = "vulkan",
+    renderer: []const u8 = "cairo",
     icon_theme: []const u8 = "",
 
     nightlight_enabled: bool = false,

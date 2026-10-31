@@ -491,6 +491,10 @@ const Dock = struct {
     /// When `pollWeather` may next start a fetch, in `anim.monotonicNs`
     /// milliseconds. 0 means "on the first tick".
     wx_next_ms: i64 = 0,
+    /// Set when this process was spawned by the `All` supervisor for one
+    /// specific output. It wins over `[dock] output` across reloads so a
+    /// settings save cannot move this child onto another display.
+    forced_output: ?[]const u8 = null,
     /// The `[dock] output` value the live layer surface was pinned to, owned
     /// so `onReload` can tell a real display change from any other config
     /// edit. Empty means nothing has bound it yet.
@@ -7516,6 +7520,19 @@ const Dock = struct {
         return null;
     }
 
+    /// The output this process should pin to. A per-output child spawned by
+    /// the `All` supervisor carries `forced_output`; a normal dock reads the
+    /// live config. Keeping this in one place makes reloads respect the
+    /// child's assignment.
+    fn outputName(self: *const Dock) []const u8 {
+        return self.forced_output orelse self.app.loaded.cfg.dock.output_name;
+    }
+
+    /// True for the one setting that means "one dock on every display".
+    fn isAllOutput(name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(std.mem.trim(u8, name, " \t\r\n"), "All");
+    }
+
     /// The output the popup layer is positioned against, which is wherever the
     /// dock itself landed. A pinned display gives the exact entry; `Auto` leaves
     /// the compositor to choose and tell nobody, so the first display it
@@ -7559,7 +7576,7 @@ const Dock = struct {
     /// sends a fresh configure for the new output, and `onConfigure` resizes
     /// the buffer if that display is not the same size as the old one.
     fn rebindOutput(self: *Dock) void {
-        const name = self.app.loaded.cfg.dock.output_name;
+        const name = self.outputName();
         if (std.mem.eql(u8, name, self.output_want)) return;
         const entry = Dock.outputEntryForName(self.app.bound.outputs.items, name);
         const obj = if (entry) |e| e.obj else null;
@@ -7619,6 +7636,15 @@ const Dock = struct {
     fn onReload(ctx: *anyopaque) void {
         const self: *Dock = @ptrCast(@alignCast(ctx));
         logz.log("reload: config changed, rebuilding", .{});
+        // A single dock cannot grow extra layer surfaces when the Display
+        // combo flips to `All`; hand off to the supervisor mode by exiting
+        // cleanly. The process supervisor restarts us, now with one child per
+        // output.
+        if (self.forced_output == null and Dock.isAllOutput(self.app.loaded.cfg.dock.output_name)) {
+            logz.log("output: switching to per-output dock supervisor", .{});
+            _ = linux.kill(linux.getpid(), linux.SIG.TERM);
+            return;
+        }
         {
             const dcfg = &self.app.loaded.cfg.dock;
             eh.diag.log(
@@ -7939,6 +7965,246 @@ const Dock = struct {
     }
 };
 
+// ---------------------------------------------------------------------------
+// `All` display mode
+//
+// One layer-shell surface can only target one output. When `[dock] output`
+// is `All`, this process becomes a tiny supervisor: it enumerates the
+// compositor's outputs and keeps one normal dock child alive per display.
+// Each child gets `EH_DOCK_OUTPUT`, so the existing single-output dock code
+// runs unchanged; `EH_DOCK_PARENT_PID` makes the child die with the parent.
+// ---------------------------------------------------------------------------
+
+const max_all_outputs = 16;
+const all_output_name_cap = 64;
+
+const AllChild = struct {
+    name: [all_output_name_cap]u8 = @splat(0),
+    name_len: usize = 0,
+    pid: std.posix.pid_t = 0,
+    started_ms: u64 = 0,
+    restarts: u32 = 0,
+    retry_at_ms: u64 = 0,
+
+    fn nameSlice(self: *const AllChild) []const u8 {
+        return self.name[0..self.name_len];
+    }
+
+    fn setName(self: *AllChild, name: []const u8) void {
+        const n = @min(name.len, self.name.len);
+        @memcpy(self.name[0..n], name[0..n]);
+        self.name_len = n;
+    }
+};
+
+const AllHost = struct {
+    app: *app.App,
+    env: *const std.process.Environ.Map,
+    children: [max_all_outputs]AllChild = @as([max_all_outputs]AllChild, @splat(.{})),
+    timer_fd: i32 = -1,
+    exit_requested: bool = false,
+
+    fn deinit(self: *AllHost) void {
+        if (self.timer_fd >= 0) {
+            self.app.loop.unwatch(self.timer_fd);
+            _ = linux.close(self.timer_fd);
+            self.timer_fd = -1;
+        }
+    }
+
+    fn onTimer(fd: i32, revents: i16, ctx: *anyopaque) void {
+        const self: *AllHost = @ptrCast(@alignCast(ctx));
+        var buf: [8]u8 = undefined;
+        _ = linux.read(fd, &buf, buf.len);
+        if ((revents & std.posix.POLL.IN) == 0) return;
+        self.reconcile();
+    }
+
+    fn reconcile(self: *AllHost) void {
+        if (self.exit_requested) return;
+        const now = Dock.nowMs();
+
+        // Reap first so a dead slot is free for the same pass.
+        for (&self.children) |*slot| {
+            if (slot.pid == 0) continue;
+            var status: u32 = 0;
+            const rc = linux.wait4(slot.pid, @ptrCast(&status), 1, null);
+            const got: isize = @bitCast(rc);
+            if (got == 0) continue;
+            const ran_long = now - slot.started_ms >= 10_000;
+            if (got > 0) {
+                logz.log("all: dock for '{s}' exited status=0x{x}", .{ slot.nameSlice(), status });
+            }
+            slot.pid = 0;
+            if (ran_long) slot.restarts = 0;
+            slot.restarts +|= 1;
+            const backoff: u64 = switch (slot.restarts) {
+                0, 1, 2 => 0,
+                3 => 1000,
+                4 => 5000,
+                else => 30_000,
+            };
+            slot.retry_at_ms = now + backoff;
+            if (!self.outputExists(slot.nameSlice())) slot.name_len = 0;
+        }
+
+        if (!Dock.isAllOutput(self.app.loaded.cfg.dock.output_name)) {
+            logz.log("all: display mode changed, stopping per-output docks", .{});
+            self.exit_requested = true;
+            self.stopAll();
+            _ = linux.kill(linux.getpid(), linux.SIG.TERM);
+            return;
+        }
+
+        for (self.app.bound.outputs.items) |o| {
+            if (o.name.len == 0) continue;
+            const slot = self.slotFor(o.name) orelse self.allocSlot(o.name) orelse continue;
+            if (slot.pid != 0) continue;
+            if (now < slot.retry_at_ms) continue;
+            self.spawn(slot, o.name);
+        }
+
+        for (&self.children) |*slot| {
+            if (slot.pid == 0) continue;
+            if (self.outputExists(slot.nameSlice())) continue;
+            logz.log("all: output '{s}' disappeared, stopping its dock", .{slot.nameSlice()});
+            _ = linux.kill(slot.pid, linux.SIG.TERM);
+        }
+    }
+
+    fn slotFor(self: *AllHost, name: []const u8) ?*AllChild {
+        for (&self.children) |*slot| {
+            if (slot.pid == 0 and slot.name_len == 0) continue;
+            if (std.mem.eql(u8, slot.nameSlice(), name)) return slot;
+        }
+        return null;
+    }
+
+    fn allocSlot(self: *AllHost, name: []const u8) ?*AllChild {
+        for (&self.children) |*slot| {
+            if (slot.pid != 0 or slot.name_len != 0) continue;
+            slot.setName(name);
+            return slot;
+        }
+        return null;
+    }
+
+    fn outputExists(self: *const AllHost, name: []const u8) bool {
+        for (self.app.bound.outputs.items) |o| {
+            if (std.ascii.eqlIgnoreCase(o.name, name)) return true;
+        }
+        return false;
+    }
+
+    fn spawn(self: *AllHost, slot: *AllChild, name: []const u8) void {
+        var env = self.env.clone(self.app.gpa) catch return;
+        defer env.deinit();
+        _ = env.swapRemove("EH_SUPERVISOR_PID");
+        env.put("EH_DOCK_OUTPUT", name) catch return;
+        var pid_buf: [32]u8 = undefined;
+        const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{linux.getpid()}) catch return;
+        env.put("EH_DOCK_PARENT_PID", pid_str) catch return;
+
+        const argv = [_][]const u8{"/proc/self/exe"};
+        const child = std.process.spawn(self.app.io, .{
+            .argv = &argv,
+            .environ_map = &env,
+            .stdin = .ignore,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        }) catch |e| {
+            logz.err("all: spawn dock for '{s}' failed: {s}", .{ name, @errorName(e) });
+            slot.retry_at_ms = Dock.nowMs() + 1000;
+            return;
+        };
+        const pid = child.id orelse {
+            logz.err("all: spawn dock for '{s}' returned no pid", .{name});
+            slot.retry_at_ms = Dock.nowMs() + 1000;
+            return;
+        };
+        slot.pid = pid;
+        slot.started_ms = Dock.nowMs();
+        logz.log("all: started dock for '{s}' pid={d}", .{ name, pid });
+    }
+
+    fn stopAll(self: *AllHost) void {
+        for (&self.children) |*slot| {
+            if (slot.pid == 0) continue;
+            _ = linux.kill(slot.pid, linux.SIG.TERM);
+        }
+        const deadline = Dock.nowMs() + 1500;
+        while (true) {
+            var any = false;
+            for (&self.children) |*slot| {
+                if (slot.pid == 0) continue;
+                var status: u32 = 0;
+                const rc = linux.wait4(slot.pid, @ptrCast(&status), 1, null);
+                const got: isize = @bitCast(rc);
+                if (got == 0) {
+                    any = true;
+                } else {
+                    slot.pid = 0;
+                    slot.name_len = 0;
+                }
+            }
+            if (!any or Dock.nowMs() >= deadline) break;
+            var ts: linux.timespec = .{ .sec = 0, .nsec = 50_000_000 };
+            _ = linux.nanosleep(&ts, null);
+        }
+        for (&self.children) |*slot| {
+            if (slot.pid == 0) continue;
+            _ = linux.kill(slot.pid, linux.SIG.KILL);
+            var status: u32 = 0;
+            _ = linux.wait4(slot.pid, @ptrCast(&status), 0, null);
+            slot.pid = 0;
+            slot.name_len = 0;
+        }
+    }
+};
+
+fn runAllOutputs(a: *app.App, init: std.process.Init) !u8 {
+    var host = AllHost{ .app = a, .env = init.environ_map };
+    defer host.deinit();
+    logz.log("all: per-output dock supervisor, outputs={d}", .{a.bound.outputs.items.len});
+
+    var dock_dir: ?[]u8 = null;
+    defer if (dock_dir) |d| a.gpa.free(d);
+    if (config.settingsDir(a.gpa, a.xdg_config, a.home)) |settings| {
+        defer a.gpa.free(settings);
+        dock_dir = std.fs.path.join(a.gpa, &.{ settings, "dock" }) catch null;
+    } else |_| {}
+    if (dock_dir) |d| {
+        const extra = [_][]const u8{d};
+        a.startWatching(&extra);
+    } else {
+        a.startWatching(&[_][]const u8{});
+    }
+
+    const rc: isize = @bitCast(linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true }));
+    if (rc < 0) {
+        logz.err("all: timerfd_create failed", .{});
+        return 1;
+    }
+    host.timer_fd = @intCast(rc);
+    const its = linux.itimerspec{
+        .it_interval = .{ .sec = 0, .nsec = 500_000_000 },
+        .it_value = .{ .sec = 0, .nsec = 500_000_000 },
+    };
+    if (linux.timerfd_settime(host.timer_fd, .{}, &its, null) != 0) {
+        logz.err("all: timerfd_settime failed", .{});
+        return 1;
+    }
+    a.loop.watchFd(host.timer_fd, std.posix.POLL.IN, AllHost.onTimer, &host) catch {
+        logz.err("all: cannot watch the supervisor timer", .{});
+        return 1;
+    };
+
+    host.reconcile();
+    a.run();
+    host.stopAll();
+    return 0;
+}
+
 pub fn main(init: std.process.Init) !u8 {
     _ = parent_guard.installGuard();
     // `EH_ZIG_ISOLATED=1` points every settings path at `Event-Horizon-zig`
@@ -7959,6 +8225,20 @@ pub fn main(init: std.process.Init) !u8 {
         },
     );
 
+    // A per-output child spawned by the `All` supervisor must die with its
+    // parent instead of leaving a stray dock behind after a crash/restart.
+    const forced_output = init.environ_map.get("EH_DOCK_OUTPUT");
+    if (forced_output != null) {
+        if (init.environ_map.get("EH_DOCK_PARENT_PID")) |raw| {
+            const parent_pid = std.fmt.parseInt(std.posix.pid_t, raw, 10) catch 0;
+            if (parent_pid > 0) {
+                const sigterm: usize = @intCast(@intFromEnum(std.posix.SIG.TERM));
+                _ = std.posix.prctl(.SET_PDEATHSIG, .{sigterm}) catch {};
+                if (std.posix.getppid() != parent_pid) return 1;
+            }
+        }
+    }
+
     var a = app.App.init(
         gpa,
         io,
@@ -7969,6 +8249,14 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     };
     defer a.deinit();
+
+    // `All` means one dock per detected output. A single layer surface can
+    // only live on one output, so the parent enumerates the compositor's
+    // outputs and keeps one child process per display alive; each child gets
+    // `EH_DOCK_OUTPUT` and runs the normal single-dock path.
+    if (forced_output == null and Dock.isAllOutput(a.loaded.cfg.dock.output_name)) {
+        return runAllOutputs(&a, init);
+    }
 
     // The shared icon cache indexes every theme directory once and answers
     // later lookups from memory, so a strip rebuild never re-probes the
@@ -7998,6 +8286,7 @@ pub fn main(init: std.process.Init) !u8 {
         .notif_stats = notify_stats.Stats.init(@as(i64, @intCast(Dock.nowMs()))),
         .vpn_store = vpn_popup.Store.init(gpa),
     };
+    dock.forced_output = forced_output;
     defer dock.deinit();
     // World clock: the widget's own session, loaded before the first strip
     // build so the first frame already has the user's cities (the taskbar's
@@ -8062,7 +8351,7 @@ pub fn main(init: std.process.Init) !u8 {
     // Resolve the target output *before* the first build: `buildModel`
     // derives the fit factor (icon/bar/radius/gap) from `output_entry`'s
     // logical height, so it must be set or the first frame sizes for 1440.
-    const dock_entry = Dock.outputEntryForName(a.bound.outputs.items, a.loaded.cfg.dock.output_name);
+    const dock_entry = Dock.outputEntryForName(a.bound.outputs.items, dock.outputName());
     dock.output_entry = dock_entry;
 
     // The tray is a session-bus client whose startup can stall for seconds
@@ -8081,9 +8370,9 @@ pub fn main(init: std.process.Init) !u8 {
         logz.err("layer surface create failed", .{});
         return 1;
     }
-    dock.setOutputWant(a.loaded.cfg.dock.output_name);
+    dock.setOutputWant(dock.outputName());
     logz.log("output: dock pinned to '{s}'{s}", .{
-        a.loaded.cfg.dock.output_name,
+        dock.outputName(),
         if (dock_output == null) " (compositor's choice)" else "",
     });
     // Bottom only: the compositor centres the unanchored horizontal axis, so
@@ -8169,9 +8458,9 @@ pub fn main(init: std.process.Init) !u8 {
     // legacy roots, and these are the component dirs underneath the settings
     // root (`~/.config/Event-Horizon`) that actually feed a reload (the paths
     // only need to outlive the call).
-    // `shell` carries the renderer combo and `general` the icon theme — both
-    // rows live on settings pages, so without these watches those saves would
-    // never reach the dock.
+    // `general` carries the icon theme and `appearance` the shared opacity
+    // knobs — both rows live on settings pages, so without these watches
+    // those saves would never reach the dock.
     var owned: [5][]u8 = undefined;
     var nowned: usize = 0;
     defer {
@@ -8186,7 +8475,7 @@ pub fn main(init: std.process.Init) !u8 {
         // controls would only land after a restart. Created up front, like
         // the desktop does for `desktop_widgets`, so the watch is never
         // installed against a missing dir.
-        for ([_][]const u8{ "dock", "wallpaper", "shell", "general", "appearance" }) |comp| {
+        for ([_][]const u8{ "dock", "wallpaper", "general", "appearance" }) |comp| {
             if (nextra == extra.len) break;
             const dir = std.fs.path.join(gpa, &.{ settings, comp }) catch continue;
             if (std.mem.eql(u8, comp, "appearance")) std.Io.Dir.cwd().createDirPath(io, dir) catch {};

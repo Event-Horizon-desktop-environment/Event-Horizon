@@ -138,7 +138,7 @@ fn decodeFileBrowser(alloc: std.mem.Allocator, t: *const T, s: *FileBrowser) !vo
 }
 
 pub const ShellConfig = struct {
-    renderer: Renderer = .vulkan,
+    renderer: Renderer = .cairo,
     dock: s1.DockSettings = .{},
     dashboard: s1.DashboardConfig = .{},
     appearance: s3.Appearance = .{},

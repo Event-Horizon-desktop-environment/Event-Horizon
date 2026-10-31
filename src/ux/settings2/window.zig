@@ -9,7 +9,6 @@ const search = @import("search.zig");
 const config = @import("../../config.zig");
 const ns = @import("../../desktop_shell/common/namespaces.zig");
 const dock_persist = @import("dock_persist.zig");
-const shell_persist = @import("shell_persist.zig");
 const diag = @import("../../diag.zig");
 const general_persist = @import("general_persist.zig");
 const appearance_persist = @import("appearance_persist.zig");
@@ -499,7 +498,6 @@ pub const Win = struct {
             dock_persist.load(a.allocator(), &self.settings, &loaded.cfg.dock);
             taskbar_persist.load(a.allocator(), &self.settings, &loaded.cfg.taskbar);
             widget_persist.load(a.allocator(), &self.settings, loaded.cfg.widgets);
-            shell_persist.load(&self.settings, loaded.cfg.renderer);
             general_persist.load(a.allocator(), &self.settings, loaded.cfg.dock.icon_theme, loaded.cfg.avatar_path);
             appearance_persist.load(a.allocator(), &self.settings, &loaded.cfg.appearance);
             launcher_persist.loadSlotPill(&self.settings, &loaded.cfg.dock, &loaded.cfg.taskbar);
@@ -536,32 +534,26 @@ pub const Win = struct {
         }
     }
 
-    /// Write the Dock tab back to `dock/dock.toml` (plus the renderer row to
-    /// `shell/shell.toml` — that combo lives on the Dock page but decodes
-    /// from `[shell]`). Only called from the Dock tab, and only after a
-    /// control actually moved, so a stray click in another category does not
-    /// trip the dock's inotify watcher. The dock reloads by itself from
-    /// there — `src/bin/app.zig` watches the component directory and rebuilds
-    /// on the change.
+    /// Write the Dock tab back to `dock/dock.toml`. Only called from the
+    /// Dock tab, and only after a control actually moved, so a stray click in
+    /// another category does not trip the dock's inotify watcher. The dock
+    /// reloads by itself from there — `src/bin/app.zig` watches the component
+    /// directory and rebuilds on the change.
     fn flushDockTab(self: *Win) void {
         if (self.content.active_tab != kDockTab) return;
         const state = self.state_dir orelse {
             diag.log("flushDockTab: no state dir, skipping save", .{});
             return;
         };
-        diag.log("flushDockTab: saving dock+shell", .{});
+        diag.log("flushDockTab: saving dock", .{});
         dock_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
             logz.err("settings: dock settings save failed: {s}", .{@errorName(e)});
         };
-        shell_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
-            logz.err("settings: shell renderer save failed: {s}", .{@errorName(e)});
-        };
     }
 
-    /// A slider drag's throttled write: the same files as `flushDockTab`
-    /// minus the renderer (a combo cannot move mid-drag), at most once per
-    /// `kLiveFlushNs`. This is what makes a drag repaint the live dock
-    /// instead of only landing on release.
+    /// A slider drag's throttled write: the same file as `flushDockTab`, at
+    /// most once per `kLiveFlushNs`. This is what makes a drag repaint the
+    /// live dock instead of only landing on release.
     fn flushDockLive(self: *Win) void {
         const tab = self.content.active_tab;
         if (tab != kDockTab and tab != kTaskbarTab) return;
