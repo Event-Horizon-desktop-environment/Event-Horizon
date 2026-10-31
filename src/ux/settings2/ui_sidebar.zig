@@ -648,8 +648,14 @@ test "settings2-ui-sidebar: rail and list geometry" {
     const a = sb.hitTest(@floatFromInt(common.rail_x + 10), @floatFromInt(common.rail_base_y + 4));
     try t.expect(a == .select_tab);
 
-    // List row hit -> page row of the active category (Dock).
-    try t.expectEqual(@as(usize, 0), sb.activeCategory());
+    // List row hit -> page row of the active category (Dock). The rail is
+    // alphabetical now, so find Panels & UI by label instead of assuming
+    // it is index 0.
+    var panels_idx: usize = 0;
+    for (app_mod.sidebar_categories, 0..) |cat, i| {
+        if (std.mem.eql(u8, cat.label, "Panels & UI")) panels_idx = i;
+    }
+    try t.expectEqual(panels_idx, sb.activeCategory());
     const b = sb.hitTest(@floatFromInt(common.list_x + 20), @floatFromInt(common.list_row_base_y + 4));
     try t.expect(b == .select_tab);
     try t.expectEqual(@as(i32, 0), b.select_tab);

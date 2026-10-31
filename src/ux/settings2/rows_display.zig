@@ -2,8 +2,9 @@ const rows = @import("rows.zig");
 const Row = rows.Row;
 const Card = rows.Card;
 
-// Display pages — Monitors (static fallback), Themes, Color Themes, Icons,
-// Nightlight.
+// Display pages — Monitors (static fallback) and Nightlight. Themes, Color
+// Themes and Icons are grouped under the Appearance rail now; their card
+// lists stay here with the other display-flavoured pages.
 //
 // The Monitors tab is the one data-driven page: when the window has a live
 // `monitors_state.State` it builds its cards from it in `monitors_page.zig`

@@ -110,9 +110,10 @@ test "settings2-page-header: the tri-line occupies a fixed band" {
     // Every category name the app routes through the eyebrow fits the
     // upper-case scratch buffer without truncation.
     const names = [_][]const u8{
-        "Panels & UI", "Display",  "Hyprland",     "MangoWM",
-        "System",      "Wallpaper", "Network",      "Time",
-        "Default Apps", "Accounts", "Updates",
+        "Panels & UI",  "Display",   "Hyprland", "MangoWM",
+        "System",       "Wallpaper", "Network",  "Time",
+        "Default Apps", "Accounts",  "Updates",  "Bluetooth",
+        "Wi-Fi",
     };
     for (names) |n| {
         try t.expect(n.len <= eyebrow_buf_len);

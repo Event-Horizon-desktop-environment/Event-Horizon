@@ -6,22 +6,26 @@ const overlay = @import("../../config/overlay.zig");
 // Same design and layout: window 900x980, sidebar 260px, content area
 // to the right of the sidebar, per-tab scroll offsets, numeric tab ids.
 //
-// Numeric tab ids match the sidebar defs exactly:
-//   Panels&UI(12): 0 Dock, 1 Panel, 11 Taskbar, 9 Launcher, 29 Desktop, 27 Desktop Widgets
-//   Appearance(2): 2 General, 79 Opacity, 80 Color, 3 Templates
-//   Display(13): 7 Monitors, 45 Themes, 50 Color Themes, 44 Icons, 19 Nightlight
-//   MangoWM(16): 20 Decoration, 21 Colors, 22 Animations, 23 Keybinds, 24 Layout, 25 Input, 26 Misc
+// Numeric tab ids match the sidebar defs exactly. The rail categories are
+// sorted A-Z by label; the list below follows that order:
+//   Accounts(46): 46 Accounts
+//   Appearance(2): 2 General, 45 Themes, 50 Color Themes, 44 Icons, 79 Opacity,
+//                 80 Color, 3 Templates
+//   Bluetooth(47): 47 Bluetooth (single-page rail category)
+//   Default Apps(10): 10 Default Apps
+//   Display(13): 7 Monitors, 19 Nightlight
 //   Hyprland(33): 64 General, 65 Decoration, 66 Input, 67 Binds, 68 Dwindle, 69 Master,
 //                 70 Scrolling, 71 Animations, 72 Misc, 73 Render, 74 Cursor, 75 Group,
 //                 76 XWayland, 77 OpenGL, 78 Quirks
-//   System(14): 5 Notifications, 31 Keyboard, 47 Bluetooth, 32 Power, 48 Startup
-//   Time(35): 30 System Time, 84 World Clock
-//   Default Apps(10): 10 Default Apps
-//   Accounts(46): 46 Accounts
-//   Updates(51): 51 Updates
+//   MangoWM(16): 20 Decoration, 21 Colors, 22 Animations, 23 Keybinds, 24 Layout, 25 Input, 26 Misc
+//   Network(85): 18 Wired, 28 VPN
+//   Panels&UI(12): 0 Dock, 1 Panel, 11 Taskbar, 9 Launcher, 29 Desktop, 27 Desktop Widgets
 //   Sound(18): 8 Devices, 81 Bluetooth Audio, 82 Apps, 83 Engine
+//   System(14): 5 Notifications, 31 Keyboard, 32 Power, 48 Startup
+//   Time(35): 30 System Time, 84 World Clock
+//   Updates(51): 51 Updates
 //   Wallpaper(15): 6 Wallpaper, 34 Bing
-//   Network(17): 17 Wi-Fi, 18 Wired, 28 VPN
+//   Wi-Fi(17): 17 Wi-Fi (single-page rail category)
 //
 // MangoWM's rail category keeps id 16 to itself on purpose: tab 16 used to
 // double as the Bing Wallpaper page, which made every Bing click land on
@@ -36,8 +40,9 @@ pub const TabId = struct {
     pub const appearance: i32 = 2;
     /// Appearance child pages appended after the Hyprland range: the
     /// per-surface opacity tile grid and the color-adjustment tile grid.
-    /// List order in `appearance_subs` is General | Opacity | Color |
-    /// Templates, so these ids are non-contiguous on purpose.
+    /// List order in `appearance_subs` is General | Themes | Color Themes |
+    /// Icons | Opacity | Color | Templates, so these ids are non-contiguous
+    /// on purpose.
     pub const appearance_opacity: i32 = 79;
     pub const appearance_color: i32 = 80;
     /// Appearance child page: matugen template toggles.
@@ -109,18 +114,18 @@ pub const panels_ui_subs = [_]SidebarSub{
 
 pub const display_subs = [_]SidebarSub{
     .{ .label = "Monitors", .glyph = "monitor", .tab_id = 7 },
-    .{ .label = "Themes", .glyph = "palette", .tab_id = 45 },
-    .{ .label = "Color Themes", .glyph = "colorize", .tab_id = 50 },
-    .{ .label = "Icons", .glyph = "photo_library", .tab_id = 44 },
     .{ .label = "Nightlight", .glyph = "dark_mode", .tab_id = 19 },
 };
 
 /// Appearance's own rail category (directly below Panels & UI). Its child
-/// pages read General | Opacity | Color | Templates in the inner list
-/// column, like every other category's subs, so there is no in-page child
-/// strip.
+/// pages read General | Themes | Color Themes | Icons | Opacity | Color |
+/// Templates in the inner list column, like every other category's subs, so
+/// there is no in-page child strip.
 pub const appearance_subs = [_]SidebarSub{
     .{ .label = "General", .glyph = "palette", .tab_id = 2 },
+    .{ .label = "Themes", .glyph = "palette", .tab_id = 45 },
+    .{ .label = "Color Themes", .glyph = "colorize", .tab_id = 50 },
+    .{ .label = "Icons", .glyph = "photo_library", .tab_id = 44 },
     .{ .label = "Opacity", .glyph = "layers", .tab_id = 79 },
     .{ .label = "Color", .glyph = "colorize", .tab_id = 80 },
     .{ .label = "Templates", .glyph = "app_registration", .tab_id = 3 },
@@ -139,7 +144,6 @@ pub const mango_subs = [_]SidebarSub{
 pub const system_subs = [_]SidebarSub{
     .{ .label = "Notifications", .glyph = "notifications", .tab_id = 5 },
     .{ .label = "Keyboard & Language", .glyph = "keyboard", .tab_id = 31 },
-    .{ .label = "Bluetooth", .glyph = "bluetooth", .tab_id = 47 },
     .{ .label = "Power", .glyph = "power_settings_new", .tab_id = 32 },
     .{ .label = "Startup", .glyph = "play_arrow", .tab_id = 48 },
 };
@@ -169,7 +173,6 @@ pub const wallpaper_subs = [_]SidebarSub{
 };
 
 pub const network_subs = [_]SidebarSub{
-    .{ .label = "Wi-Fi", .glyph = "wifi", .tab_id = 17 },
     .{ .label = "Wired", .glyph = "lan", .tab_id = 18 },
     .{ .label = "VPN", .glyph = "vpn_key", .tab_id = 28 },
 };
@@ -188,24 +191,29 @@ pub const hyprland_subs = blk: {
     break :blk subs;
 };
 
+/// Rail categories, sorted A-Z by label. A category with no subs is a
+/// single-page entry: its id is the page tab, per `pageTab`, so the rail
+/// button opens that page directly.
 pub const sidebar_categories = [_]SidebarCategory{
-    .{ .id = 12, .label = "Panels & UI", .glyph = "dashboard", .subs = &panels_ui_subs },
-    .{ .id = 2, .label = "Appearance", .glyph = "palette", .subs = &appearance_subs },
-    .{ .id = 13, .label = "Display", .glyph = "display_settings", .subs = &display_subs },
-    .{ .id = 16, .label = "MangoWM", .glyph = "view_module", .subs = &mango_subs },
-    .{ .id = 33, .label = "Hyprland", .glyph = "layers", .subs = &hyprland_subs },
-    .{ .id = 14, .label = "System", .glyph = "tune", .subs = &system_subs },
-    // The System pages that own rail entries now. Time is a two-page
-    // category (System Time | World Clock); Default Apps, Accounts and
-    // Updates are single-page categories — their category id IS the page id,
-    // per `pageTab`, so the rail button opens the page itself.
-    .{ .id = 35, .label = "Time", .glyph = "schedule", .subs = &time_subs },
-    .{ .id = 10, .label = "Default Apps", .glyph = "app_registration", .subs = &.{} },
     .{ .id = 46, .label = "Accounts", .glyph = "account_circle", .subs = &.{} },
-    .{ .id = 51, .label = "Updates", .glyph = "system_update", .subs = &.{} },
+    .{ .id = 2, .label = "Appearance", .glyph = "palette", .subs = &appearance_subs },
+    // Bluetooth and Wi-Fi left their old parent categories for their own
+    // rail entries. Their ids are also their page ids.
+    .{ .id = 47, .label = "Bluetooth", .glyph = "bluetooth", .subs = &.{} },
+    .{ .id = 10, .label = "Default Apps", .glyph = "app_registration", .subs = &.{} },
+    .{ .id = 13, .label = "Display", .glyph = "display_settings", .subs = &display_subs },
+    .{ .id = 33, .label = "Hyprland", .glyph = "layers", .subs = &hyprland_subs },
+    .{ .id = 16, .label = "MangoWM", .glyph = "view_module", .subs = &mango_subs },
+    // Network keeps the wired and VPN pages. Its old id 17 was also the
+    // Wi-Fi page, so the rail id moved out of the page-id range.
+    .{ .id = 85, .label = "Network", .glyph = "wifi", .subs = &network_subs },
+    .{ .id = 12, .label = "Panels & UI", .glyph = "dashboard", .subs = &panels_ui_subs },
     .{ .id = 18, .label = "Sound", .glyph = "volume_up", .subs = &sound_subs },
+    .{ .id = 14, .label = "System", .glyph = "tune", .subs = &system_subs },
+    .{ .id = 35, .label = "Time", .glyph = "schedule", .subs = &time_subs },
+    .{ .id = 51, .label = "Updates", .glyph = "system_update", .subs = &.{} },
     .{ .id = 15, .label = "Wallpaper Settings", .glyph = "wallpaper", .subs = &wallpaper_subs },
-    .{ .id = 17, .label = "Network", .glyph = "wifi", .subs = &network_subs },
+    .{ .id = 17, .label = "Wi-Fi", .glyph = "wifi", .subs = &.{} },
 };
 
 /// Persisted settings — one field per Settings struct member in
@@ -546,7 +554,16 @@ pub fn isMangoTab(tab_id: i32) bool {
 
 test "settings-app: tab registry mirrors the sidebar sections" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 13), sidebar_categories.len);
+    try t.expectEqual(@as(usize, 15), sidebar_categories.len);
+    // The rail is sorted A-Z by label.
+    var prev: []const u8 = "";
+    for (sidebar_categories) |cat| {
+        try t.expect(std.mem.order(u8, prev, cat.label) == .lt);
+        prev = cat.label;
+    }
+    for (sidebar_categories, 0..) |a, i| {
+        for (sidebar_categories[i + 1 ..]) |b| try t.expect(a.id != b.id);
+    }
     try t.expectEqualStrings("Dock", tabTitle(0).?);
     try t.expectEqualStrings("VPN", tabTitle(28).?);
     // Sound is its own rail category now — the Audio Center's four live
@@ -559,11 +576,12 @@ test "settings-app: tab registry mirrors the sidebar sections" {
     try t.expectEqual(@as(usize, 4), sound_subs.len);
     for (system_subs) |s| {
         try t.expect(s.tab_id != 8); // Sound owns its four pages now.
+        try t.expect(s.tab_id != 47); // Bluetooth owns its own rail entry.
         // Time, Default Apps, Accounts and Updates left the System list for
         // their own rail entries.
         try t.expect(s.tab_id != 30 and s.tab_id != 10 and s.tab_id != 46 and s.tab_id != 51);
     }
-    try t.expectEqual(@as(usize, 5), system_subs.len);
+    try t.expectEqual(@as(usize, 4), system_subs.len);
     // Time is a rail category with two list rows now (System Time | World
     // Clock); the rail id itself answers nothing, like Hyprland's 33.
     try t.expectEqualStrings("System Time", tabTitle(30).?);
@@ -575,17 +593,25 @@ test "settings-app: tab registry mirrors the sidebar sections" {
     try t.expectEqualStrings("Default Apps", tabTitle(10).?);
     try t.expectEqualStrings("Accounts", tabTitle(46).?);
     try t.expectEqualStrings("Updates", tabTitle(51).?);
-    // Appearance is its own rail category now: the General page split into
-    // General | Opacity | Color, which read as its list rows, and the
-    // Templates page stays the last row.
+    // Bluetooth and Wi-Fi are single-page rail categories. Network keeps
+    // the Wired and VPN pages and has its own rail id.
+    try t.expectEqualStrings("Bluetooth", tabTitle(47).?);
+    try t.expectEqualStrings("Wi-Fi", tabTitle(17).?);
+    try t.expectEqualStrings("Wired", tabTitle(18).?);
+    try t.expectEqualStrings("VPN", tabTitle(28).?);
+    try t.expectEqual(@as(usize, 2), network_subs.len);
+    // Appearance now carries the theme pages and Icons alongside its own
+    // General / Opacity / Color / Templates pages.
     try t.expectEqualStrings("General", tabTitle(2).?);
-    // The old General page split into its own rows: Opacity and Color sit
-    // between General and Templates in the list.
+    try t.expectEqualStrings("Themes", tabTitle(45).?);
+    try t.expectEqualStrings("Color Themes", tabTitle(50).?);
+    try t.expectEqualStrings("Icons", tabTitle(44).?);
     try t.expectEqualStrings("Opacity", tabTitle(79).?);
     try t.expectEqualStrings("Color", tabTitle(80).?);
     try t.expectEqualStrings("Templates", tabTitle(3).?);
-    try t.expectEqual(@as(usize, 4), appearance_subs.len);
-    for (display_subs) |s| try t.expect(s.tab_id != 2);
+    try t.expectEqual(@as(usize, 7), appearance_subs.len);
+    try t.expectEqual(@as(usize, 2), display_subs.len);
+    for (display_subs) |s| try t.expect(s.tab_id != 2 and s.tab_id != 45 and s.tab_id != 50 and s.tab_id != 44);
     // The Hyprland rail category expands into section pages: the category
     // itself has subs now, so `tabTitle` answers for the section tabs
     // (64 = General … 78 = Quirks) and not for the rail id 33.

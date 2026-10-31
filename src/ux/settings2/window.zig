@@ -208,9 +208,9 @@ pub const Win = struct {
     /// The Sound rail's four pages (Devices 8 | Bluetooth 81 | Apps 82 |
     /// Engine 83) — self-painted from the live audio backend, like `bt`.
     snd: sound_tab.Page = .{},
-    /// The Network rail's three pages (Wi-Fi 17 | Wired 18 | VPN 28) — one
+    /// The Wi-Fi / Network rail pages (Wi-Fi 17 | Wired 18 | VPN 28) — one
     /// self-painted page owning the live D-Bus snapshot, the nmcli VPN roster
-    /// and both modals; `Content.net` borrows it while a Network tab is up.
+    /// and both modals; `Content.net` borrows it while any of those tabs is up.
     net: network_tab.Page = .{},
     /// The Time tab's page (tab 30). Owns the live `timedatectl` reading,
     /// the throttled query, the two world-clock stores and the picker
