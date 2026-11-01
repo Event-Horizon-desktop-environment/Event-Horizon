@@ -175,7 +175,7 @@ pub const Sidebar = struct {
             common.Theme.bg_r * 0.35,
             common.Theme.bg_g * 0.35,
             common.Theme.bg_b * 0.35,
-            0.78,
+            1.0,
         );
         cairo_save(c);
         ui_paint.roundRect(

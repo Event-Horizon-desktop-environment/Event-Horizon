@@ -145,14 +145,14 @@ pub fn paintGrid(
         if (cell.folder) {
             paintFolderTile(c, cx + (r.w - box) * 0.5, iy, box, ui, cell, name, alpha, icons);
         } else if (icons.get(icons.ctx, cell.icon)) |sf| {
-            paintIcon(c, sf, ix, iy, box, alpha);
+            paintIcon(c, sf, ix, iy, box);
         } else {
             paintFallback(c, name, ix, iy, box, box * 0.28, alpha);
         }
         cairo.cairo_select_font_face(c, "sans-serif", cairo.CAIRO_FONT_SLANT_NORMAL, cairo.CAIRO_FONT_WEIGHT_NORMAL);
         cairo.cairo_set_font_size(c, g.font_size);
-        const fg = colors.fg;
-        cairo.cairo_set_source_rgba(c, fg[0], fg[1], fg[2], 0.92 * alpha);
+const fg = colors.fg;
+cairo.cairo_set_source_rgba(c, fg[0], fg[1], fg[2], 0.92);
         const adv = measure(c, name);
         const tx = cx + (r.w - @min(adv, r.w - 8.0 * ui)) * 0.5;
         const ty = iy + box + g.font_size + 2.0 * ui;
@@ -207,7 +207,7 @@ fn paintFolderTile(
         cairo.cairo_translate(c, qx + (q - iw * msc) * 0.5, qy + (q - ih * msc) * 0.5);
         cairo.cairo_scale(c, msc, msc);
         cairo.cairo_set_source_surface(c, sf, 0, 0);
-        cairo.cairo_paint_with_alpha(c, @floatCast(alpha));
+        cairo.cairo_paint(c);
         cairo.cairo_restore(c);
         shown += 1;
     }
@@ -353,7 +353,7 @@ pub fn paintEmpty(cr: ?*cairo.cairo_t, g: *const Grid, w: f64, ui: f64, colors: 
     showZ(c, msg);
 }
 
-fn paintIcon(c: *cairo.cairo_t, surf: *cairo.cairo_surface_t, x: f64, y: f64, box: f64, alpha: f64) void {
+fn paintIcon(c: *cairo.cairo_t, surf: *cairo.cairo_surface_t, x: f64, y: f64, box: f64) void {
     if (box <= 0.0) return;
     const iw: f64 = @floatFromInt(cairo.cairo_image_surface_get_width(surf));
     const ih: f64 = @floatFromInt(cairo.cairo_image_surface_get_height(surf));
@@ -363,7 +363,7 @@ fn paintIcon(c: *cairo.cairo_t, surf: *cairo.cairo_surface_t, x: f64, y: f64, bo
     cairo.cairo_translate(c, x + (box - iw * sc) * 0.5, y + (box - ih * sc) * 0.5);
     cairo.cairo_scale(c, sc, sc);
     cairo.cairo_set_source_surface(c, surf, 0, 0);
-    cairo.cairo_paint_with_alpha(c, @floatCast(alpha));
+    cairo.cairo_paint(c);
     cairo.cairo_restore(c);
 }
 

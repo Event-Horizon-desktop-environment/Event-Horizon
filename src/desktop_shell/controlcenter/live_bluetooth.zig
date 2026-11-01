@@ -51,7 +51,43 @@ pub const Device = struct {
     /// absent. Only valid when `has_class` is set.
     class_code: u32 = 0,
     has_class: bool = false,
+    /// BlueZ Device1 `UUIDs` — e.g. A2DP Sink (110d), HFP AG (111f),
+    /// HSP AG (1112). Owned by the query allocator; freed in `deinit`.
+    uuids: [][]const u8 = &.{},
+    /// Resolved audio codec/profile for connected Bluetooth audio devices.
+    /// `.a2dp` = high-quality stereo sink, `.hfp` = headset profile with mic,
+    /// `.none` when no audio UUIDs are reported.
+    codec: Codec = .none,
 };
+
+/// Bluetooth audio profile resolved from BlueZ Device1 `UUIDs`.
+pub const Codec = enum(u8) {
+    none,
+    a2dp, // 0000110d-0000-1000-8000-00805f9b34fb — A2DP Sink (hi-fi stereo)
+    hfp, // 0000111f-0000-1000-8000-00805f9b34fb — HFP AG (headset + mic)
+    hsp, // 00001112-0000-1000-8000-00805f9b34fb — HSP AG (headset)
+};
+
+const k_uuid_a2dp_sink = "0000110d-0000-1000-8000-00805f9b34fb";
+const k_uuid_hfp_ag = "0000111f-0000-1000-8000-00805f9b34fb";
+const k_uuid_hsp_ag = "00001112-0000-1000-8000-00805f9b34fb";
+
+/// Resolve a `Codec` from BlueZ Device1 `UUIDs`. Prefers A2DP over HFP/HSP
+/// when both are reported (A2DP is the default hi-fi profile).
+pub fn resolveCodec(uuids: [][]const u8) Codec {
+    var has_a2dp = false;
+    var has_hfp = false;
+    var has_hsp = false;
+    for (uuids) |u| {
+        if (std.mem.eql(u8, u, k_uuid_a2dp_sink)) has_a2dp = true;
+        if (std.mem.eql(u8, u, k_uuid_hfp_ag)) has_hfp = true;
+        if (std.mem.eql(u8, u, k_uuid_hsp_ag)) has_hsp = true;
+    }
+    if (has_a2dp) return .a2dp;
+    if (has_hfp) return .hfp;
+    if (has_hsp) return .hsp;
+    return .none;
+}
 
 pub const Snapshot = struct {
     have_bluez: bool = false,
@@ -81,11 +117,14 @@ const WalkCtx = struct {
     alloc: std.mem.Allocator,
     snap: *Snapshot,
     devices: *std.ArrayList(Device),
-    // Per-device staging: devices arrive as up to two interface dicts
-    // (Device1 + Battery1) for the same path; merge into one row.
+    /// Per-device staging: devices arrive as up to two interface dicts
+    /// (Device1 + Battery1) for the same path; merge into one row.
     cur_path: []const u8 = "",
     cur: Device = .{},
     have_cur: bool = false,
+    /// UUID strings collected from Device1 `UUIDs` for the current device;
+    /// duplicated into `alloc` and handed to `Device.uuids` at flush.
+    cur_uuids: std.ArrayList([]const u8),
 
     fn flush(self: *WalkCtx) void {
         if (!self.have_cur) return;
@@ -96,6 +135,15 @@ const WalkCtx = struct {
         // headset could vanish.
         if (self.cur.name.len == 0) self.cur.name = self.cur.address;
         if (self.cur.alias.len == 0) self.cur.alias = self.cur.name;
+        // Hand off collected UUID strings to the row.
+        if (self.cur_uuids.items.len > 0) {
+            self.cur.uuids = self.cur_uuids.toOwnedSlice(self.alloc) catch blk: {
+                for (self.cur_uuids.items) |u| self.alloc.free(u);
+                self.cur_uuids.clearRetainingCapacity();
+                break :blk &.{};
+            };
+            self.cur.codec = resolveCodec(self.cur.uuids);
+        }
         const row = Device{
             .path = self.alloc.dupe(u8, self.cur.path) catch "",
             .address = self.alloc.dupe(u8, self.cur.address) catch "",
@@ -108,9 +156,12 @@ const WalkCtx = struct {
             .icon = self.alloc.dupe(u8, self.cur.icon) catch "",
             .class_code = self.cur.class_code,
             .has_class = self.cur.has_class,
+            .uuids = self.cur.uuids,
+            .codec = self.cur.codec,
         };
         self.devices.append(self.alloc, row) catch {};
         self.cur = .{};
+        self.cur_uuids.clearRetainingCapacity();
         self.cur_path = "";
     }
 
@@ -146,6 +197,19 @@ const WalkCtx = struct {
                 const r = live.asI32(v);
                 self.cur.rssi = @intCast(std.math.clamp(r, @as(i32, std.math.minInt(i16)), @as(i32, std.math.maxInt(i16))));
             }
+            // Collect Device1 `UUIDs` (array of strings) for codec resolution.
+            if (live.dictFind(props, "UUIDs")) |uv| {
+                if (uv == .array) {
+                    for (uv.array.items) |it| {
+                        if (it == .string) {
+                            const dup = self.alloc.dupe(u8, it.string) catch continue;
+                            self.cur_uuids.append(self.alloc, dup) catch {
+                                self.alloc.free(dup);
+                            };
+                        }
+                    }
+                }
+            }
             return;
         }
         if (std.mem.eql(u8, iface, battery_iface)) {
@@ -178,6 +242,10 @@ pub const Queried = struct {
             if (d.name.len > 0) self.alloc.free(d.name);
             if (d.alias.len > 0) self.alloc.free(d.alias);
             if (d.icon.len > 0) self.alloc.free(d.icon);
+            if (d.uuids.len > 0) {
+                for (d.uuids) |u| self.alloc.free(u);
+                self.alloc.free(d.uuids);
+            }
         }
         self.device_list.deinit(self.alloc);
         self.snap = .{};
@@ -200,7 +268,9 @@ pub fn query(alloc: std.mem.Allocator) ?Queried {
     if (p.body_vals.len < 1) return null;
     var q = Queried.init(alloc);
     errdefer q.deinit();
-    var ctx = WalkCtx{ .alloc = alloc, .snap = &q.snap, .devices = &q.device_list };
+    const uuids = std.ArrayList([]const u8).initCapacity(alloc, 0) catch return null;
+    var ctx = WalkCtx{ .alloc = alloc, .snap = &q.snap, .devices = &q.device_list, .cur_uuids = uuids };
+    defer ctx.cur_uuids.deinit(alloc);
     walkManaged(p.body_vals[0], &ctx, WalkCtx.visit);
     ctx.flush();
     return q;
@@ -786,7 +856,9 @@ test "live-bluetooth: managed-objects walk merges adapters, devices, batteries" 
         }
         devices.deinit(t.allocator);
     }
-    var ctx = WalkCtx{ .alloc = t.allocator, .snap = &snap, .devices = &devices };
+    const uuids: std.ArrayList([]const u8) = .empty;
+    var ctx = WalkCtx{ .alloc = t.allocator, .snap = &snap, .devices = &devices, .cur_uuids = uuids };
+    defer ctx.cur_uuids.deinit(t.allocator);
     walkManaged(managed, &ctx, WalkCtx.visit);
     ctx.flush();
     defer if (snap.adapter_path.len > 0) t.allocator.free(snap.adapter_path);

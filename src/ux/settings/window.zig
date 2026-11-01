@@ -810,7 +810,7 @@ pub const Win = struct {
     fn onBluetoothAction(self: *Win, act: bluetooth_tab.Action) void {
         switch (act) {
             // Backend work already happened in the page; repaint is all.
-            .repaint, .toggle_power, .toggle_scan, .forget, .verb => {},
+            .repaint, .toggle_power, .toggle_scan, .forget, .verb, .codec_switch => {},
             .toggle_reconnect => {
                 // The page flipped its borrowed snap; read it back into
                 // `Settings` and persist to `bluetooth.toml`.
@@ -1304,7 +1304,7 @@ pub const Win = struct {
             common.Theme.bg_r * 0.35,
             common.Theme.bg_g * 0.35,
             common.Theme.bg_b * 0.35,
-            0.78,
+            1.0,
         );
         cairo.cairo_paint(cr);
         cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);

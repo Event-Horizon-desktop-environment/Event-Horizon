@@ -223,6 +223,10 @@ pub const Row = struct {
     rssi: i16,
     /// -1 when the device reports no battery.
     battery_pct: i32,
+    /// Resolved Bluetooth audio codec/profile for this device (`.none` when
+    /// not an audio device). Drives the pavucontrol-style codec buttons
+    /// shown side-by-side in connected audio rows.
+    codec: live_bt.Codec,
 };
 
 /// Rank comparator: group order first, named devices before MAC-only
@@ -321,6 +325,9 @@ pub const Action = union(enum) {
     /// Connect/Disconnect/Pair the device at this display-order index
     /// (page started the verb).
     verb: usize,
+    /// Switch the Bluetooth audio codec/profile for the device at this
+    /// display-order index (page already ran the profile switch).
+    codec_switch: usize,
 };
 
 /// Content-column geometry, passed in rather than read from `Content` so
@@ -524,7 +531,7 @@ pub const Page = struct {
             if (d.has_class) break :blk bt_paint.classifyClass(d.class_code);
             break :blk .unknown;
         };
-        self.pushRow(d.path, d.address, d.alias, kind, d.paired, d.connected, d.rssi != 0, d.rssi, d.battery_pct);
+        self.pushRow(d.path, d.address, d.alias, kind, d.paired, d.connected, d.rssi != 0, d.rssi, d.battery_pct, d.codec);
     }
 
     /// One row into the list (cap enforced). Strings borrow the query.
@@ -539,6 +546,7 @@ pub const Page = struct {
         has_rssi: bool,
         rssi: i16,
         battery_pct: i32,
+        codec: live_bt.Codec,
     ) void {
         if (self.rows_len >= k_max_rows) return;
         self.rows[self.rows_len] = .{
@@ -552,6 +560,7 @@ pub const Page = struct {
             .has_rssi = has_rssi,
             .rssi = rssi,
             .battery_pct = battery_pct,
+            .codec = codec,
         };
         self.rows_len += 1;
     }
@@ -581,7 +590,7 @@ pub const Page = struct {
         self.total_count = @intCast(devs.len);
 
         for (devs) |*d| {
-            self.pushRow(d.path, d.address, d.alias, d.kind, d.paired, d.connected, false, 0, d.battery_pct);
+            self.pushRow(d.path, d.address, d.alias, d.kind, d.paired, d.connected, false, 0, d.battery_pct, .none);
         }
     }
 
@@ -1082,6 +1091,42 @@ pub const Page = struct {
                     ui_paint.showTextW(c, alias_x, name_baseline, row.alias, 14, 400, alias_max_w, t.text_r, t.text_g, t.text_b, 0.93);
                 }
 
+                // Pavucontrol-style codec buttons: two options side by side
+                // (left/right) for connected Bluetooth audio devices. Shown
+                // when the device reports A2DP/HFP/HSP UUIDs. Left button is
+                // the current codec, right is the alternative. Clicking either
+                // switches profile via `codec_switch` action.
+                if (row.connected and row.codec != .none) {
+                    const codec_left = codecLabel(row.codec);
+                    const codec_right = codecAltLabel(row.codec);
+                    const codec_btn_w: i32 = 70;
+                    const codec_btn_h: i32 = 22;
+                    const codec_btn_y = row_y + @divTrunc(k_dev_row_h - codec_btn_h, 2) + 4;
+                    const codec_x_right = btn_area_left - k_spacing_s - codec_btn_w;
+                    const codec_x_left = codec_x_right - k_spacing_s - codec_btn_w;
+                    const left_active = row.codec == .a2dp or row.codec == .hsp;
+                    const lov = inRect(px, ly, codec_x_left, codec_btn_y, codec_btn_w, codec_btn_h);
+                    const rov = inRect(px, ly, codec_x_right, codec_btn_y, codec_btn_w, codec_btn_h);
+                    ui_paint.paintBtn(
+                        c,
+                        codec_x_left,
+                        codec_btn_y,
+                        codec_btn_w,
+                        codec_btn_h,
+                        codec_left,
+                        lov and !left_active,
+                    );
+                    ui_paint.paintBtn(
+                        c,
+                        codec_x_right,
+                        codec_btn_y,
+                        codec_btn_w,
+                        codec_btn_h,
+                        codec_right,
+                        rov and left_active,
+                    );
+                }
+
                 // Kind + state + signal/last-used + address.
                 var status_buf: [192]u8 = undefined;
                 var extra_buf: [96]u8 = undefined;
@@ -1220,11 +1265,85 @@ pub const Page = struct {
                     return .{ .verb = @intCast(entry.dev) };
                 }
             }
+
+            // Pavucontrol-style codec buttons: left/right toggle between
+            // the two audio profiles for connected Bluetooth audio devices.
+            // Geometry matches the paint pass exactly.
+            if (row.connected and row.codec != .none) {
+                const codec_btn_w: i32 = 70;
+                const codec_btn_h: i32 = 22;
+                const codec_btn_y = row_y + @divTrunc(k_dev_row_h - codec_btn_h, 2) + 4;
+                const codec_x_right = act_x - k_spacing_s - codec_btn_w;
+                const codec_x_left = codec_x_right - k_spacing_s - codec_btn_w;
+                if (inRect(px, ly, codec_x_left, codec_btn_y, codec_btn_w, codec_btn_h)) {
+                    _ = switchCodec(self.alloc, self.io, row.address, .a2dp);
+                    self.refresh(true);
+                    return .{ .codec_switch = @intCast(entry.dev) };
+                }
+                if (inRect(px, ly, codec_x_right, codec_btn_y, codec_btn_w, codec_btn_h)) {
+                    _ = switchCodec(self.alloc, self.io, row.address, .hfp);
+                    self.refresh(true);
+                    return .{ .codec_switch = @intCast(entry.dev) };
+                }
+            }
         }
 
         return null;
     }
 };
+
+/// Friendly codec label for a button (left button = current profile).
+fn codecLabel(c: live_bt.Codec) []const u8 {
+    return switch (c) {
+        .a2dp => "A2DP",
+        .hfp => "HFP",
+        .hsp => "HSP",
+        .none => "Audio",
+    };
+}
+
+/// Alternative codec label for the right button (the other profile).
+fn codecAltLabel(c: live_bt.Codec) []const u8 {
+    return switch (c) {
+        .a2dp => "HFP",
+        .hfp => "A2DP",
+        .hsp => "A2DP",
+        .none => "Audio",
+    };
+}
+
+/// PulseAudio/PipeWire card name for a Bluetooth address:
+/// `bluez_card.AA_BB_CC_DD_EE_FF`.
+fn btCardName(address: []const u8, buf: []u8) []const u8 {
+    var n: usize = 0;
+    n += @memcpy(buf[0..], "bluez_card.");
+    for (address) |ch| {
+        if (n >= buf.len) break;
+        if (ch == ':') {
+            buf[n] = '_';
+        } else {
+            buf[n] = ch;
+        }
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+/// Switch the PulseAudio/PipeWire card profile for a Bluetooth audio
+/// device. `codec` is the target profile (`.a2dp` -> `a2dp_sink`,
+/// `.hfp`/`.hsp` -> `headset_head_unit`). Runs `pactl` inline.
+fn switchCodec(alloc: std.mem.Allocator, io: std.Io, address: []const u8, target: live_bt.Codec) bool {
+    const profile = switch (target) {
+        .a2dp => "a2dp_sink",
+        .hfp => "headset_head_unit",
+        .hsp => "headset_head_unit",
+        .none => return false,
+    };
+    var buf: [64]u8 = undefined;
+    const card = btCardName(address, &buf);
+    var argv = [_][]const u8{ "pactl", "set-card-profile", card, profile };
+    return live.runCapture(alloc, io, &argv) != null;
+}
 
 /// `m3_xs_label_w + 24` — the C++ sizes the pill from the measured label
 /// so the m3 auto-expand in setGeometry never fires (it would push the

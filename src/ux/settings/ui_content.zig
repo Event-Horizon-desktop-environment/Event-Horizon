@@ -1426,7 +1426,7 @@ pub const Content = struct {
                         t.text_r,
                         t.text_g,
                         t.text_b,
-                        0.7,
+                        1.0,
                     );
                     drawSlider(c, sliderTrack(p), v, sl.min, sl.max, dragActive(self.drag, sl.field));
                 }
@@ -1517,7 +1517,7 @@ pub const Content = struct {
                     t.text_r,
                     t.text_g,
                     t.text_b,
-                    0.7,
+                    1.0,
                 );
             },
             .button => |bt| {
@@ -1976,7 +1976,7 @@ fn drawCombo(c: anytype, x: i32, y: i32, w: i32, h: i32, text: []const u8, hover
         t.text_r,
         t.text_g,
         t.text_b,
-        0.7,
+        1.0,
     );
 }
 
