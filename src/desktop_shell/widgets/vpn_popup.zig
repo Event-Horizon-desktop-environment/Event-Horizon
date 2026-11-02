@@ -192,13 +192,23 @@ pub const Store = struct {
 
     /// `PopupVpnEntry::toggle` minus the service call: flips the state,
     /// marks the entry pending from `now_ns`, and tells the host which
-    /// verb to run. Null verb (`.none`) when `idx` is out of range.
+    /// verb to run. Activating one VPN implies the others go down (the host's
+    /// activation verb is exclusive), so their rows flip off immediately.
+    /// Null verb (`.none`) when `idx` is out of range.
     pub fn toggleEntry(self: *Store, idx: usize, now_ns: i64) Verb {
         if (idx >= self.entries.items.len) return .none;
         const e = &self.entries.items[idx];
         e.active = !e.active;
         e.pending = true;
         e.pending_since_ns = now_ns;
+        if (e.active) {
+            for (self.entries.items, 0..) |*other, i| {
+                if (i == idx or !other.active) continue;
+                other.active = false;
+                other.pending = true;
+                other.pending_since_ns = now_ns;
+            }
+        }
         return if (e.active) .activate else .deactivate;
     }
 
@@ -505,6 +515,26 @@ test "vpn-popup: pending survives until confirm or timeout" {
     // Out of range is a no-op.
     try t.expectEqual(Verb.none, s.toggleEntry(9, 0));
     try t.expectEqual(Verb.none, s.removeEntry(9));
+}
+
+test "vpn-popup: activating one row flips the others off" {
+    const t = std.testing;
+    var s = Store.init(t.allocator);
+    defer s.deinit();
+    try s.syncEntries(&[_]Connection{ conn("u1", "a", true), conn("u2", "b", false) }, 0);
+    try t.expect(s.isActive(0));
+    // Connecting b is exclusive: a is shown disconnected right away even
+    // though the backend still reports it up.
+    try t.expectEqual(Verb.activate, s.toggleEntry(1, std.time.ns_per_s));
+    try t.expect(s.isActive(1));
+    try t.expect(!s.isActive(0));
+    try t.expect(s.entries.items[0].pending);
+    // The backend agrees, and both pending windows clear.
+    try s.syncEntries(&[_]Connection{ conn("u1", "a", false), conn("u2", "b", true) }, 2 * std.time.ns_per_s);
+    try t.expect(!s.isActive(0));
+    try t.expect(!s.entries.items[0].pending);
+    try t.expect(s.isActive(1));
+    try t.expect(!s.entries.items[1].pending);
 }
 
 test "vpn-popup: remove drops the entry" {

@@ -44,10 +44,24 @@ const text_cache_slots = 256;
 /// the 1023-byte truncation the old one-layout-per-call path applied.
 const text_cache_max_len = 1024;
 
+/// Text family discriminator. The shape cache keys on it because a mono
+/// run and a sans run of the same string must not share a Pango layout.
+pub const FontFamily = enum(u8) { sans = 0, mono = 1 };
+
+fn familyName(fam: FontFamily) [*:0]const u8 {
+    return switch (fam) {
+        .sans => "Inter",
+        // Pango/fontconfig resolves this through the system mono fallback
+        // (JetBrains Mono is not guaranteed to be installed).
+        .mono => "monospace",
+    };
+}
+
 const CachedText = struct {
     layout: ?*text.PangoLayout = null,
     size: f32 = 0,
     weight: c_uint = 0,
+    family: FontFamily = .sans,
     width: c_int = -1,
     wrap: c_int = -1,
     ellipsize: c_int = -1,
@@ -72,10 +86,11 @@ fn textCacheScale(cr: *cairo.cairo_t) f64 {
     return m.xx;
 }
 
-fn cachedLayoutMatches(e: *const CachedText, str: []const u8, size: f32, weight: c_uint, width: c_int, wrap: c_int, ellipsize: c_int) bool {
+fn cachedLayoutMatches(e: *const CachedText, str: []const u8, size: f32, weight: c_uint, width: c_int, wrap: c_int, ellipsize: c_int, family: FontFamily) bool {
     return e.layout != null and
         e.size == size and
         e.weight == weight and
+        e.family == family and
         e.width == width and
         e.wrap == wrap and
         e.ellipsize == ellipsize and
@@ -97,6 +112,7 @@ fn cachedLayout(
     width: c_int,
     wrap: c_int,
     ellipsize: c_int,
+    family: FontFamily,
 ) ?*CachedText {
     const c = cr orelse return null;
     if (str.len == 0) return null;
@@ -111,7 +127,7 @@ fn cachedLayout(
     text_cache_stamp += 1;
     var victim: *CachedText = &text_cache[0];
     for (&text_cache) |*e| {
-        if (cachedLayoutMatches(e, s, size, weight, width, wrap, ellipsize)) {
+        if (cachedLayoutMatches(e, s, size, weight, width, wrap, ellipsize, family)) {
             e.stamp = text_cache_stamp;
             return e;
         }
@@ -128,7 +144,7 @@ fn cachedLayout(
     const lo = victim.layout.?;
     const desc = pango_font_description_new() orelse return null;
     defer freeDesc(desc);
-    pango_font_description_set_family(desc, "Inter");
+    pango_font_description_set_family(desc, familyName(family));
     pango_font_description_set_size(desc, @intFromFloat(@round(size * pango_scale)));
     pango_font_description_set_weight(desc, weight);
     pango_layout_set_font_description(lo, desc);
@@ -141,6 +157,7 @@ fn cachedLayout(
     victim.len = @intCast(s.len);
     victim.size = size;
     victim.weight = weight;
+    victim.family = family;
     victim.width = width;
     victim.wrap = wrap;
     victim.ellipsize = ellipsize;
@@ -182,7 +199,7 @@ pub fn showText(
 ) void {
     if (str.len == 0) return;
     const c = cr orelse return;
-    const e = cachedLayout(c, str, size, weight, -1, text.WRAP_WORD, text.ELLIPSIZE_NONE) orelse return;
+    const e = cachedLayout(c, str, size, weight, -1, text.WRAP_WORD, text.ELLIPSIZE_NONE, .sans) orelse return;
     var l = text.Layout{ .layout = e.layout.? };
     const s = cachedPixelSize(e);
     cairo.cairo_save(c);
@@ -201,7 +218,7 @@ pub fn textSizePx(
 ) SizePx {
     if (str.len == 0) return .{ .w = 0, .h = 0 };
     const c = cr orelse return .{ .w = 0, .h = 0 };
-    const e = cachedLayout(c, str, size, weight, -1, text.WRAP_WORD, text.ELLIPSIZE_NONE) orelse return .{ .w = 0, .h = 0 };
+    const e = cachedLayout(c, str, size, weight, -1, text.WRAP_WORD, text.ELLIPSIZE_NONE, .sans) orelse return .{ .w = 0, .h = 0 };
     return cachedPixelSize(e);
 }
 
@@ -244,7 +261,7 @@ pub fn textMetricsPx(
     const c = cr orelse return zero;
     const width: c_int = if (max_w > 0.0) @intFromFloat(@round(max_w * pango_scale)) else -1;
     const ell: c_int = if (max_w > 0.0) text.ELLIPSIZE_END else text.ELLIPSIZE_NONE;
-    const e = cachedLayout(c, str, size, weight, width, text.WRAP_WORD, ell) orelse return zero;
+    const e = cachedLayout(c, str, size, weight, width, text.WRAP_WORD, ell, .sans) orelse return zero;
     var l = text.Layout{ .layout = e.layout.? };
     cairo.cairo_save(c);
     cairo.cairo_identity_matrix(c);
@@ -282,15 +299,104 @@ pub fn showWrapped(
     wrap_w: i32,
     ellipsize: bool,
 ) void {
+    showWrappedFamily(cr, x, y, str, size, weight, r, g, b, a, wrap_w, ellipsize, .sans);
+}
+
+/// `showWrapped` for the monospace family (IP addresses, uptime, percent).
+pub fn showMonoWrapped(
+    cr: ?*cairo.cairo_t,
+    x: f64,
+    y: f64,
+    str: []const u8,
+    size: f32,
+    weight: c_uint,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+    wrap_w: i32,
+    ellipsize: bool,
+) void {
+    showWrappedFamily(cr, x, y, str, size, weight, r, g, b, a, wrap_w, ellipsize, .mono);
+}
+
+fn showWrappedFamily(
+    cr: ?*cairo.cairo_t,
+    x: f64,
+    y: f64,
+    str: []const u8,
+    size: f32,
+    weight: c_uint,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+    wrap_w: i32,
+    ellipsize: bool,
+    family: FontFamily,
+) void {
     if (str.len == 0) return;
     const c = cr orelse return;
     const width: c_int = if (wrap_w > 0) wrap_w * 1024 else -1;
     const wrap: c_int = if (wrap_w > 0) text.WRAP_WORD_CHAR else text.WRAP_WORD;
     const ell: c_int = if (ellipsize) text.ELLIPSIZE_END else text.ELLIPSIZE_NONE;
-    const e = cachedLayout(c, str, size, weight, width, wrap, ell) orelse return;
+    const e = cachedLayout(c, str, size, weight, width, wrap, ell, family) orelse return;
     var l = text.Layout{ .layout = e.layout.? };
     cairo.cairo_save(c);
     cairo.cairo_translate(c, x, y);
+    cairo.cairo_set_source_rgba(c, r, g, b, a);
+    l.show(c);
+    cairo.cairo_restore(c);
+}
+
+/// `showText` for the monospace family (baseline-ish anchor, ellipsised).
+pub fn showMonoText(
+    cr: ?*cairo.cairo_t,
+    x: f64,
+    y: f64,
+    str: []const u8,
+    size: f32,
+    weight: c_uint,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+) void {
+    if (str.len == 0) return;
+    const c = cr orelse return;
+    const e = cachedLayout(c, str, size, weight, -1, text.WRAP_WORD, text.ELLIPSIZE_NONE, .mono) orelse return;
+    var l = text.Layout{ .layout = e.layout.? };
+    const s = cachedPixelSize(e);
+    cairo.cairo_save(c);
+    cairo.cairo_translate(c, x, y - @as(f64, @floatFromInt(s.h)) + 2.0);
+    cairo.cairo_set_source_rgba(c, r, g, b, a);
+    l.show(c);
+    cairo.cairo_restore(c);
+}
+
+/// `showTextW` for the monospace family: ellipsised at `max_w`.
+pub fn showMonoTextW(
+    cr: ?*cairo.cairo_t,
+    x: f64,
+    y: f64,
+    str: []const u8,
+    size: f32,
+    weight: c_uint,
+    max_w: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+) void {
+    if (str.len == 0) return;
+    const c = cr orelse return;
+    const width: c_int = if (max_w > 0.0) @intFromFloat(@round(max_w * pango_scale)) else -1;
+    const ell: c_int = if (max_w > 0.0) text.ELLIPSIZE_END else text.ELLIPSIZE_NONE;
+    const e = cachedLayout(c, str, size, weight, width, text.WRAP_WORD, ell, .mono) orelse return;
+    var l = text.Layout{ .layout = e.layout.? };
+    const s = cachedPixelSize(e);
+    cairo.cairo_save(c);
+    cairo.cairo_translate(c, x, y - @as(f64, @floatFromInt(s.h)) + 2.0);
     cairo.cairo_set_source_rgba(c, r, g, b, a);
     l.show(c);
     cairo.cairo_restore(c);
@@ -316,7 +422,7 @@ pub fn showTextW(
     const c = cr orelse return;
     const width: c_int = if (max_w > 0.0) @intFromFloat(@round(max_w * pango_scale)) else -1;
     const ell: c_int = if (max_w > 0.0) text.ELLIPSIZE_END else text.ELLIPSIZE_NONE;
-    const e = cachedLayout(c, str, size, weight, width, text.WRAP_WORD, ell) orelse return;
+    const e = cachedLayout(c, str, size, weight, width, text.WRAP_WORD, ell, .sans) orelse return;
     var l = text.Layout{ .layout = e.layout.? };
     const s = cachedPixelSize(e);
     cairo.cairo_save(c);
@@ -335,6 +441,24 @@ pub fn measureTextWidth(str: []const u8, size: f32, weight: c_uint) i32 {
     const cr = cairo.cairo_create(surf);
     defer cairo.cairo_destroy(cr);
     return textSizePx(cr, str, size, weight).w;
+}
+
+/// Mono-run pixel size for callers that need it without a live paint context.
+pub fn monoTextSizePx(cr: ?*cairo.cairo_t, str: []const u8, size: f32, weight: c_uint) SizePx {
+    if (str.len == 0) return .{ .w = 0, .h = 0 };
+    const c = cr orelse return .{ .w = 0, .h = 0 };
+    const e = cachedLayout(c, str, size, weight, -1, text.WRAP_WORD, text.ELLIPSIZE_NONE, .mono) orelse return .{ .w = 0, .h = 0 };
+    return cachedPixelSize(e);
+}
+
+/// Mono width on a throwaway surface (layout-only callers).
+pub fn measureMonoTextWidth(str: []const u8, size: f32, weight: c_uint) i32 {
+    if (str.len == 0) return 0;
+    const surf = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, 8, 8);
+    defer cairo.cairo_surface_destroy(surf);
+    const cr = cairo.cairo_create(surf);
+    defer cairo.cairo_destroy(cr);
+    return monoTextSizePx(cr, str, size, weight).w;
 }
 
 /// Wrapped line count of Inter text at `wrap_w` px on a throwaway surface.

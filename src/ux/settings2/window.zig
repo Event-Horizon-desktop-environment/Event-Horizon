@@ -242,6 +242,14 @@ pub const Win = struct {
     pub fn start(self: *Win, init: std.process.Init) !bool {
         self.gpa = init.gpa;
         self.io = init.io;
+        // Debug/testing: start at an explicit logical size, matching the
+        // EH_SETTINGS_TAB override used for screenshot passes.
+        if (init.environ_map.get("EH_SETTINGS_W")) |v| {
+            self.win_w = std.fmt.parseInt(i32, v, 10) catch self.win_w;
+        }
+        if (init.environ_map.get("EH_SETTINGS_H")) |v| {
+            self.win_h = std.fmt.parseInt(i32, v, 10) catch self.win_h;
+        }
         self.str_arena = std.heap.ArenaAllocator.init(self.gpa);
         self.state_dir = config.settingsDir(
             self.gpa,
@@ -321,6 +329,13 @@ pub const Win = struct {
         self.wl_ready = true;
         self.conn.bindAll(&self.bound);
         if (!self.conn.roundtrip()) return false;
+        // VPN Copy writes through the same data-control manager the shell
+        // uses; bind after the registry roundtrip so the manager/seat exist.
+        if (self.bound.ext_data_control) |m| {
+            self.net.bindClipboard(m, .ext, self.bound.seat, self.conn.display);
+        } else if (self.bound.wlr_data_control) |m| {
+            self.net.bindClipboard(m, .wlr, self.bound.seat, self.conn.display);
+        }
         self.loop = try wl_loop.Loop.init(self.gpa);
         self.loop_ready = true;
         try self.loop.watchFd(
@@ -1837,7 +1852,8 @@ pub const Win = struct {
     /// hover pop. Idempotent, and a no-op when nothing is animating, so an idle
     /// window never spins a timer.
     fn armTick(self: *Win) void {
-        const animating = self.scroll.animating or self.wall.hover_pop.running();
+        const net_anim = self.content.netPage() != null and self.net.animating();
+        const animating = self.scroll.animating or self.wall.hover_pop.running() or net_anim;
         // The Bluetooth tab polls BlueZ and animates a busy spinner; keep a
         // slow tick alive while it is the active tab so refresh + paint run.
         // The Sound pages poll PipeWire on the same throttle.
@@ -2606,6 +2622,23 @@ pub const Win = struct {
         self.content.dwt_outputs_len = n;
     }
 
+    /// Keep the keyboard-focused VPN control inside the visible content
+    /// viewport. The page returns a layout-space rect; the scroll controller
+    /// owns the eased movement.
+    fn scrollVpnFocus(self: *Win) void {
+        const r = self.net.vpnFocusScrollRect() orelse return;
+        const top: f64 = @floatFromInt(self.content.clipTop() + 12);
+        const bottom: f64 = @floatFromInt(self.win_h - common.spacing_l - 12);
+        const cur = self.scroll.current;
+        const r_top: f64 = @floatFromInt(r.y);
+        const r_bot: f64 = @floatFromInt(r.y + r.h);
+        if (r_top - cur < top) {
+            self.scroll.scrollTo(r_top - top);
+        } else if (r_bot - cur > bottom) {
+            self.scroll.scrollTo(r_bot - bottom);
+        }
+    }
+
     fn onKey(ctx: *anyopaque, ev: *const wl_seat.KeyEvent) void {
         const self: *Win = @ptrCast(@alignCast(ctx));
         if (ev.state != 1) return; // pressed only
@@ -2631,6 +2664,7 @@ pub const Win = struct {
         // Network keys: the Wi-Fi password prompt and the VPN Add form own
         // them while open (Tab cycles the VPN fields, Enter submits).
         if (self.content.netPage() != null and self.net.key(ev.sym, ev.utf8[0..ev.utf8_len])) {
+            self.scrollVpnFocus();
             self.repaint();
             return;
         }

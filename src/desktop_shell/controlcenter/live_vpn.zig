@@ -2,11 +2,13 @@
 //! NetworkManager through `nmcli`, written back through `nmcli`.
 //!
 //! VPN half: refresh, activate, deactivate,
-//! remove. A worker thread with a
-//! periodic refresh; here the dock owns the poll and the card is the only
-//! consumer, so the two `nmcli` reads run on the caller's thread behind the
-//! dock's own throttle, and every *write* runs in a detached thread — a VPN
-//! that takes 10 s to come up must never stall the Wayland loop.
+//! remove. Activation is exclusive: bringing a VPN up first takes every other
+//! live VPN down, so there is only ever one connected at a time. A worker
+//! thread with a periodic refresh; here the dock owns the poll and the card is
+//! the only consumer, so the two `nmcli` reads run on the caller's thread
+//! behind the dock's own throttle, and every *write* runs in a detached
+//! thread — a VPN that takes 10 s to come up must never stall the Wayland
+//! loop.
 //!
 //! Parsing is a uuid-anchored split: `nmcli -t`
 //! escapes ':' inside a field, but a name containing a colon still lands in
@@ -26,6 +28,15 @@ pub const Connection = struct {
     /// `connection.autoconnect` as nmcli printed it (`yes`/`no`).
     autoconnect: bool = false,
     active: bool = false,
+    /// Network interface while active (`airvpn_canada_u`, `wg0`, `tun0`).
+    device: []const u8 = "",
+    /// First active local address, prefix stripped. Fits an IPv6 literal.
+    tunnel_ip: []const u8 = "",
+    /// `connection.timestamp` (unix seconds): activation time for a live row.
+    timestamp: i64 = 0,
+    /// Interface counters sampled on the same read as the roster.
+    rx_bytes: u64 = 0,
+    tx_bytes: u64 = 0,
 };
 
 fn isVpnType(t: []const u8) bool {
@@ -76,8 +87,8 @@ fn splitVpnLine(line: []const u8) ?struct { name: []const u8, uuid: []const u8, 
 /// Parse one `nmcli -t` document (NAME:UUID:TYPE:…) into owned rows, keeping
 /// only the VPN/WireGuard types. `active_uuids` marks rows live; when null,
 /// every row is inactive (the saved-connections read). `tail_is_autoconnect`
-/// selects what the fourth field means: the active read prints STATE, the
-/// saved read AUTOCONNECT.
+/// selects what the fourth field means: the active read prints DEVICE:STATE,
+/// the saved read AUTOCONNECT[:TIMESTAMP].
 pub fn parseNmcli(
     alloc: std.mem.Allocator,
     text: []const u8,
@@ -107,11 +118,19 @@ pub fn parseNmcli(
                 }
             }
         }
+        var autoconnect = false;
+        var timestamp: i64 = 0;
+        if (tail_is_autoconnect) {
+            var t = std.mem.splitScalar(u8, f.tail, ':');
+            autoconnect = std.mem.eql(u8, t.next() orelse "", "yes");
+            if (t.next()) |stamp| timestamp = std.fmt.parseInt(i64, std.mem.trim(u8, stamp, " \t\r"), 10) catch 0;
+        }
         try out.append(alloc, .{
             .uuid = try alloc.dupe(u8, f.uuid),
             .name = try alloc.dupe(u8, f.name),
-            .autoconnect = tail_is_autoconnect and std.mem.eql(u8, f.tail, "yes"),
+            .autoconnect = autoconnect,
             .active = active,
+            .timestamp = timestamp,
         });
     }
     return out.toOwnedSlice(alloc);
@@ -121,6 +140,8 @@ pub fn freeConnections(alloc: std.mem.Allocator, conns: []Connection) void {
     for (conns) |*c| {
         alloc.free(c.uuid);
         alloc.free(c.name);
+        if (c.device.len > 0) alloc.free(c.device);
+        if (c.tunnel_ip.len > 0) alloc.free(c.tunnel_ip);
     }
     alloc.free(conns);
 }
@@ -135,23 +156,85 @@ fn runNmcli(io: std.Io, argv: []const []const u8) ?[]u8 {
     return res.stdout;
 }
 
-/// `do_refresh_vpn`: the active list first (its uuids mark the saved list),
-/// then the saved list itself. Active-first, then by name — the card's row
-/// order. Null when nmcli is missing or either read failed; the caller keeps
-/// what it had.
+/// Stable presentation order: name, then uuid as a tie-breaker. Deliberately
+/// independent of `active` — a row that connects must stay where it was.
+fn sortConnections(conns: []Connection) void {
+    std.mem.sort(Connection, conns, {}, struct {
+        fn lt(_: void, a: Connection, b: Connection) bool {
+            if (!std.mem.eql(u8, a.name, b.name)) return std.mem.lessThan(u8, a.name, b.name);
+            return std.mem.lessThan(u8, a.uuid, b.uuid);
+        }
+    }.lt);
+}
+
+/// Parsed `NAME:UUID:TYPE:DEVICE:STATE` tail. The state token is not used
+/// (the active read only returns live rows) but device is the interface the
+/// tunnel owns.
+const ActiveMeta = struct { uuid: []const u8, device: []const u8 };
+
+/// First address line of `nmcli -t -f IP4.ADDRESS,IP6.ADDRESS device show`.
+/// IPv4 wins; a non-link-local IPv6 is the fallback. The returned slice
+/// borrows `text`, with the `/prefix` suffix removed.
+fn tunnelFromNmcli(text: []const u8) ?[]const u8 {
+    var v6: ?[]const u8 = null;
+    var v6_global: ?[]const u8 = null;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = line[0..colon];
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t\r");
+        if (value.len == 0) continue;
+        const slash = std.mem.indexOfScalar(u8, value, '/') orelse value.len;
+        const addr = value[0..slash];
+        if (std.mem.startsWith(u8, key, "IP4.ADDRESS")) return addr;
+        if (std.mem.startsWith(u8, key, "IP6.ADDRESS")) {
+            if (v6 == null) v6 = addr;
+            if (v6_global == null and !std.ascii.startsWithIgnoreCase(addr, "fe80:")) v6_global = addr;
+        }
+    }
+    return v6_global orelse v6;
+}
+
+fn readTunnelIp(alloc: std.mem.Allocator, io: std.Io, device: []const u8) ?[]u8 {
+    const text = runNmcli(io, &.{
+        "nmcli", "-t", "-f", "IP4.ADDRESS,IP6.ADDRESS", "device", "show", device,
+    }) orelse return null;
+    defer std.heap.page_allocator.free(text);
+    const addr = tunnelFromNmcli(text) orelse return null;
+    return alloc.dupe(u8, addr) catch null;
+}
+
+fn readNetStat(io: std.Io, device: []const u8, comptime stat: []const u8) u64 {
+    var path_buf: [160]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/sys/class/net/{s}/statistics/{s}", .{ device, stat }) catch return 0;
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .limited(64)) catch return 0;
+    defer std.heap.page_allocator.free(data);
+    return std.fmt.parseInt(u64, std.mem.trim(u8, data, " \t\r\n"), 10) catch 0;
+}
+
+/// `do_refresh_vpn`: the active list first (its uuids mark the saved list and
+/// carry the tunnel device), then the saved list itself. Rows keep a stable
+/// name order whether or not they are connected, so a connection never jumps
+/// to the top of the card. Null when nmcli is missing or either read failed;
+/// the caller keeps what it had.
 pub fn query(alloc: std.mem.Allocator, io: std.Io) ?[]Connection {
     const active_text = runNmcli(io, &.{
-        "nmcli", "-t", "-f", "NAME,UUID,TYPE,STATE", "connection", "show", "--active",
+        "nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE,STATE", "connection", "show", "--active",
     }) orelse return null;
     defer std.heap.page_allocator.free(active_text);
 
     // uuids of live VPN/WireGuard rows, page-allocated: this is a lookup
-    // table that dies with the function, never handed out.
+    // table that dies with the function, never handed out. The active meta
+    // borrows `active_text` and carries the interface for the live reads.
     var active_uuids = std.ArrayList([]const u8).empty;
     defer {
         for (active_uuids.items) |u| std.heap.page_allocator.free(u);
         active_uuids.deinit(std.heap.page_allocator);
     }
+    var active_meta = std.ArrayList(ActiveMeta).empty;
+    defer active_meta.deinit(std.heap.page_allocator);
     {
         var it = std.mem.splitScalar(u8, active_text, '\n');
         while (it.next()) |raw| {
@@ -162,57 +245,239 @@ pub fn query(alloc: std.mem.Allocator, io: std.Io) ?[]Connection {
             const u = std.heap.page_allocator.dupe(u8, f.uuid) catch continue;
             active_uuids.append(std.heap.page_allocator, u) catch {
                 std.heap.page_allocator.free(u);
+                continue;
             };
+            const dev_colon = std.mem.indexOfScalar(u8, f.tail, ':') orelse f.tail.len;
+            const device = std.mem.trim(u8, f.tail[0..dev_colon], " \t\r");
+            active_meta.append(std.heap.page_allocator, .{ .uuid = f.uuid, .device = device }) catch {};
         }
     }
 
     const all_text = runNmcli(io, &.{
-        "nmcli", "-t", "-f", "NAME,UUID,TYPE,AUTOCONNECT", "connection", "show",
+        "nmcli", "-t", "-f", "NAME,UUID,TYPE,AUTOCONNECT,TIMESTAMP", "connection", "show",
     }) orelse return null;
     defer std.heap.page_allocator.free(all_text);
 
     const conns = parseNmcli(alloc, all_text, active_uuids.items, true) catch return null;
-    // Sort on active-then-name.
-    std.mem.sort(Connection, conns, {}, struct {
-        fn lt(_: void, a: Connection, b: Connection) bool {
-            if (a.active != b.active) return a.active;
-            return std.mem.lessThan(u8, a.name, b.name);
+    for (conns) |*c| {
+        if (!c.active) continue;
+        for (active_meta.items) |m| {
+            if (!std.mem.eql(u8, m.uuid, c.uuid)) continue;
+            if (m.device.len > 0) c.device = alloc.dupe(u8, m.device) catch "";
+            break;
         }
-    }.lt);
+        if (c.device.len > 0) {
+            c.tunnel_ip = readTunnelIp(alloc, io, c.device) orelse "";
+            c.rx_bytes = readNetStat(io, c.device, "rx_bytes");
+            c.tx_bytes = readNetStat(io, c.device, "tx_bytes");
+        }
+    }
+    sortConnections(conns);
     return conns;
 }
 
 // Verbs — every one in a detached thread, page allocator only
 
-const VerbKind = enum { up, down, delete };
+pub const VerbKind = enum { up, down, cancel, auto, delete };
+
+/// Outcome of one detached verb, consumed by the settings page. Failures
+/// carry nmcli's first stderr line so the row can show a human-readable
+/// "Failed: …" status instead of a generic timeout.
+pub const VerbResult = struct {
+    uuid: [64]u8 = undefined,
+    uuid_len: usize = 0,
+    kind: VerbKind = .up,
+    ok: bool = false,
+    msg: [160]u8 = undefined,
+    msg_len: usize = 0,
+
+    pub fn uuidText(self: *const VerbResult) []const u8 {
+        return self.uuid[0..self.uuid_len];
+    }
+
+    pub fn msgText(self: *const VerbResult) []const u8 {
+        return self.msg[0..self.msg_len];
+    }
+};
+
+const verb_result_slots = 8;
+var verb_results: [verb_result_slots]VerbResult = undefined;
+var verb_results_head: usize = 0;
+var verb_results_len: usize = 0;
+var verb_results_mutex: std.atomic.Mutex = .unlocked;
+
+fn postVerbResult(uuid: []const u8, kind: VerbKind, ok: bool, msg: []const u8) void {
+    verbLockMutex(&verb_results_mutex);
+    defer verb_results_mutex.unlock();
+    if (verb_results_len == verb_result_slots) {
+        verb_results_head = (verb_results_head + 1) % verb_result_slots;
+        verb_results_len -= 1;
+    }
+    const idx = (verb_results_head + verb_results_len) % verb_result_slots;
+    const r = &verb_results[idx];
+    const un = @min(uuid.len, r.uuid.len);
+    @memcpy(r.uuid[0..un], uuid[0..un]);
+    r.uuid_len = un;
+    r.kind = kind;
+    r.ok = ok;
+    const mn = @min(msg.len, r.msg.len);
+    @memcpy(r.msg[0..mn], msg[0..mn]);
+    r.msg_len = mn;
+    verb_results_len += 1;
+}
+
+/// Pop the oldest verb outcome, copying it out of the shared ring.
+pub fn takeVerbResult() ?VerbResult {
+    verbLockMutex(&verb_results_mutex);
+    defer verb_results_mutex.unlock();
+    if (verb_results_len == 0) return null;
+    const out = verb_results[verb_results_head];
+    verb_results_head = (verb_results_head + 1) % verb_result_slots;
+    verb_results_len -= 1;
+    return out;
+}
+
+/// Serializes the verbs. Exclusivity is a read-then-write ("which VPNs are
+/// live?" then "down them, then up this one"), so two quick Connect clicks
+/// must not interleave and leave both VPNs live.
+var verb_lock: std.atomic.Mutex = .unlocked;
+
+fn verbLock() void {
+    verbLockMutex(&verb_lock);
+}
+
+fn verbLockMutex(m: *std.atomic.Mutex) void {
+    var spins: u32 = 0;
+    while (!m.tryLock()) {
+        spins +%= 1;
+        if (spins < 64) {
+            std.atomic.spinLoopHint();
+        } else {
+            std.Thread.yield() catch {};
+        }
+    }
+}
+
+fn copyFirstLine(out: *[160]u8, raw: []const u8) usize {
+    const line = firstLine(raw);
+    const n = @min(line.len, out.len);
+    @memcpy(out[0..n], line[0..n]);
+    if (n < out.len) out[n] = 0;
+    return n;
+}
+
+/// Run one nmcli verb and keep the first stderr line on failure. The caller
+/// owns postVerbResult; query reads still use the quieter `runNmcli`.
+fn runNmcliCapture(io: std.Io, argv: []const []const u8, reason: *[160]u8) bool {
+    @memset(reason, 0);
+    const res = std.process.run(std.heap.page_allocator, io, .{ .argv = argv }) catch {
+        const n = copyFirstLine(reason, "nmcli could not be run");
+        _ = n;
+        return false;
+    };
+    defer std.heap.page_allocator.free(res.stdout);
+    defer std.heap.page_allocator.free(res.stderr);
+    if (res.term == .exited and res.term.exited == 0) return true;
+    const raw = if (res.stderr.len > 0) res.stderr else res.stdout;
+    const n = copyFirstLine(reason, raw);
+    if (n == 0) _ = copyFirstLine(reason, "nmcli failed");
+    return false;
+}
+
+/// Deactivate a VPN and stop NetworkManager from re-dialling it: down, then
+/// autoconnect off. A manual disconnect must stick, and the VPN displaced by
+/// another activation has to stay down rather than racing it for the tunnel.
+fn deactivateVpn(io: std.Io, uuid: []const u8) void {
+    _ = runNmcli(io, &.{ "nmcli", "connection", "down", "uuid", uuid });
+    _ = runNmcli(io, &.{ "nmcli", "connection", "modify", "uuid", uuid, "connection.autoconnect", "no" });
+}
+
+/// The uuids of every live VPN/WireGuard row in an active `nmcli` read,
+/// except `keep_uuid`. The returned slices borrow `text`.
+fn otherActiveVpnUuids(alloc: std.mem.Allocator, text: []const u8, keep_uuid: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(alloc);
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        const f = splitVpnLine(line) orelse continue;
+        if (!isVpnType(f.type)) continue;
+        if (std.mem.eql(u8, f.uuid, keep_uuid)) continue;
+        try out.append(alloc, f.uuid);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// Bring down every live VPN except `keep_uuid`, so only one is ever
+/// connected. The active read is the same shape `query` uses, filtered to the
+/// VPN types.
+fn deactivateOtherVpns(io: std.Io, keep_uuid: []const u8) void {
+    const pa = std.heap.page_allocator;
+    const text = runNmcli(io, &.{
+        "nmcli", "-t", "-f", "NAME,UUID,TYPE,STATE", "connection", "show", "--active",
+    }) orelse return;
+    defer pa.free(text);
+    const others = otherActiveVpnUuids(pa, text, keep_uuid) catch return;
+    defer pa.free(others);
+    for (others) |uuid| deactivateVpn(io, uuid);
+}
 
 const VerbArgs = struct {
     io: std.Io,
     uuid: []u8,
     kind: VerbKind,
+    enabled: bool = false,
 
     fn run(self: *VerbArgs) void {
         const pa = std.heap.page_allocator;
         // LIFO: free the uuid while `self` is still readable, then the struct.
         defer pa.destroy(self);
         defer pa.free(self.uuid);
+        verbLock();
+        defer verb_lock.unlock();
+        var reason: [160]u8 = undefined;
+        var ok = false;
         switch (self.kind) {
-            // Activate the connection.
-            .up => _ = runNmcli(self.io, &.{ "nmcli", "connection", "up", "uuid", self.uuid }),
+            // Activate the connection, exclusive: any other live VPN is
+            // taken down first.
+            .up => {
+                deactivateOtherVpns(self.io, self.uuid);
+                ok = runNmcliCapture(self.io, &.{ "nmcli", "connection", "up", "uuid", self.uuid }, &reason);
+            },
             // `deactivateVpnConnection`: down, then autoconnect off — a
             // manual disconnect must stick, or NM re-dials the VPN the
             // moment it is taken down.
             .down => {
-                _ = runNmcli(self.io, &.{ "nmcli", "connection", "down", "uuid", self.uuid });
+                ok = runNmcliCapture(self.io, &.{ "nmcli", "connection", "down", "uuid", self.uuid }, &reason);
                 _ = runNmcli(self.io, &.{ "nmcli", "connection", "modify", "uuid", self.uuid, "connection.autoconnect", "no" });
             },
+            // Cancel leaves autoconnect alone: the user only abandoned this
+            // activation attempt, they did not ask to disable the profile.
+            .cancel => {
+                ok = runNmcliCapture(self.io, &.{ "nmcli", "connection", "down", "uuid", self.uuid }, &reason);
+            },
+            .auto => {
+                ok = runNmcliCapture(self.io, &.{
+                    "nmcli", "connection", "modify", "uuid", self.uuid, "connection.autoconnect", if (self.enabled) "yes" else "no",
+                }, &reason);
+            },
             // `removeVpnConnection`.
-            .delete => _ = runNmcli(self.io, &.{ "nmcli", "connection", "delete", "uuid", self.uuid }),
+            .delete => {
+                ok = runNmcliCapture(self.io, &.{ "nmcli", "connection", "delete", "uuid", self.uuid }, &reason);
+            },
         }
+        postVerbResult(self.uuid, self.kind, ok, reason[0..copyFirstLineLen(&reason)]);
     }
 };
 
-fn verbThread(io: std.Io, uuid: []const u8, kind: VerbKind) void {
+fn copyFirstLineLen(buf: *[160]u8) usize {
+    var n: usize = 0;
+    while (n < buf.len and buf[n] != 0) n += 1;
+    return n;
+}
+
+fn verbThread(io: std.Io, uuid: []const u8, kind: VerbKind, enabled: bool) void {
     const pa = std.heap.page_allocator;
     const args = pa.create(VerbArgs) catch return;
     args.* = .{
@@ -222,6 +487,7 @@ fn verbThread(io: std.Io, uuid: []const u8, kind: VerbKind) void {
             return;
         },
         .kind = kind,
+        .enabled = enabled,
     };
     const t = std.Thread.spawn(.{}, VerbArgs.run, .{args}) catch {
         pa.free(args.uuid);
@@ -233,17 +499,151 @@ fn verbThread(io: std.Io, uuid: []const u8, kind: VerbKind) void {
 
 pub fn activateThread(io: std.Io, uuid: []const u8) void {
     if (uuid.len == 0) return;
-    verbThread(io, uuid, .up);
+    verbThread(io, uuid, .up, false);
 }
 
 pub fn deactivateThread(io: std.Io, uuid: []const u8) void {
     if (uuid.len == 0) return;
-    verbThread(io, uuid, .down);
+    verbThread(io, uuid, .down, false);
+}
+
+pub fn cancelThread(io: std.Io, uuid: []const u8) void {
+    if (uuid.len == 0) return;
+    verbThread(io, uuid, .cancel, false);
 }
 
 pub fn removeThread(io: std.Io, uuid: []const u8) void {
     if (uuid.len == 0) return;
-    verbThread(io, uuid, .delete);
+    verbThread(io, uuid, .delete, false);
+}
+
+// Public exit-address lookup ───────────────────────────────────────────────
+//
+// This is the one outbound request the VPN page makes: after a tunnel comes
+// up it asks a configurable HTTPS endpoint for the address the world sees.
+// The page owns the off switch and endpoint, and only calls this while a
+// connection is Connected. One lookup can be in flight at a time; the result
+// is matched by uuid so a stale lookup cannot paint the wrong row.
+
+const kExitIdle: u8 = 0;
+const kExitRunning: u8 = 1;
+const kExitReady: u8 = 2;
+
+var exit_phase: std.atomic.Value(u8) = std.atomic.Value(u8).init(kExitIdle);
+var exit_uuid: [64]u8 = undefined;
+var exit_uuid_len: usize = 0;
+var exit_text: [64]u8 = undefined;
+var exit_text_len: usize = 0;
+var exit_ok: bool = false;
+
+pub const ExitIpResult = struct {
+    uuid: [64]u8 = undefined,
+    uuid_len: usize = 0,
+    text: [64]u8 = undefined,
+    text_len: usize = 0,
+    ok: bool = false,
+
+    pub fn uuidText(self: *const ExitIpResult) []const u8 {
+        return self.uuid[0..self.uuid_len];
+    }
+
+    pub fn textText(self: *const ExitIpResult) []const u8 {
+        return self.text[0..self.text_len];
+    }
+};
+
+const ExitArgs = struct {
+    io: std.Io,
+    url: []u8,
+
+    fn run(self: *ExitArgs) void {
+        const pa = std.heap.page_allocator;
+        defer {
+            pa.free(self.url);
+            pa.destroy(self);
+        }
+        const body = fetchExitText(self.io, self.url) orelse {
+            exit_ok = false;
+            exit_text_len = 0;
+            exit_phase.store(kExitReady, .release);
+            return;
+        };
+        defer pa.free(body);
+        const trimmed = std.mem.trim(u8, body, " \t\r\n");
+        const n = @min(trimmed.len, exit_text.len);
+        @memcpy(exit_text[0..n], trimmed[0..n]);
+        exit_text_len = n;
+        exit_ok = n > 0;
+        exit_phase.store(kExitReady, .release);
+    }
+};
+
+fn fetchExitText(io: std.Io, url: []const u8) ?[]u8 {
+    const pa = std.heap.page_allocator;
+    var client = std.http.Client{ .allocator = pa, .io = io };
+    defer client.deinit();
+    var aw = std.Io.Writer.Allocating.init(pa);
+    defer aw.deinit();
+    const res = client.fetch(.{
+        .method = .GET,
+        .location = .{ .url = url },
+        .response_writer = &aw.writer,
+    }) catch return null;
+    if (res.status != .ok) return null;
+    const body = aw.toOwnedSlice() catch return null;
+    if (body.len > 4096) {
+        pa.free(body);
+        return null;
+    }
+    return body;
+}
+
+/// Start one lookup. Returns false when a lookup is already running, the
+/// endpoint is empty (the off switch), or the thread could not spawn.
+pub fn requestExitIp(io: std.Io, uuid: []const u8, url: []const u8) bool {
+    if (url.len == 0 or uuid.len == 0) return false;
+    if (exit_phase.load(.acquire) != kExitIdle) return false;
+    const n = @min(uuid.len, exit_uuid.len);
+    @memcpy(exit_uuid[0..n], uuid[0..n]);
+    exit_uuid_len = n;
+    exit_text_len = 0;
+    exit_ok = false;
+    exit_phase.store(kExitRunning, .release);
+
+    const pa = std.heap.page_allocator;
+    const args = pa.create(ExitArgs) catch {
+        exit_phase.store(kExitIdle, .release);
+        return false;
+    };
+    args.* = .{
+        .io = io,
+        .url = pa.dupe(u8, url) catch {
+            pa.destroy(args);
+            exit_phase.store(kExitIdle, .release);
+            return false;
+        },
+    };
+    const t = std.Thread.spawn(.{}, ExitArgs.run, .{args}) catch {
+        pa.free(args.url);
+        pa.destroy(args);
+        exit_phase.store(kExitIdle, .release);
+        return false;
+    };
+    t.detach();
+    return true;
+}
+
+/// Pop a finished lookup. Safe to call every paint; a miss is one atomic load.
+pub fn takeExitIp() ?ExitIpResult {
+    if (exit_phase.load(.acquire) != kExitReady) return null;
+    var out = ExitIpResult{};
+    @memcpy(out.uuid[0..exit_uuid_len], exit_uuid[0..exit_uuid_len]);
+    out.uuid_len = exit_uuid_len;
+    out.text_len = exit_text_len;
+    @memcpy(out.text[0..exit_text_len], exit_text[0..exit_text_len]);
+    out.ok = exit_ok;
+    exit_phase.store(kExitIdle, .release);
+    return out;
 }
 
 // The read, off the Wayland thread
@@ -540,12 +940,12 @@ fn spawnArgv(io: std.Io, argv: []const []const u8, subject: []const u8, imported
     t.detach();
 }
 
-/// `setVpnAutoconnect` — the card's auto toggle; optimistic, no report.
+/// `setVpnAutoconnect` — the card's auto toggle. Runs through the same
+/// serialized verb worker as connect/disconnect so an auto write cannot
+/// interleave with a profile update, and reports failure to the page.
 pub fn setAutoconnectThread(io: std.Io, uuid: []const u8, enabled: bool) void {
     if (uuid.len == 0) return;
-    spawnArgv(io, &.{
-        "nmcli", "connection", "modify", "uuid", uuid, "connection.autoconnect", if (enabled) "yes" else "no",
-    }, "", false);
+    verbThread(io, uuid, .auto, enabled);
 }
 
 /// `addVpnConnection` — plugin-backed types (OpenVPN, strongSwan, L2TP, PPTP,
@@ -995,6 +1395,19 @@ test "live-vpn: tail splits at the first colon only" {
     try t.expect(splitVpnLine("not-a-uuid line") == null);
 }
 
+test "live-vpn: activation takes every other live VPN down" {
+    const t = std.testing;
+    const doc =
+        \\home:12345678-1234-1234-1234-123456789abc:802-3-ethernet:activated
+        \\Work VPN:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:vpn:activated
+        \\wg0:99999999-8888-7777-6666-555555555555:wireguard:activated
+    ;
+    const others = try otherActiveVpnUuids(t.allocator, doc, "99999999-8888-7777-6666-555555555555");
+    defer t.allocator.free(others);
+    try t.expectEqual(@as(usize, 1), others.len);
+    try t.expectEqualStrings("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", others[0]);
+}
+
 test "live-vpn: saved-list parse filters types and marks actives" {
     const t = std.testing;
     const doc =
@@ -1013,6 +1426,24 @@ test "live-vpn: saved-list parse filters types and marks actives" {
     try t.expectEqualStrings("wg0", conns[1].name);
     try t.expect(!conns[1].active);
     try t.expect(conns[1].autoconnect);
+}
+
+test "live-vpn: rows keep name order when one connects" {
+    const t = std.testing;
+    var conns = [_]Connection{
+        .{ .uuid = "bbbbbbbb-1111-2222-3333-444444444444", .name = "alpha", .active = false },
+        .{ .uuid = "aaaaaaaa-1111-2222-3333-444444444444", .name = "zulu", .active = true },
+    };
+    sortConnections(&conns);
+    try t.expectEqualStrings("alpha", conns[0].name);
+    try t.expectEqualStrings("zulu", conns[1].name);
+    // Equal names still have a deterministic order.
+    var same = [_]Connection{
+        .{ .uuid = "bbbbbbbb-1111-2222-3333-444444444444", .name = "same" },
+        .{ .uuid = "aaaaaaaa-1111-2222-3333-444444444444", .name = "same" },
+    };
+    sortConnections(&same);
+    try t.expectEqualStrings("aaaaaaaa-1111-2222-3333-444444444444", same[0].uuid);
 }
 
 test "live-vpn: wireguard import names are interface-shaped" {
