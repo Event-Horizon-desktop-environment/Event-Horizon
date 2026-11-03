@@ -127,6 +127,7 @@ const k_drag_apply_ms: i64 = 40;
 const k_snap_ms: i64 = 1000;
 const k_engine_ms: i64 = 1200;
 const k_cards_ms: i64 = 2500;
+const k_caps_ms: i64 = 4000;
 const k_max_dd_rows: usize = 32;
 
 const k_engine_rates = [_]i32{ 44100, 48000, 88200, 96000, 176400, 192000 };
@@ -448,6 +449,10 @@ pub const Page = struct {
     /// `pw-top` batch for the Engine page's latency / xrun / DSP strip.
     top: live_audio.PwTopSample = .{},
     top_ms: i64 = 0,
+    /// Selected output node's advertised rates/formats/quantum limit.
+    caps: live_audio.NodeCaps = .{},
+    caps_ms: i64 = 0,
+    caps_node: u32 = 0,
     /// Xrun total when the user last pressed Reset; the display shows the
     /// delta so "reset" behaves the way Cable's counter does.
     xrun_base: i64 = 0,
@@ -554,6 +559,62 @@ pub const Page = struct {
         len.* = n;
     }
 
+    fn appendRate(out: *[k_max_values]i32, n: *usize, hz: i32) void {
+        if (hz <= 0 or n.* >= out.len) return;
+        var i: usize = 0;
+        while (i < n.*) : (i += 1) {
+            if (out[i] == hz) return;
+            if (out[i] > hz) break;
+        }
+        var j = n.*;
+        while (j > i) : (j -= 1) out[j] = out[j - 1];
+        out[i] = hz;
+        n.* += 1;
+    }
+
+    /// Rates the selected output actually advertises. A `Range` keeps the
+    /// page's common-rate list sliced to its bounds (plus the node default
+    /// and any user values inside the range); an `Enum` is used verbatim.
+    /// Falls back to the editable list when capabilities are unavailable.
+    fn menuRates(self: *const Page, out: *[k_max_values]i32) []const i32 {
+        const user = self.rate_values[0..self.rate_values_len];
+        if (!self.caps.available) return user;
+        var n: usize = 0;
+        if (self.caps.rate_count > 0 and !self.caps.is_range) {
+            for (self.caps.rates[0..self.caps.rate_count]) |hz| appendRate(out, &n, hz);
+        } else {
+            const lo = self.caps.rate_min;
+            const hi = if (self.caps.rate_max > 0) self.caps.rate_max else std.math.maxInt(i32);
+            for (k_engine_rates) |hz| {
+                if (hz >= lo and hz <= hi) appendRate(out, &n, hz);
+            }
+            for (user) |hz| {
+                if (hz >= lo and hz <= hi) appendRate(out, &n, hz);
+            }
+            // Range endpoints are advertised as supported even when they are
+            // not one of the page's common rates (e.g. 32 kHz HDMI).
+            appendRate(out, &n, self.caps.rate_min);
+            appendRate(out, &n, self.caps.rate_max);
+            appendRate(out, &n, self.caps.rate_default);
+        }
+        if (n == 0) return user;
+        return out[0..n];
+    }
+
+    /// Quantum choices trimmed to the node's `clock.quantum-limit`. An
+    /// empty result (or no limit) keeps the user's list as-is.
+    fn menuQuantums(self: *const Page, out: *[k_max_values]i32) []const i32 {
+        const user = self.quantum_values[0..self.quantum_values_len];
+        if (!self.caps.available or self.caps.quantum_limit <= 0) return user;
+        var n: usize = 0;
+        for (user) |qn| {
+            if (qn > 0 and qn <= self.caps.quantum_limit) out[n] = qn else continue;
+            n += 1;
+        }
+        if (n == 0) return user;
+        return out[0..n];
+    }
+
     pub fn deinit(self: *Page) void {
         if (!self.inited) return;
         if (self.q) |*q| q.deinit();
@@ -652,6 +713,15 @@ pub const Page = struct {
         if (child == .engine and (force or now - self.top_ms >= k_engine_ms)) {
             self.top = live_audio.queryPwTop(self.alloc, self.io);
             self.top_ms = now;
+        }
+
+        if (child == .engine) {
+            const out_id: u32 = if (self.q) |*qq| qq.snap.out.id else 0;
+            if (out_id != self.caps_node or force or now - self.caps_ms >= k_caps_ms) {
+                self.caps = if (out_id != 0) live_audio.queryNodeCaps(self.alloc, self.io, out_id) else .{};
+                self.caps_node = out_id;
+                self.caps_ms = now;
+            }
         }
 
         if (force or now - self.pcm_ms >= k_engine_ms) {
@@ -778,14 +848,16 @@ pub const Page = struct {
             return 0;
         }
         if (id == 2) {
-            for (self.rate_values[0..self.rate_values_len], 0..) |hz, i| {
+            var buf: [k_max_values]i32 = undefined;
+            for (self.menuRates(&buf), 0..) |hz, i| {
                 if (hz == self.es.clock_rate_hz) return @intCast(i);
             }
             return -1;
         }
         if (id == 3) {
             if (self.es.clock_force_rate_hz == 0) return 0;
-            for (self.rate_values[0..self.rate_values_len], 0..) |hz, i| {
+            var buf: [k_max_values]i32 = undefined;
+            for (self.menuRates(&buf), 0..) |hz, i| {
                 if (hz == self.es.clock_force_rate_hz) return @intCast(i + 1);
             }
             return -1;
@@ -794,14 +866,16 @@ pub const Page = struct {
         if (id == 5) return self.pcm_choice;
         if (id == 6) {
             if (self.es.clock_quantum == 0) return 0;
-            for (self.quantum_values[0..self.quantum_values_len], 0..) |qn, i| {
+            var buf: [k_max_values]i32 = undefined;
+            for (self.menuQuantums(&buf), 0..) |qn, i| {
                 if (qn == self.es.clock_quantum) return @intCast(i + 1);
             }
             return -1;
         }
         if (id == 7) {
             if (self.es.clock_force_quantum == 0) return 0;
-            for (self.quantum_values[0..self.quantum_values_len], 0..) |qn, i| {
+            var buf: [k_max_values]i32 = undefined;
+            for (self.menuQuantums(&buf), 0..) |qn, i| {
                 if (qn == self.es.clock_force_quantum) return @intCast(i + 1);
             }
             return -1;
@@ -933,13 +1007,17 @@ pub const Page = struct {
         }
         if (id >= 2 and id <= 7) {
             var buf: [32]u8 = undefined;
+            var rate_buf: [k_max_values]i32 = undefined;
+            var qn_buf: [k_max_values]i32 = undefined;
+            const rates = self.menuRates(&rate_buf);
+            const quantums = self.menuQuantums(&qn_buf);
             if (id == 2) {
-                for (self.rate_values[0..self.rate_values_len]) |hz| mn(self, aa, hzDisplay(&buf, hz));
+                for (rates) |hz| mn(self, aa, hzDisplay(&buf, hz));
                 mn(self, aa, "Custom rate…");
                 mn(self, aa, "Edit rate values…");
             } else if (id == 3) {
                 mn(self, aa, "Auto");
-                for (self.rate_values[0..self.rate_values_len]) |hz| mn(self, aa, hzDisplay(&buf, hz));
+                for (rates) |hz| mn(self, aa, hzDisplay(&buf, hz));
                 mn(self, aa, "Custom rate…");
                 mn(self, aa, "Edit rate values…");
             } else if (id == 4) {
@@ -948,7 +1026,7 @@ pub const Page = struct {
                 for (k_pcm_labels) |l| mn(self, aa, l);
             } else if (id == 6) {
                 mn(self, aa, "Auto (default)");
-                for (self.quantum_values[0..self.quantum_values_len]) |qn| {
+                for (quantums) |qn| {
                     const s = std.fmt.bufPrint(&buf, "{d} frames", .{qn}) catch continue;
                     mn(self, aa, s);
                 }
@@ -956,7 +1034,7 @@ pub const Page = struct {
                 mn(self, aa, "Edit quantum values…");
             } else {
                 mn(self, aa, "Auto");
-                for (self.quantum_values[0..self.quantum_values_len]) |qn| {
+                for (quantums) |qn| {
                     const s = std.fmt.bufPrint(&buf, "{d} frames", .{qn}) catch continue;
                     mn(self, aa, s);
                 }
@@ -1522,6 +1600,32 @@ pub const Page = struct {
             cairo.cairo_fill(c);
             ui_paint.glyph(c, @floatFromInt(rr.x + @divTrunc(rr.w, 2)), @floatFromInt(rr.y + @divTrunc(rr.h, 2)), 14, "refresh", t.text_r, t.text_g, t.text_b, 0.62);
         }
+        {
+            // Detected hardware, right-aligned in the header row. Truncated
+            // (not wrapped) so it can never collide with the refresh button.
+            var hw_buf: [192]u8 = undefined;
+            const hw = self.hardwareCaption(&hw_buf);
+            const title_w = ui_paint.textSizePx(c, "Engine & default output", 10, 400).w;
+            const start = sec.x + common.card_pad + 20 + title_w + 16;
+            const end = engineRefreshRect(sec).x - 12;
+            if (end > start + 48) {
+                const tw = ui_paint.measureTextWidth(hw, 11, 500);
+                const x = @max(start, end - tw);
+                ui_paint.showTextW(
+                    c,
+                    @floatFromInt(x),
+                    @floatFromInt(sec.y + 21),
+                    hw,
+                    11,
+                    500,
+                    @floatFromInt(end - x),
+                    t.text_r,
+                    t.text_g,
+                    t.text_b,
+                    0.42,
+                );
+            }
+        }
 
         var buf_rate: [32]u8 = undefined;
         var buf_force: [32]u8 = undefined;
@@ -1635,6 +1739,110 @@ pub const Page = struct {
         if (qn <= 0 or rate <= 0) return "—";
         const ms = @as(f64, @floatFromInt(qn)) / @as(f64, @floatFromInt(rate)) * 1000.0;
         return std.fmt.bufPrint(buf, "{d:.2} ms", .{ms}) catch "—";
+    }
+
+    /// `44100` → `44.1`, `48000` → `48` (kHz shorthand for the caption).
+    fn shortRate(buf: []u8, hz: i32) []const u8 {
+        if (hz <= 0) return "?";
+        if (@mod(hz, 1000) == 0) return std.fmt.bufPrint(buf, "{d}", .{@divTrunc(hz, 1000)}) catch "?";
+        return std.fmt.bufPrint(buf, "{d}.{d}", .{
+            @divTrunc(hz, 1000),
+            @divTrunc(@mod(hz, 1000), 100),
+        }) catch "?";
+    }
+
+    fn capsFormatLabel(bits: u16, buf: []u8) []const u8 {
+        const names = [_]struct { bit: u16, name: []const u8 }{
+            .{ .bit = live_audio.fmt_s16, .name = "S16LE" },
+            .{ .bit = live_audio.fmt_s24, .name = "S24LE" },
+            .{ .bit = live_audio.fmt_s32, .name = "S32LE" },
+            .{ .bit = live_audio.fmt_f32, .name = "F32LE" },
+            .{ .bit = live_audio.fmt_f64, .name = "F64LE" },
+        };
+        var n: usize = 0;
+        for (names) |entry| {
+            if (bits & entry.bit == 0) continue;
+            const need: usize = entry.name.len + (if (n == 0) @as(usize, 0) else 3);
+            if (n + need > buf.len) break;
+            if (n > 0) {
+                @memcpy(buf[n..][0..3], " / ");
+                n += 3;
+            }
+            @memcpy(buf[n..][0..entry.name.len], entry.name);
+            n += entry.name.len;
+        }
+        return buf[0..n];
+    }
+
+    fn appendCaptionPart(buf: []u8, n: *usize, part: []const u8) void {
+        if (part.len == 0) return;
+        const sep = if (n.* == 0) "" else " · ";
+        if (n.* + sep.len + part.len > buf.len) return;
+        @memcpy(buf[n.*..][0..sep.len], sep);
+        n.* += sep.len;
+        @memcpy(buf[n.*..][0..part.len], part);
+        n.* += part.len;
+    }
+
+    /// Subtle "what this output can actually do" line in the Engine card
+    /// header. Detection comes from the selected sink's `EnumFormat`, so an
+    /// unavailable result says so rather than inventing limits.
+    fn hardwareCaption(self: *Page, buf: []u8) []const u8 {
+        const c = &self.caps;
+        const d = self.storeDevice();
+        if (!c.available) return if (hasDevice(d)) "Hardware limits unavailable" else "No output device";
+
+        var parts: [5][]const u8 = undefined;
+        var np: usize = 0;
+        if (hasDevice(d)) {
+            parts[np] = deviceLabel(d);
+            np += 1;
+        }
+
+        var lo_b: [12]u8 = undefined;
+        var hi_b: [12]u8 = undefined;
+        var rate_b: [40]u8 = undefined;
+        var rate_s: []const u8 = "";
+        if (c.rate_min > 0 and c.rate_max >= c.rate_min) {
+            if (c.rate_min == c.rate_max) {
+                rate_s = std.fmt.bufPrint(&rate_b, "{s} kHz", .{shortRate(&lo_b, c.rate_min)}) catch "";
+            } else {
+                const lo = shortRate(&lo_b, c.rate_min);
+                const hi = shortRate(&hi_b, c.rate_max);
+                rate_s = std.fmt.bufPrint(&rate_b, "{s}–{s} kHz", .{ lo, hi }) catch "";
+            }
+        } else if (c.rate_count > 0) {
+            const lo = shortRate(&lo_b, c.rates[0]);
+            const hi = shortRate(&hi_b, c.rates[c.rate_count - 1]);
+            rate_s = std.fmt.bufPrint(&rate_b, "{s}–{s} kHz", .{ lo, hi }) catch "";
+        }
+        if (rate_s.len > 0) {
+            parts[np] = rate_s;
+            np += 1;
+        }
+
+        var fmt_b: [32]u8 = undefined;
+        const fmt_s = capsFormatLabel(c.formats, &fmt_b);
+        if (fmt_s.len > 0) {
+            parts[np] = fmt_s;
+            np += 1;
+        }
+
+        var ch_b: [24]u8 = undefined;
+        if (c.channels > 0) {
+            parts[np] = std.fmt.bufPrint(&ch_b, "{d} ch", .{c.channels}) catch "";
+            np += 1;
+        }
+
+        var q_b: [32]u8 = undefined;
+        if (c.quantum_limit > 0) {
+            parts[np] = std.fmt.bufPrint(&q_b, "quantum ≤{d}", .{c.quantum_limit}) catch "";
+            np += 1;
+        }
+
+        var n: usize = 0;
+        for (parts[0..np]) |part| appendCaptionPart(buf, &n, part);
+        return buf[0..n];
     }
 
     fn paintLatencyCard(self: *Page, c: *cairo.cairo_t, sec: SGeom, g_ov: f64) void {
@@ -2009,6 +2217,7 @@ pub const Page = struct {
         if (inRect(px, ly, engineRefreshRect(sec))) {
             self.engine_ms = 0;
             self.top_ms = 0;
+            self.caps_ms = 0;
             self.pcm_ms = 0;
             self.snap_ms = 0;
             return .repaint;
@@ -2202,11 +2411,15 @@ pub const Page = struct {
             }
             return .repaint;
         }
-        const rate_n: i32 = @intCast(self.rate_values_len);
-        const qn_n: i32 = @intCast(self.quantum_values_len);
+        var rate_buf: [k_max_values]i32 = undefined;
+        var qn_buf: [k_max_values]i32 = undefined;
+        const menu_rates = self.menuRates(&rate_buf);
+        const menu_quantums = self.menuQuantums(&qn_buf);
+        const rate_n: i32 = @intCast(menu_rates.len);
+        const qn_n: i32 = @intCast(menu_quantums.len);
         if (id == 2) {
             if (row >= 0 and row < rate_n) {
-                const hz = self.rate_values[@intCast(row)];
+                const hz = menu_rates[@intCast(row)];
                 _ = live_audio.applyEngineClockRateHz(self.io, hz);
                 self.engine_ms = now - k_engine_ms + 150;
                 return .{ .persist = .{ .clock_hz = hz } };
@@ -2222,7 +2435,7 @@ pub const Page = struct {
                 return .{ .persist = .{ .force_hz = 0 } };
             }
             if (row >= 1 and row <= rate_n) {
-                const hz = self.rate_values[@intCast(row - 1)];
+                const hz = menu_rates[@intCast(row - 1)];
                 _ = live_audio.applyEngineForceRateHz(self.io, hz);
                 self.engine_ms = now - k_engine_ms + 150;
                 return .{ .persist = .{ .force_hz = hz } };
@@ -2265,7 +2478,7 @@ pub const Page = struct {
                 return .{ .persist = .{ .quantum = 0 } };
             }
             if (row >= 1 and row <= qn_n) {
-                const qn = self.quantum_values[@intCast(row - 1)];
+                const qn = menu_quantums[@intCast(row - 1)];
                 _ = live_audio.applyEngineQuantum(self.io, qn);
                 self.engine_ms = now - k_engine_ms + 150;
                 return .{ .persist = .{ .quantum = qn } };
@@ -2281,7 +2494,7 @@ pub const Page = struct {
                 return .{ .persist = .{ .force_quantum = 0 } };
             }
             if (row >= 1 and row <= qn_n) {
-                const qn = self.quantum_values[@intCast(row - 1)];
+                const qn = menu_quantums[@intCast(row - 1)];
                 _ = live_audio.applyEngineForceQuantum(self.io, qn);
                 self.engine_ms = now - k_engine_ms + 150;
                 return .{ .persist = .{ .force_quantum = qn } };
@@ -2834,4 +3047,65 @@ test "sound-tab: allowed-rates preset detection" {
     const custom = [_]i32{ 44100, 96000 };
     try t.expectEqual(@as(i32, -1), allowedPresetSel(48000, &custom));
     try t.expectEqualStrings("Custom", allowedPresetLabel(-1));
+}
+
+test "sound-tab: hardware caps filter the engine menus" {
+    const t = std.testing;
+    var p: Page = .{};
+    p.setValueList(&p.rate_values, &p.rate_values_len, &k_engine_rates);
+    p.setValueList(&p.quantum_values, &p.quantum_values_len, &k_engine_quantums);
+
+    // No detection: the editable list is the menu.
+    var buf: [k_max_values]i32 = undefined;
+    try t.expectEqual(@as(usize, k_engine_rates.len), p.menuRates(&buf).len);
+
+    // A range keeps only rates inside it.
+    p.caps = .{ .available = true, .rate_min = 44100, .rate_max = 48000, .rate_default = 48000 };
+    const rates = p.menuRates(&buf);
+    try t.expectEqual(@as(usize, 2), rates.len);
+    try t.expectEqual(@as(i32, 44100), rates[0]);
+    try t.expectEqual(@as(i32, 48000), rates[1]);
+
+    // An enum list is used verbatim (sorted by the parser).
+    p.caps = .{
+        .available = true,
+        .rate_min = 44100,
+        .rate_max = 96000,
+        .rates = .{ 44100, 48000, 96000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .rate_count = 3,
+    };
+    const exact = p.menuRates(&buf);
+    try t.expectEqual(@as(usize, 3), exact.len);
+    try t.expectEqual(@as(i32, 96000), exact[2]);
+
+    // Quantum values above the node's limit disappear.
+    p.caps = .{ .available = true, .quantum_limit = 512 };
+    var qbuf: [k_max_values]i32 = undefined;
+    const quantums = p.menuQuantums(&qbuf);
+    try t.expectEqual(@as(usize, 3), quantums.len);
+    try t.expectEqual(@as(i32, 128), quantums[0]);
+    try t.expectEqual(@as(i32, 512), quantums[2]);
+}
+
+test "sound-tab: hardware caption summarizes detected limits" {
+    const t = std.testing;
+    var p: Page = .{};
+    p.caps = .{
+        .available = true,
+        .rate_min = 44100,
+        .rate_max = 192000,
+        .rate_default = 48000,
+        .channels = 2,
+        .formats = live_audio.fmt_s16 | live_audio.fmt_s32,
+        .quantum_limit = 8192,
+    };
+    var buf: [192]u8 = undefined;
+    const s = p.hardwareCaption(&buf);
+    try t.expect(std.mem.indexOf(u8, s, "44.1–192 kHz") != null);
+    try t.expect(std.mem.indexOf(u8, s, "S16LE / S32LE") != null);
+    try t.expect(std.mem.indexOf(u8, s, "2 ch") != null);
+    try t.expect(std.mem.indexOf(u8, s, "quantum ≤8192") != null);
+
+    p.caps = .{};
+    try t.expectEqualStrings("No output device", p.hardwareCaption(&buf));
 }

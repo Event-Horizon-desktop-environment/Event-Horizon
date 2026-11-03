@@ -1312,6 +1312,196 @@ pub fn queryEngineSettings(alloc: std.mem.Allocator, io: std.Io) EngineSettings 
     return out;
 }
 
+// --- Node hardware capabilities (Engine page) -----------------------------
+
+/// Format bits mirrored from the SPA audio format names `pw-dump` reports.
+pub const fmt_s16: u16 = 1 << 0;
+pub const fmt_s24: u16 = 1 << 1;
+pub const fmt_s32: u16 = 1 << 2;
+pub const fmt_f32: u16 = 1 << 3;
+pub const fmt_f64: u16 = 1 << 4;
+
+/// What the selected sink's PipeWire node advertises in `EnumFormat`.
+///
+/// The node is the hardware's own view after WirePlumber opens it, so the
+/// Engine page can stop offering rates/quantums the device cannot do. A
+/// `Range` yields `rate_min`/`rate_max`; an `Enum` yields the exact
+/// `rates` list. Both may carry a `default`.
+pub const NodeCaps = struct {
+    available: bool = false,
+    /// The node advertised a `Range` (bounded) rather than an `Enum`.
+    is_range: bool = false,
+    rate_min: i32 = 0,
+    rate_max: i32 = 0,
+    rate_default: i32 = 0,
+    rates: [16]i32 = [_]i32{0} ** 16,
+    rate_count: u8 = 0,
+    channels: i32 = 0,
+    formats: u16 = 0,
+    /// `clock.quantum-limit` from the node props (0 when absent).
+    quantum_limit: i32 = 0,
+
+    fn addRate(self: *NodeCaps, hz: i32) void {
+        if (hz <= 0) return;
+        if (self.rate_count >= self.rates.len) return;
+        var i: usize = 0;
+        while (i < self.rate_count) : (i += 1) {
+            if (self.rates[i] == hz) return;
+            if (self.rates[i] > hz) break;
+        }
+        var j = self.rate_count;
+        while (j > i) : (j -= 1) self.rates[j] = self.rates[j - 1];
+        self.rates[i] = hz;
+        self.rate_count += 1;
+    }
+
+    fn addFormat(self: *NodeCaps, name: []const u8) void {
+        if (std.mem.eql(u8, name, "S16LE") or std.mem.eql(u8, name, "S16BE") or std.mem.eql(u8, name, "S16P")) {
+            self.formats |= fmt_s16;
+        } else if (std.mem.eql(u8, name, "S24LE") or std.mem.eql(u8, name, "S24BE") or
+            std.mem.eql(u8, name, "S24_32LE") or std.mem.eql(u8, name, "S24_32BE") or std.mem.eql(u8, name, "S24P") or
+            std.mem.eql(u8, name, "S24_32P"))
+        {
+            self.formats |= fmt_s24;
+        } else if (std.mem.eql(u8, name, "S32LE") or std.mem.eql(u8, name, "S32BE") or std.mem.eql(u8, name, "S32P")) {
+            self.formats |= fmt_s32;
+        } else if (std.mem.eql(u8, name, "F32LE") or std.mem.eql(u8, name, "F32BE") or std.mem.eql(u8, name, "F32P")) {
+            self.formats |= fmt_f32;
+        } else if (std.mem.eql(u8, name, "F64LE") or std.mem.eql(u8, name, "F64BE") or std.mem.eql(u8, name, "F64P")) {
+            self.formats |= fmt_f64;
+        }
+    }
+};
+
+fn jsonInt(v: std.json.Value) ?i32 {
+    return switch (v) {
+        .integer => |i| if (i > 0 and i <= std.math.maxInt(i32)) @intCast(i) else null,
+        .float => |f| if (f > 0 and f <= @as(f64, @floatFromInt(std.math.maxInt(i32)))) @intFromFloat(f) else null,
+        .string => |s| std.fmt.parseInt(i32, s, 10) catch null,
+        else => null,
+    };
+}
+
+fn jsonAddRate(caps: *NodeCaps, v: std.json.Value) void {
+    if (jsonInt(v)) |hz| caps.addRate(hz);
+}
+
+fn jsonAddFormats(caps: *NodeCaps, v: std.json.Value) void {
+    switch (v) {
+        .string => |s| caps.addFormat(s),
+        .object => |o| {
+            var it = o.iterator();
+            while (it.next()) |e| {
+                if (std.mem.eql(u8, e.key_ptr.*, "default") or std.mem.startsWith(u8, e.key_ptr.*, "alt")) {
+                    jsonAddFormats(caps, e.value_ptr.*);
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn jsonAddRateChoice(caps: *NodeCaps, v: std.json.Value) void {
+    switch (v) {
+        .integer, .float, .string => jsonAddRate(caps, v),
+        .object => |o| {
+            var it = o.iterator();
+            var min: i32 = 0;
+            var max: i32 = 0;
+            while (it.next()) |e| {
+                const key = e.key_ptr.*;
+                if (std.mem.eql(u8, key, "min")) {
+                    min = jsonInt(e.value_ptr.*) orelse 0;
+                } else if (std.mem.eql(u8, key, "max")) {
+                    max = jsonInt(e.value_ptr.*) orelse 0;
+                } else if (std.mem.eql(u8, key, "default")) {
+                    caps.rate_default = jsonInt(e.value_ptr.*) orelse 0;
+                    jsonAddRate(caps, e.value_ptr.*);
+                } else if (std.mem.startsWith(u8, key, "alt")) {
+                    jsonAddRate(caps, e.value_ptr.*);
+                }
+            }
+            if (min > 0) caps.rate_min = min;
+            if (max > 0) caps.rate_max = max;
+            if (min > 0 or max > 0) caps.is_range = true;
+            if (min > 0 and min == max) caps.addRate(min);
+        },
+        else => {},
+    }
+}
+
+/// Pure `pw-dump <node-id>` capability parse (fixture-tested). Only the
+/// first `Audio/raw` `EnumFormat` entry is read: the rest are compressed or
+/// IEC958 codec variants that do not add PCM rates.
+pub fn parsePwDumpNodeCaps(alloc: std.mem.Allocator, text: []const u8, node_id: u32) NodeCaps {
+    var caps = NodeCaps{};
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, text, .{
+        .duplicate_field_behavior = .use_last,
+    }) catch return caps;
+    defer parsed.deinit();
+    if (parsed.value != .array) return caps;
+    for (parsed.value.array.items) |obj| {
+        if (obj != .object) continue;
+        const typ = obj.object.get("type") orelse continue;
+        if (typ != .string or !std.mem.eql(u8, typ.string, "PipeWire:Interface:Node")) continue;
+        const id_v = obj.object.get("id") orelse continue;
+        if (id_v != .integer or id_v.integer <= 0 or id_v.integer > 0xffff_ffff) continue;
+        const id: u32 = @intCast(id_v.integer);
+        if (node_id != 0 and id != node_id) continue;
+        const info_v = obj.object.get("info") orelse continue;
+        if (info_v != .object) continue;
+        if (info_v.object.get("props")) |props| {
+            if (props == .object) {
+                if (props.object.get("clock.quantum-limit")) |q| {
+                    caps.quantum_limit = jsonInt(q) orelse 0;
+                }
+            }
+        }
+        const params_v = info_v.object.get("params") orelse continue;
+        if (params_v != .object) continue;
+        const enum_v = params_v.object.get("EnumFormat") orelse continue;
+        if (enum_v != .array) continue;
+        for (enum_v.array.items) |entry| {
+            if (entry != .object) continue;
+            const mt = jsonStr(entry, "mediaType") orelse continue;
+            const st = jsonStr(entry, "mediaSubtype") orelse continue;
+            if (!std.mem.eql(u8, mt, "audio") or !std.mem.eql(u8, st, "raw")) continue;
+            caps.available = true;
+            if (entry.object.get("rate")) |r| jsonAddRateChoice(&caps, r);
+            if (entry.object.get("format")) |f| jsonAddFormats(&caps, f);
+            if (entry.object.get("channels")) |ch| caps.channels = jsonInt(ch) orelse 0;
+            break;
+        }
+        if (caps.available) break;
+    }
+    if (caps.available and caps.rate_min == 0 and caps.rate_count > 0) {
+        caps.rate_min = caps.rates[0];
+        caps.rate_max = caps.rates[caps.rate_count - 1];
+    }
+    if (caps.available and caps.rate_default == 0) {
+        if (caps.rate_count > 0) {
+            caps.rate_default = caps.rates[0];
+        } else {
+            caps.rate_default = caps.rate_max;
+        }
+    }
+    return caps;
+}
+
+/// `query_node_caps` — one `pw-dump <id>` for the selected sink. Empty
+/// (`available = false`) when the node or tool is absent; callers then keep
+/// the user's editable lists untouched.
+pub fn queryNodeCaps(alloc: std.mem.Allocator, io: std.Io, node_id: u32) NodeCaps {
+    if (node_id == 0) return .{};
+    var ibuf: [16]u8 = undefined;
+    const ids = std.fmt.bufPrint(&ibuf, "{d}", .{node_id}) catch return .{};
+    var ebuf: [64]u8 = undefined;
+    const exe = toolPath(&ebuf, "pw-dump") orelse return .{};
+    const text = live.runCapture(alloc, io, &.{ exe, ids }) orelse return .{};
+    defer alloc.free(text);
+    return parsePwDumpNodeCaps(alloc, text, node_id);
+}
+
 pub const PwTopNode = struct {
     node_id: u32 = 0,
     name: []const u8 = "",
@@ -2562,6 +2752,79 @@ test "live-audio: process latency pod" {
     try t.expect(ns.ok);
     try t.expect(ns.nanoseconds);
     try t.expectEqual(@as(i64, 2_500_000), ns.value);
+}
+
+test "live-audio: node capability ranges and formats" {
+    const t = std.testing;
+    const text =
+        \\[
+        \\  {
+        \\    "id": 65,
+        \\    "type": "PipeWire:Interface:Node",
+        \\    "info": {
+        \\      "props": { "clock.quantum-limit": 8192 },
+        \\      "params": {
+        \\        "EnumFormat": [
+        \\          {
+        \\            "mediaType": "audio",
+        \\            "mediaSubtype": "raw",
+        \\            "format": { "default": "S32LE", "alt1": "S16LE" },
+        \\            "rate": { "default": 48000, "min": 44100, "max": 192000 },
+        \\            "channels": 2
+        \\          }
+        \\        ]
+        \\      }
+        \\    }
+        \\  }
+        \\]
+    ;
+    const caps = parsePwDumpNodeCaps(t.allocator, text, 65);
+    try t.expect(caps.available);
+    try t.expectEqual(@as(i32, 44100), caps.rate_min);
+    try t.expectEqual(@as(i32, 192000), caps.rate_max);
+    try t.expectEqual(@as(i32, 48000), caps.rate_default);
+    try t.expectEqual(@as(i32, 2), caps.channels);
+    try t.expectEqual(@as(i32, 8192), caps.quantum_limit);
+    try t.expect(caps.formats & fmt_s32 != 0);
+    try t.expect(caps.formats & fmt_s16 != 0);
+    try t.expect(caps.formats & fmt_f32 == 0);
+    // Asking for another node leaves the result empty.
+    try t.expect(!parsePwDumpNodeCaps(t.allocator, text, 66).available);
+}
+
+test "live-audio: node capability enums stay exact" {
+    const t = std.testing;
+    const text =
+        \\[
+        \\  {
+        \\    "id": 57,
+        \\    "type": "PipeWire:Interface:Node",
+        \\    "info": {
+        \\      "props": {},
+        \\      "params": {
+        \\        "EnumFormat": [
+        \\          {
+        \\            "mediaType": "audio",
+        \\            "mediaSubtype": "raw",
+        \\            "format": "S32LE",
+        \\            "rate": { "default": 48000, "alt1": 44100, "alt2": 96000 },
+        \\            "channels": 2
+        \\          }
+        \\        ]
+        \\      }
+        \\    }
+        \\  }
+        \\]
+    ;
+    const caps = parsePwDumpNodeCaps(t.allocator, text, 57);
+    try t.expect(caps.available);
+    try t.expectEqual(@as(u8, 3), caps.rate_count);
+    try t.expectEqual(@as(i32, 44100), caps.rates[0]);
+    try t.expectEqual(@as(i32, 48000), caps.rates[1]);
+    try t.expectEqual(@as(i32, 96000), caps.rates[2]);
+    try t.expectEqual(@as(i32, 44100), caps.rate_min);
+    try t.expectEqual(@as(i32, 96000), caps.rate_max);
+    try t.expectEqual(@as(i32, 48000), caps.rate_default);
 }
 
 test "live-audio: pactl json cards parsing" {
