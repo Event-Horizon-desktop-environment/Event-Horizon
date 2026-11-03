@@ -366,6 +366,8 @@ test "schema: full decode with clamps" {
         \\foo = "bar"
         \\[audio]
         \\engine_allowed_rates_hz = [44100, 48000]
+        \\engine_rate_values = [44100, 48000, 96000]
+        \\engine_quantum_values = [128, 256]
         \\
     );
     defer loaded.deinit();
@@ -394,6 +396,9 @@ test "schema: full decode with clamps" {
     try t.expectEqual(@as(usize, 1), c.widgets.len);
     try t.expectEqualStrings("system_tray", c.widgets[0].type);
     try t.expectEqual(@as(usize, 2), c.audio.engine_allowed_rates_hz.len);
+    try t.expectEqual(@as(usize, 3), c.audio.engine_rate_values.len);
+    try t.expectEqual(@as(i32, 96000), c.audio.engine_rate_values[2]);
+    try t.expectEqual(@as(usize, 2), c.audio.engine_quantum_values.len);
 }
 
 test "schema: slim dock is independent of island membership" {

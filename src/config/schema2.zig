@@ -287,11 +287,27 @@ pub const AudioSettings = struct {
     engine_clock_rate_hz: i32 = 48000,
     engine_force_rate_hz: i32 = 0,
     engine_allowed_rates_hz: []i32 = &.{},
+    /// Selectable values for the Engine page's rate / quantum combos.
+    /// Empty means the page's built-in defaults.
+    engine_rate_values: []i32 = &.{},
+    engine_quantum_values: []i32 = &.{},
     engine_quantum: i32 = 0,
     engine_force_quantum: i32 = 0,
     compat_pcm_format: i32 = 0,
     allow_over_amplification: bool = false,
 };
+
+fn decodeIntArray(alloc: std.mem.Allocator, t: *const T, key: []const u8, out: *[]i32) !void {
+    const v = t.get(key) orelse return;
+    if (v != .array) return;
+    var list: std.ArrayList(i32) = .empty;
+    errdefer list.deinit(alloc);
+    for (v.array) |item| {
+        if (item != .integer) continue;
+        try list.append(alloc, @intCast(item.integer));
+    }
+    out.* = try list.toOwnedSlice(alloc);
+}
 
 pub fn decodeAudio(alloc: std.mem.Allocator, t: *const T, s: *AudioSettings) !void {
     try setStr(alloc, t, "default_sink_name", &s.default_sink_name);
@@ -302,17 +318,9 @@ pub fn decodeAudio(alloc: std.mem.Allocator, t: *const T, s: *AudioSettings) !vo
     setBool(t, "default_source_muted", &s.default_source_muted);
     setInt(t, "engine_clock_rate_hz", &s.engine_clock_rate_hz, 0, 384000);
     setInt(t, "engine_force_rate_hz", &s.engine_force_rate_hz, 0, 384000);
-    if (t.get("engine_allowed_rates_hz")) |v| {
-        if (v == .array) {
-            var out: std.ArrayList(i32) = .empty;
-            errdefer out.deinit(alloc);
-            for (v.array) |item| {
-                if (item != .integer) continue;
-                try out.append(alloc, @intCast(item.integer));
-            }
-            s.engine_allowed_rates_hz = try out.toOwnedSlice(alloc);
-        }
-    }
+    try decodeIntArray(alloc, t, "engine_allowed_rates_hz", &s.engine_allowed_rates_hz);
+    try decodeIntArray(alloc, t, "engine_rate_values", &s.engine_rate_values);
+    try decodeIntArray(alloc, t, "engine_quantum_values", &s.engine_quantum_values);
     setInt(t, "engine_quantum", &s.engine_quantum, 0, 65536);
     setInt(t, "engine_force_quantum", &s.engine_force_quantum, 0, 65536);
     setInt(t, "compat_pcm_format", &s.compat_pcm_format, 0, 3);

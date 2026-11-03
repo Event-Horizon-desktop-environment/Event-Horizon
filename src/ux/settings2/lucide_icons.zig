@@ -132,6 +132,7 @@ pub const map = [_]Entry{
     .{ .material = "terminal", .lucide = "terminal", .svg = @embedFile("lucide/terminal.svg") },
     .{ .material = "thermostat", .lucide = "thermometer", .svg = @embedFile("lucide/thermometer.svg") },
     .{ .material = "thunderstorm", .lucide = "cloud-lightning", .svg = @embedFile("lucide/cloud-lightning.svg") },
+    .{ .material = "timer", .lucide = "timer", .svg = @embedFile("lucide/timer.svg") },
     .{ .material = "tune", .lucide = "sliders-horizontal", .svg = @embedFile("lucide/sliders-horizontal.svg") },
     .{ .material = "tv", .lucide = "tv", .svg = @embedFile("lucide/tv.svg") },
     .{ .material = "usb", .lucide = "usb", .svg = @embedFile("lucide/usb.svg") },

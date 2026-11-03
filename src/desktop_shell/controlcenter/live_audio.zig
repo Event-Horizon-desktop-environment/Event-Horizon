@@ -1921,6 +1921,71 @@ pub fn applyEngineForceQuantum(io: std.Io, quantum: i32) bool {
     return pwMetaSet(io, "clock.force-quantum", s);
 }
 
+// --- Per-node latency offset (Cable's Latency Offset group) ---------------
+
+pub const LatencyOffset = struct {
+    /// The node answered `pw-cli e … ProcessLatency`.
+    ok: bool = false,
+    /// `ns` when `nanoseconds`, otherwise frames.
+    value: i64 = 0,
+    nanoseconds: bool = false,
+};
+
+/// Parse the SPA pod printed by `pw-cli e <id> ProcessLatency`. A positive
+/// `Long` is the nanosecond member; otherwise the `Int` is the frame rate
+/// member (0 means "no offset").
+fn parseLatencyOffset(text: []const u8) LatencyOffset {
+    var int_value: ?i64 = null;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.startsWith(u8, line, "Long ")) {
+            const v = std.fmt.parseInt(i64, std.mem.trim(u8, line[5..], " \t"), 10) catch continue;
+            if (v > 0) return .{ .ok = true, .value = v, .nanoseconds = true };
+        } else if (std.mem.startsWith(u8, line, "Int ")) {
+            if (int_value == null)
+                int_value = std.fmt.parseInt(i64, std.mem.trim(u8, line[4..], " \t"), 10) catch null;
+        }
+    }
+    if (int_value) |v| return .{ .ok = true, .value = v, .nanoseconds = false };
+    return .{};
+}
+
+/// `pw-cli e <id> ProcessLatency` — the offset currently stored on a node.
+pub fn queryLatencyOffset(alloc: std.mem.Allocator, io: std.Io, node_id: u32) LatencyOffset {
+    var ebuf: [64]u8 = undefined;
+    const exe = toolPath(&ebuf, "pw-cli") orelse return .{};
+    var idbuf: [16]u8 = undefined;
+    const id = std.fmt.bufPrint(&idbuf, "{d}", .{node_id}) catch return .{};
+    const text = live.runCapture(alloc, io, &.{ exe, "e", id, "ProcessLatency" }) orelse return .{};
+    defer alloc.free(text);
+    return parseLatencyOffset(text);
+}
+
+/// `pw-cli s <id> ProcessLatency { ns = N }` / `{ rate = N }`.
+pub fn applyLatencyOffset(io: std.Io, node_id: u32, value: i64, nanoseconds: bool) bool {
+    if (node_id == 0 or value < 0 or value > 1_000_000_000) return false;
+    var ebuf: [64]u8 = undefined;
+    const exe = toolPath(&ebuf, "pw-cli") orelse return false;
+    var idbuf: [16]u8 = undefined;
+    const id = std.fmt.bufPrint(&idbuf, "{d}", .{node_id}) catch return false;
+    var pbuf: [48]u8 = undefined;
+    const param = if (nanoseconds)
+        std.fmt.bufPrint(&pbuf, "{{ ns = {d} }}", .{value}) catch return false
+    else
+        std.fmt.bufPrint(&pbuf, "{{ rate = {d} }}", .{value}) catch return false;
+    return runSet(io, &.{ exe, "s", id, "ProcessLatency", param });
+}
+
+/// `{ rate = 0 }` for every supplied node; returns how many took the write.
+pub fn resetAllLatency(io: std.Io, node_ids: []const u32) usize {
+    var done: usize = 0;
+    for (node_ids) |id| {
+        if (applyLatencyOffset(io, id, 0, false)) done += 1;
+    }
+    return done;
+}
+
 /// SPA format string for a 0..3 PCM choice (`compat_pcm_choice_wp_format`).
 pub fn pcmChoiceFormat(choice: i32) ?[]const u8 {
     return switch (choice) {
@@ -2243,6 +2308,15 @@ pub fn restartServices(io: std.Io) bool {
     return runSet(io, &.{ "systemctl", "--user", "restart", "pipewire", "pipewire-pulse", "wireplumber" });
 }
 
+/// Cable's Restart Services exposes the two halves separately.
+pub fn restartWirePlumber(io: std.Io) bool {
+    return runSet(io, &.{ "systemctl", "--user", "restart", "wireplumber" });
+}
+
+pub fn restartPipeWire(io: std.Io) bool {
+    return runSet(io, &.{ "systemctl", "--user", "restart", "pipewire", "pipewire-pulse" });
+}
+
 /// Fire-and-forget speaker test (`sound_test_speakers`): front-left then
 /// front-right on the given sink (node name), falling back to the single
 /// test signal. The two plays run through one shell so they serialize; the
@@ -2453,6 +2527,41 @@ test "live-audio: pw-top batch parsing keeps the last block" {
     try t.expect(!idle.available);
     try t.expectEqual(@as(f64, 0), pwTopUs("---"));
     try t.expectEqual(@as(i64, 0), pwTopErr("???"));
+}
+
+test "live-audio: process latency pod" {
+    const t = std.testing;
+    const zero =
+        \\  Object: size 80, type Spa:Pod:Object:Param:ProcessLatency (262156), id Spa:Enum:ParamId:ProcessLatency (16)
+        \\    Prop: key Spa:Pod:Object:Param:ProcessLatency:quantum (1), flags 00000000
+        \\      Float 0.000000
+        \\    Prop: key Spa:Pod:Object:Param:ProcessLatency:rate (2), flags 00000000
+        \\      Int 0
+        \\    Prop: key Spa:Pod:Object:Param:ProcessLatency:ns (3), flags 00000000
+        \\      Long 0
+    ;
+    const off = parseLatencyOffset(zero);
+    try t.expect(off.ok);
+    try t.expect(!off.nanoseconds);
+    try t.expectEqual(@as(i64, 0), off.value);
+
+    const frames =
+        \\      Int 128
+        \\      Long 0
+    ;
+    const fr = parseLatencyOffset(frames);
+    try t.expect(fr.ok);
+    try t.expect(!fr.nanoseconds);
+    try t.expectEqual(@as(i64, 128), fr.value);
+
+    const nanos =
+        \\      Int 0
+        \\      Long 2500000
+    ;
+    const ns = parseLatencyOffset(nanos);
+    try t.expect(ns.ok);
+    try t.expect(ns.nanoseconds);
+    try t.expectEqual(@as(i64, 2_500_000), ns.value);
 }
 
 test "live-audio: pactl json cards parsing" {

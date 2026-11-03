@@ -35,6 +35,7 @@ const ui_paint = @import("ui_paint.zig");
 const live_audio = @import("../../desktop_shell/controlcenter/live_audio.zig");
 const vmx = @import("../../desktop_shell/widgets/volume_mixer.zig");
 const icon_cache = @import("../../desktop_shell/common/icon_cache.zig");
+const xkb = @import("../../wl/seat.zig").xkb;
 
 pub const devices_tab: i32 = 8;
 pub const bt_audio_tab: i32 = 81;
@@ -73,6 +74,9 @@ pub const AudioPersist = struct {
     /// or the page's own `rate_single` buffer).
     rates: ?[]const i32 = null,
     pcm: ?i32 = null,
+    /// Selectable combo contents after an Edit-list action.
+    rate_values: ?[]const i32 = null,
+    quantum_values: ?[]const i32 = null,
 };
 
 pub const Action = union(enum) {
@@ -117,7 +121,6 @@ const k_grid_label_gap: i32 = 12;
 const k_restart_btn_w: i32 = 140;
 const k_restart_btn_h: i32 = 36;
 const k_restart_row_h: i32 = 52;
-const k_restart_gap: i32 = 14;
 const k_restart_arm_ms: i64 = 3500;
 const k_restart_done_ms: i64 = 2600;
 const k_drag_apply_ms: i64 = 40;
@@ -128,6 +131,8 @@ const k_max_dd_rows: usize = 32;
 
 const k_engine_rates = [_]i32{ 44100, 48000, 88200, 96000, 176400, 192000 };
 const k_engine_quantums = [_]i32{ 128, 256, 512, 1024, 2048, 4096, 8192 };
+/// How many user-editable values the two Engine combos hold.
+const k_max_values: usize = 16;
 const k_pcm_labels = [_][]const u8{
     "16-bit PCM (S16 LE)",
     "24-bit PCM (S24 LE)",
@@ -238,6 +243,8 @@ const Geom = struct {
     playback: SGeom = .{},
     recording: SGeom = .{},
     engine: SGeom = .{},
+    latency: SGeom = .{},
+    restart: SGeom = .{},
     n_cards: usize = 0,
     n_play: usize = 0,
     n_rec: usize = 0,
@@ -319,14 +326,90 @@ fn gridCellRect(sec: SGeom, col: i32, row_i: i32) common.Rect {
     return .{ .x = x, .y = y, .w = cell_w, .h = common.settings_combo_h };
 }
 
-fn restartRowY(sec: SGeom) i32 {
-    return sec.y0 + 3 * k_grid_row_h + k_restart_gap;
+/// Engine header refresh (re-reads metadata, pw-top and PCM).
+fn engineRefreshRect(sec: SGeom) common.Rect {
+    return .{ .x = sec.x + sec.w - common.card_pad - 24, .y = sec.y + 12, .w = 24, .h = 24 };
 }
 
-fn restartBtnRect(sec: SGeom) common.Rect {
+/// Engine live-status strip under the 2x3 grid.
+fn engineStatusRect(sec: SGeom) common.Rect {
+    return .{
+        .x = sec.x + common.card_pad,
+        .y = sec.y0 + 3 * k_grid_row_h + 2,
+        .w = sec.w - 2 * common.card_pad,
+        .h = 64,
+    };
+}
+
+fn engineCardHeight() i32 {
+    return k_sec_body_top + 3 * k_grid_row_h + 2 + 64 + k_sec_bottom_pad;
+}
+
+/// Xrun reset hit target inside the status strip's middle column.
+fn xrunResetRect(sec: SGeom) common.Rect {
+    const s = engineStatusRect(sec);
+    const col_w = @divTrunc(s.w, 3);
+    return .{
+        .x = s.x + 2 * col_w - 30,
+        .y = s.y + 14,
+        .w = 20,
+        .h = 20,
+    };
+}
+
+/// The whole middle readout is the reset affordance (Cable's clickable
+/// counter), not just the little restart glyph.
+fn xrunHitRect(sec: SGeom) common.Rect {
+    const s = engineStatusRect(sec);
+    const col_w = @divTrunc(s.w, 3);
+    return .{ .x = s.x + col_w, .y = s.y, .w = col_w, .h = s.h };
+}
+
+/// Latency-offset card rows. The field shrinks before it can leave the card.
+fn latencyFieldRect(sec: SGeom) common.Rect {
+    const start = 120;
+    const unit_w = 116;
+    const avail = sec.w - 2 * common.card_pad - start - unit_w - common.spacing_s;
+    const w = @max(60, @min(160, avail));
+    return .{
+        .x = sec.x + common.card_pad + start,
+        .y = sec.y0 + k_row_h + @divTrunc(k_row_h - common.settings_combo_h, 2),
+        .w = w,
+        .h = common.settings_combo_h,
+    };
+}
+
+fn latencyUnitRect(sec: SGeom) common.Rect {
+    const f = latencyFieldRect(sec);
+    return .{ .x = f.x + f.w + common.spacing_s, .y = f.y, .w = 116, .h = f.h };
+}
+
+fn latencyApplyRect(sec: SGeom) common.Rect {
+    return .{
+        .x = sec.x + sec.w - common.card_pad - 300,
+        .y = sec.y0 + 2 * k_row_h + @divTrunc(k_row_h - k_restart_btn_h, 2),
+        .w = 140,
+        .h = k_restart_btn_h,
+    };
+}
+
+fn latencyResetAllRect(sec: SGeom) common.Rect {
+    const a = latencyApplyRect(sec);
+    return .{ .x = a.x + a.w + common.spacing_s, .y = a.y, .w = 152, .h = a.h };
+}
+
+fn latencyCardHeight() i32 {
+    return k_sec_body_top + 3 * k_row_h + k_sec_bottom_pad;
+}
+
+fn restartCardHeight() i32 {
+    return k_sec_body_top + 2 * k_restart_row_h + k_sec_bottom_pad;
+}
+
+fn restartButtonRect(sec: SGeom, row_i: i32) common.Rect {
     return .{
         .x = sec.x + sec.w - common.card_pad - k_restart_btn_w,
-        .y = restartRowY(sec) + @divTrunc(k_restart_row_h - k_restart_btn_h, 2),
+        .y = sec.y0 + row_i * k_restart_row_h + @divTrunc(k_restart_row_h - k_restart_btn_h, 2),
         .w = k_restart_btn_w,
         .h = k_restart_btn_h,
     };
@@ -346,6 +429,8 @@ const Drag = struct {
     track: common.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 };
 
+const Modal = enum { none, custom_rate, custom_quantum, edit_rates, edit_quantums };
+
 pub const Page = struct {
     alloc: std.mem.Allocator = undefined,
     io: std.Io = undefined,
@@ -360,6 +445,40 @@ pub const Page = struct {
     pcm_choice: i32 = -1,
     pcm_ms: i64 = 0,
     have_pcm: bool = false,
+    /// `pw-top` batch for the Engine page's latency / xrun / DSP strip.
+    top: live_audio.PwTopSample = .{},
+    top_ms: i64 = 0,
+    /// Xrun total when the user last pressed Reset; the display shows the
+    /// delta so "reset" behaves the way Cable's counter does.
+    xrun_base: i64 = 0,
+
+    // --- Engine latency-offset card ---------------------------------------
+    lat_node: i32 = -1,
+    lat_ns: bool = false,
+    lat_field: [24]u8 = undefined,
+    lat_len: usize = 0,
+    lat_focus: bool = false,
+    /// Table of selectable Engine combo values (editable, persisted in
+    /// `audio/audio.toml`).
+    rate_values: [k_max_values]i32 = [_]i32{0} ** k_max_values,
+    rate_values_len: usize = 0,
+    quantum_values: [k_max_values]i32 = [_]i32{0} ** k_max_values,
+    quantum_values_len: usize = 0,
+
+    // --- modal text entry (custom value / edit list) ----------------------
+    modal: Modal = .none,
+    modal_buf: [256]u8 = undefined,
+    modal_len: usize = 0,
+    modal_select_all: bool = false,
+    modal_force: bool = false,
+    modal_arm: i32 = -1,
+    modal_hover: i32 = -1,
+    /// Action produced by a modal submit/keyboard commit; the window drains
+    /// it after `key` / `modalUp`.
+    pending_action: ?Action = null,
+    /// Combo lists are seeded from config once; after that the page owns
+    /// them and persists every edit.
+    lists_seeded: bool = false,
     cards: []live_audio.AudioCard = &.{},
     cards_ms: i64 = 0,
     cards_bt: bool = false,
@@ -392,9 +511,11 @@ pub const Page = struct {
     /// Backing for the "Single" preset's one-element rate list.
     rate_single: [1]i32 = .{48000},
 
-    // --- restart button arm/done windows ----------------------------------
-    restart_arm_ms: i64 = -1,
-    restart_done_ms: i64 = -1,
+    // --- restart buttons arm/done windows ---------------------------------
+    restart_wp_arm_ms: i64 = -1,
+    restart_wp_done_ms: i64 = -1,
+    restart_pw_arm_ms: i64 = -1,
+    restart_pw_done_ms: i64 = -1,
 
     // --- speaker-test shells to reap --------------------------------------
     tone_pids: [2]i32 = .{ 0, 0 },
@@ -408,8 +529,29 @@ pub const Page = struct {
         self.io = io;
         self.dd_arena = std.heap.ArenaAllocator.init(gpa);
         self.frame_arena = std.heap.ArenaAllocator.init(gpa);
+        self.setValueList(&self.rate_values, &self.rate_values_len, &k_engine_rates);
+        self.setValueList(&self.quantum_values, &self.quantum_values_len, &k_engine_quantums);
         self.inited = true;
         self.refresh(devices_tab, true);
+    }
+
+    fn setValueList(self: *Page, dst: *[k_max_values]i32, len: *usize, src: []const i32) void {
+        _ = self;
+        var n: usize = 0;
+        for (src) |v| {
+            if (v <= 0 or n >= dst.len) continue;
+            var dup = false;
+            for (dst[0..n]) |have| {
+                if (have == v) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+            dst[n] = v;
+            n += 1;
+        }
+        len.* = n;
     }
 
     pub fn deinit(self: *Page) void {
@@ -434,9 +576,14 @@ pub const Page = struct {
         self.frame_arena.deinit();
     }
 
-    /// Window-side per-frame state (`Settings` value the page cannot own).
-    pub fn sync(self: *Page, overamp: bool) void {
+    /// Window-side per-frame state (`Settings` values the page cannot own).
+    pub fn sync(self: *Page, overamp: bool, rate_values: []const i32, quantum_values: []const i32) void {
         self.overamp = overamp;
+        if (!self.lists_seeded) {
+            self.lists_seeded = true;
+            if (rate_values.len > 0) self.setValueList(&self.rate_values, &self.rate_values_len, rate_values);
+            if (quantum_values.len > 0) self.setValueList(&self.quantum_values, &self.quantum_values_len, quantum_values);
+        }
     }
 
     pub fn maxPct(self: *const Page) i32 {
@@ -453,6 +600,28 @@ pub const Page = struct {
 
     fn hasDevice(d: live_audio.Device) bool {
         return d.id != 0 or d.name.len > 0;
+    }
+
+    const LatNode = struct { d: live_audio.Device, is_input: bool };
+
+    fn latNodeCount(self: *const Page) i32 {
+        const q = if (self.q) |*qq| qq else return 0;
+        return @intCast(q.snap.sinks.len + q.snap.sources.len);
+    }
+
+    fn latNodeAt(self: *const Page, idx: i32) ?LatNode {
+        const q = if (self.q) |*qq| qq else return null;
+        if (idx < 0) return null;
+        const i: usize = @intCast(idx);
+        if (i < q.snap.sinks.len) return .{ .d = q.snap.sinks[i], .is_input = false };
+        const j = i - q.snap.sinks.len;
+        if (j < q.snap.sources.len) return .{ .d = q.snap.sources[j], .is_input = true };
+        return null;
+    }
+
+    fn latNodeDisplay(self: *Page) []const u8 {
+        const n = self.latNodeAt(self.lat_node) orelse return "Choose a node";
+        return shortDeviceLabel(self.frame_arena.allocator(), deviceLabel(n.d));
     }
 
     // -----------------------------------------------------------------------
@@ -478,6 +647,11 @@ pub const Page = struct {
             self.es = live_audio.queryEngineSettings(self.alloc, self.io);
             self.engine_ms = now;
             self.have_engine = true;
+        }
+
+        if (child == .engine and (force or now - self.top_ms >= k_engine_ms)) {
+            self.top = live_audio.queryPwTop(self.alloc, self.io);
+            self.top_ms = now;
         }
 
         if (force or now - self.pcm_ms >= k_engine_ms) {
@@ -566,9 +740,12 @@ pub const Page = struct {
                 y += out.recording.h;
             },
             .engine => {
-                const h = k_sec_body_top + 3 * k_grid_row_h + k_restart_gap + k_restart_row_h + k_sec_bottom_pad;
-                out.engine = .{ .x = x, .y = y, .w = w, .h = h, .y0 = y + k_sec_body_top };
-                y += h;
+                out.engine = .{ .x = x, .y = y, .w = w, .h = engineCardHeight(), .y0 = y + k_sec_body_top };
+                y += out.engine.h + k_sec_gap;
+                out.latency = .{ .x = x, .y = y, .w = w, .h = latencyCardHeight(), .y0 = y + k_sec_body_top };
+                y += out.latency.h + k_sec_gap;
+                out.restart = .{ .x = x, .y = y, .w = w, .h = restartCardHeight(), .y0 = y + k_sec_body_top };
+                y += out.restart.h;
             },
         }
         out.bottom = y;
@@ -601,14 +778,14 @@ pub const Page = struct {
             return 0;
         }
         if (id == 2) {
-            for (k_engine_rates, 0..) |hz, i| {
+            for (self.rate_values[0..self.rate_values_len], 0..) |hz, i| {
                 if (hz == self.es.clock_rate_hz) return @intCast(i);
             }
             return -1;
         }
         if (id == 3) {
             if (self.es.clock_force_rate_hz == 0) return 0;
-            for (k_engine_rates, 0..) |hz, i| {
+            for (self.rate_values[0..self.rate_values_len], 0..) |hz, i| {
                 if (hz == self.es.clock_force_rate_hz) return @intCast(i + 1);
             }
             return -1;
@@ -617,18 +794,19 @@ pub const Page = struct {
         if (id == 5) return self.pcm_choice;
         if (id == 6) {
             if (self.es.clock_quantum == 0) return 0;
-            for (k_engine_quantums, 0..) |qn, i| {
+            for (self.quantum_values[0..self.quantum_values_len], 0..) |qn, i| {
                 if (qn == self.es.clock_quantum) return @intCast(i + 1);
             }
             return -1;
         }
         if (id == 7) {
             if (self.es.clock_force_quantum == 0) return 0;
-            for (k_engine_quantums, 0..) |qn, i| {
+            for (self.quantum_values[0..self.quantum_values_len], 0..) |qn, i| {
                 if (qn == self.es.clock_force_quantum) return @intCast(i + 1);
             }
             return -1;
         }
+        if (id == 8) return self.lat_node;
         if (id >= 600 and id < 1000) {
             const ci: usize = @intCast(id - 600);
             if (ci < self.cards.len) {
@@ -697,6 +875,7 @@ pub const Page = struct {
         if (id == 5) return "Default PCM format";
         if (id == 6) return "Default quantum";
         if (id == 7) return "Force quantum";
+        if (id == 8) return "Latency offset node";
         if (id >= 600 and id < 1000) return "Card profile";
         if (id >= 1000) return "Move recording to";
         return "Move playback to";
@@ -720,6 +899,7 @@ pub const Page = struct {
             4 => allowedPresetLabel(allowedPresetSel(self.es.clock_rate_hz, self.es.allowed_rates_hz)),
             5 => if (!self.have_pcm or self.pcm_choice < 0 or self.pcm_choice > 3) "(unknown)" else k_pcm_labels[@intCast(self.pcm_choice)],
             6 => if (self.es.clock_quantum == 0) "Auto (default)" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_quantum}) catch "?",
+            8 => self.latNodeDisplay(),
             else => if (self.es.clock_force_quantum == 0) "Auto" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_force_quantum}) catch "?",
         };
     }
@@ -754,26 +934,45 @@ pub const Page = struct {
         if (id >= 2 and id <= 7) {
             var buf: [32]u8 = undefined;
             if (id == 2) {
-                for (k_engine_rates) |hz| mn(self, aa, hzDisplay(&buf, hz));
+                for (self.rate_values[0..self.rate_values_len]) |hz| mn(self, aa, hzDisplay(&buf, hz));
+                mn(self, aa, "Custom rate…");
+                mn(self, aa, "Edit rate values…");
             } else if (id == 3) {
                 mn(self, aa, "Auto");
-                for (k_engine_rates) |hz| mn(self, aa, hzDisplay(&buf, hz));
+                for (self.rate_values[0..self.rate_values_len]) |hz| mn(self, aa, hzDisplay(&buf, hz));
+                mn(self, aa, "Custom rate…");
+                mn(self, aa, "Edit rate values…");
             } else if (id == 4) {
                 for (0..4) |i| mn(self, aa, allowedPresetLabel(@intCast(i)));
             } else if (id == 5) {
                 for (k_pcm_labels) |l| mn(self, aa, l);
             } else if (id == 6) {
                 mn(self, aa, "Auto (default)");
-                for (k_engine_quantums) |qn| {
+                for (self.quantum_values[0..self.quantum_values_len]) |qn| {
                     const s = std.fmt.bufPrint(&buf, "{d} frames", .{qn}) catch continue;
                     mn(self, aa, s);
                 }
+                mn(self, aa, "Custom quantum…");
+                mn(self, aa, "Edit quantum values…");
             } else {
                 mn(self, aa, "Auto");
-                for (k_engine_quantums) |qn| {
+                for (self.quantum_values[0..self.quantum_values_len]) |qn| {
                     const s = std.fmt.bufPrint(&buf, "{d} frames", .{qn}) catch continue;
                     mn(self, aa, s);
                 }
+                mn(self, aa, "Custom quantum…");
+                mn(self, aa, "Edit quantum values…");
+            }
+            return;
+        }
+        if (id == 8) {
+            const n = self.latNodeCount();
+            var i: i32 = 0;
+            while (i < n) : (i += 1) {
+                const node = self.latNodeAt(i) orelse continue;
+                const label = shortDeviceLabel(aa, deviceLabel(node.d));
+                const s = std.fmt.allocPrint(aa, "{s} ({s})", .{ label, if (node.is_input) "input" else "output" }) catch continue;
+                mn(self, aa, s);
             }
             return;
         }
@@ -870,6 +1069,13 @@ pub const Page = struct {
         if (self.dd_open) {
             self.rebuildDd();
             self.paintDropdown(c, g, ge, px, ly);
+        }
+        if (self.modal != .none) {
+            cairo.cairo_save(c);
+            cairo.cairo_translate(c, 0, @floatFromInt(self.scroll_px_est));
+            cairo.cairo_reset_clip(c);
+            self.paintModal(c, g.win_w, g.win_h);
+            cairo.cairo_restore(c);
         }
     }
 
@@ -1309,6 +1515,13 @@ pub const Page = struct {
         const sec = ge.engine;
         ui_paint.card(c, @floatFromInt(sec.x), @floatFromInt(sec.y), @floatFromInt(sec.w), @floatFromInt(sec.h), g_ov);
         paintHeading(c, sec, "Engine & default output", "tune");
+        {
+            const rr = engineRefreshRect(sec);
+            ui_paint.roundRect(c, @floatFromInt(rr.x), @floatFromInt(rr.y), @floatFromInt(rr.w), @floatFromInt(rr.h), 6);
+            cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.06);
+            cairo.cairo_fill(c);
+            ui_paint.glyph(c, @floatFromInt(rr.x + @divTrunc(rr.w, 2)), @floatFromInt(rr.y + @divTrunc(rr.h, 2)), 14, "refresh", t.text_r, t.text_g, t.text_b, 0.62);
+        }
 
         var buf_rate: [32]u8 = undefined;
         var buf_force: [32]u8 = undefined;
@@ -1334,25 +1547,231 @@ pub const Page = struct {
             paintCombo(c, cell, it.disp, self.dd_open and self.dd_id == it.id);
         }
 
-        // Restart row (arm-to-confirm).
-        const now = nowMs();
-        const armed = self.restart_arm_ms >= 0 and now - self.restart_arm_ms >= 0 and now - self.restart_arm_ms <= k_restart_arm_ms;
-        const done = self.restart_done_ms >= 0 and now - self.restart_done_ms <= k_restart_done_ms;
-        if (self.restart_arm_ms >= 0 and now - self.restart_arm_ms > k_restart_arm_ms) self.restart_arm_ms = -1;
-        if (self.restart_done_ms >= 0 and now - self.restart_done_ms > k_restart_done_ms) self.restart_done_ms = -1;
-        const ry = restartRowY(sec);
+        // Live strip: latency, xruns (click to reset) and DSP load.
+        const st = engineStatusRect(sec);
+        ui_paint.roundRect(c, @floatFromInt(st.x), @floatFromInt(st.y), @floatFromInt(st.w), @floatFromInt(st.h), 12);
+        cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.045);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.28);
+        cairo.cairo_stroke(c);
+
+        const col_w = @divTrunc(st.w, 3);
+        var i: i32 = 1;
+        while (i < 3) : (i += 1) {
+            cairo.cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.22);
+            cairo.cairo_set_line_width(c, 1.0);
+            cairo.cairo_move_to(c, @floatFromInt(st.x + i * col_w), @floatFromInt(st.y + 10));
+            cairo.cairo_line_to(c, @floatFromInt(st.x + i * col_w), @floatFromInt(st.y + st.h - 10));
+            cairo.cairo_stroke(c);
+        }
+
+        var lat_buf: [32]u8 = undefined;
+        const lat = self.latencyDisplay(&lat_buf);
+        statusMetric(c, st.x + 14, st.y, "LATENCY", lat, t.text_r, t.text_g, t.text_b, 0.95);
+
+        const xr = @max(@as(i64, 0), self.top.xruns_total - self.xrun_base);
+        var xr_buf: [24]u8 = undefined;
+        const xr_s = if (!self.top.available) "—" else std.fmt.bufPrint(&xr_buf, "{d}", .{xr}) catch "0";
+        statusMetric(c, st.x + col_w + 14, st.y, "XRUNS", xr_s, t.text_r, t.text_g, t.text_b, 0.95);
+        if (self.top.available) {
+            const rr = xrunResetRect(sec);
+            ui_paint.roundRect(c, @floatFromInt(rr.x), @floatFromInt(rr.y), @floatFromInt(rr.w), @floatFromInt(rr.h), 6);
+            cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.06);
+            cairo.cairo_fill(c);
+            ui_paint.glyph(
+                c,
+                @floatFromInt(rr.x + @divTrunc(rr.w, 2)),
+                @floatFromInt(rr.y + @divTrunc(rr.h, 2)),
+                12,
+                "restart_alt",
+                t.text_r,
+                t.text_g,
+                t.text_b,
+                0.62,
+            );
+        }
+
+        var dsp_buf: [24]u8 = undefined;
+        const dsp_s = if (!self.top.available) "—" else std.fmt.bufPrint(&dsp_buf, "{d:.0}%", .{self.top.dsp_load_pct}) catch "0%";
+        const dsp_x = st.x + 2 * col_w + 14;
+        statusMetric(c, dsp_x, st.y, "DSP LOAD", dsp_s, t.text_r, t.text_g, t.text_b, 0.95);
+        const meter_y = st.y + st.h - 16;
+        const meter_w = col_w - 28;
+        ui_paint.roundRect(c, @floatFromInt(dsp_x), @floatFromInt(meter_y), @floatFromInt(meter_w), 4, 2);
+        cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.10);
+        cairo.cairo_fill(c);
+        if (self.top.available and self.top.dsp_load_pct > 0) {
+            const pct: f64 = @max(0, @min(100, self.top.dsp_load_pct));
+            const fw = @as(f64, @floatFromInt(meter_w)) * pct / 100.0;
+            ui_paint.roundRect(c, @floatFromInt(dsp_x), @floatFromInt(meter_y), fw, 4, 2);
+            cairo.cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.95);
+            cairo.cairo_fill(c);
+        }
+
+        self.paintLatencyCard(c, ge.latency, g_ov);
+        self.paintRestartCard(c, ge.restart, g_ov);
+    }
+
+    fn statusMetric(c: *cairo.cairo_t, x: i32, y: i32, label: []const u8, value: []const u8, r: f64, g: f64, b: f64, a: f64) void {
+        const t = common.Theme;
+        ui_paint.showText(c, @floatFromInt(x), @floatFromInt(y + 18), label, 9, 600, t.text_r, t.text_g, t.text_b, 0.45);
+        ui_paint.showText(c, @floatFromInt(x), @floatFromInt(y + 42), value, 15, 600, r, g, b, a);
+    }
+
+    fn latencyDisplay(self: *const Page, buf: []u8) []const u8 {
+        const qn: i32 = if (self.es.clock_force_quantum > 0)
+            self.es.clock_force_quantum
+        else if (self.es.clock_quantum > 0)
+            self.es.clock_quantum
+        else
+            self.top.reference_quantum;
+        const rate: i32 = if (self.es.clock_force_rate_hz > 0)
+            self.es.clock_force_rate_hz
+        else if (self.es.clock_rate_hz > 0)
+            self.es.clock_rate_hz
+        else
+            self.top.reference_rate_hz;
+        if (qn <= 0 or rate <= 0) return "—";
+        const ms = @as(f64, @floatFromInt(qn)) / @as(f64, @floatFromInt(rate)) * 1000.0;
+        return std.fmt.bufPrint(buf, "{d:.2} ms", .{ms}) catch "—";
+    }
+
+    fn paintLatencyCard(self: *Page, c: *cairo.cairo_t, sec: SGeom, g_ov: f64) void {
+        ui_paint.card(c, @floatFromInt(sec.x), @floatFromInt(sec.y), @floatFromInt(sec.w), @floatFromInt(sec.h), g_ov);
+        paintHeading(c, sec, "Latency offset", "timer");
+
+        ui_paint.settingLabel(c, @floatFromInt(sec.x + common.card_pad), @floatFromInt(sec.y0 + 24), "Audio node", "");
+        const nd = self.latNodeDisplay();
+        paintCombo(c, comboRect(sec, 0, nd), nd, self.dd_open and self.dd_id == 8);
+
+        ui_paint.settingLabel(c, @floatFromInt(sec.x + common.card_pad), @floatFromInt(sec.y0 + k_row_h + 24), "Offset", "");
+        paintTextField(c, latencyFieldRect(sec), self.lat_field[0..self.lat_len], self.lat_focus, "0");
+        paintUnitToggle(c, latencyUnitRect(sec), self.lat_ns);
+
+        const has_node = self.latNodeAt(self.lat_node) != null;
+        const label_y = sec.y0 + 2 * k_row_h + 24;
         ui_paint.settingLabel(
             c,
             @floatFromInt(sec.x + common.card_pad),
-            @floatFromInt(ry + 22),
-            "Restart audio services",
-            "Briefly stops all audio while PipeWire and WirePlumber come back.",
+            @floatFromInt(label_y),
+            "Apply to selected node",
+            if (has_node) "Stored on the PipeWire node as a processing offset." else "Choose an output or input node first.",
         );
-        const br = restartBtnRect(sec);
+        const apply_r = latencyApplyRect(sec);
+        if (has_node) {
+            ui_paint.paintBtn(c, apply_r.x, apply_r.y, apply_r.w, apply_r.h, "Apply latency", false);
+        } else {
+            ui_paint.paintBtnDisabled(c, apply_r.x, apply_r.y, apply_r.w, apply_r.h, "Apply latency");
+        }
+        const reset_r = latencyResetAllRect(sec);
+        if (self.latNodeCount() > 0) {
+            ui_paint.paintBtn(c, reset_r.x, reset_r.y, reset_r.w, reset_r.h, "Reset all latency", false);
+        } else {
+            ui_paint.paintBtnDisabled(c, reset_r.x, reset_r.y, reset_r.w, reset_r.h, "Reset all latency");
+        }
+    }
+
+    fn paintRestartCard(self: *Page, c: *cairo.cairo_t, sec: SGeom, g_ov: f64) void {
+        ui_paint.card(c, @floatFromInt(sec.x), @floatFromInt(sec.y), @floatFromInt(sec.w), @floatFromInt(sec.h), g_ov);
+        paintHeading(c, sec, "Restart services", "restart_alt");
+        const now = nowMs();
+        self.paintRestartRow(c, sec, 0, "Restart WirePlumber", "Reloads device and session policy without touching the graph.", self.restart_wp_arm_ms, self.restart_wp_done_ms, now);
+        self.paintRestartRow(c, sec, 1, "Restart PipeWire", "Restarts the audio graph; every client reconnects.", self.restart_pw_arm_ms, self.restart_pw_done_ms, now);
+    }
+
+    fn paintRestartRow(self: *Page, c: *cairo.cairo_t, sec: SGeom, row_i: i32, title: []const u8, desc: []const u8, arm_ms: i64, done_ms: i64, now: i64) void {
+        const t = common.Theme;
+        var armed = arm_ms >= 0 and now - arm_ms >= 0 and now - arm_ms <= k_restart_arm_ms;
+        const done = done_ms >= 0 and now - done_ms <= k_restart_done_ms;
+        if (arm_ms >= 0 and now - arm_ms > k_restart_arm_ms) {
+            if (row_i == 0) self.restart_wp_arm_ms = -1 else self.restart_pw_arm_ms = -1;
+            armed = false;
+        }
+        if (done_ms >= 0 and now - done_ms > k_restart_done_ms) {
+            if (row_i == 0) self.restart_wp_done_ms = -1 else self.restart_pw_done_ms = -1;
+        }
+        ui_paint.settingLabel(c, @floatFromInt(sec.x + common.card_pad), @floatFromInt(sec.y0 + row_i * k_restart_row_h + 22), title, desc);
+        const br = restartButtonRect(sec, row_i);
         const label = if (done) "Restarted" else if (armed) "Confirm" else "Restart";
         ui_paint.paintBtn(c, br.x, br.y, br.w, br.h, label, false);
         if (done) {
             ui_paint.glyph(c, @floatFromInt(br.x + 22), @floatFromInt(br.y + @divTrunc(br.h, 2)), 15, "check", t.acc_r, t.acc_g, t.acc_b, 0.95);
+        }
+    }
+
+    fn paintTextField(c: *cairo.cairo_t, r: common.Rect, value: []const u8, focused: bool, placeholder: []const u8) void {
+        const t = common.Theme;
+        ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+        cairo.cairo_set_source_rgba(c, 1, 1, 1, if (focused) 0.10 else 0.06);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        if (focused) {
+            cairo.cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.9);
+        } else {
+            cairo.cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.45);
+        }
+        cairo.cairo_stroke(c);
+        const shown = if (value.len > 0) value else placeholder;
+        const alpha: f64 = if (value.len > 0) 0.92 else 0.38;
+        ui_paint.showTextW(
+            c,
+            @floatFromInt(r.x + 10),
+            @floatFromInt(r.y + 19),
+            shown,
+            12,
+            500,
+            @as(f64, @floatFromInt(@max(0, r.w - 18))),
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            alpha,
+        );
+        if (focused) {
+            const tw = ui_paint.measureTextWidth(value, 12, 500);
+            const cx = @as(f64, @floatFromInt(r.x + 10)) + @as(f64, @floatFromInt(@min(tw, @max(0, r.w - 18))));
+            cairo.cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.95);
+            cairo.cairo_set_line_width(c, 1.4);
+            cairo.cairo_move_to(c, cx, @floatFromInt(r.y + 7));
+            cairo.cairo_line_to(c, cx, @floatFromInt(r.y + r.h - 7));
+            cairo.cairo_stroke(c);
+        }
+    }
+
+    fn paintUnitToggle(c: *cairo.cairo_t, r: common.Rect, ns: bool) void {
+        const t = common.Theme;
+        const half = @divTrunc(r.w, 2);
+        ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+        cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.06);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.45);
+        cairo.cairo_stroke(c);
+        const ax = if (ns) r.x + half else r.x;
+        ui_paint.roundRect(c, @floatFromInt(ax + 2), @floatFromInt(r.y + 2), @floatFromInt(half - 4), @floatFromInt(r.h - 4), 6);
+        cairo.cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.20);
+        cairo.cairo_fill(c);
+        cairo.cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.28);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_move_to(c, @floatFromInt(r.x + half), @floatFromInt(r.y + 6));
+        cairo.cairo_line_to(c, @floatFromInt(r.x + half), @floatFromInt(r.y + r.h - 6));
+        cairo.cairo_stroke(c);
+        const labels = [_][]const u8{ "frames", "ns" };
+        for (labels, 0..) |lab, i| {
+            const active = (i == 1) == ns;
+            const lx = r.x + @as(i32, @intCast(i)) * half + @divTrunc(half, 2);
+            ui_paint.showText(
+                c,
+                @floatFromInt(lx - @divTrunc(ui_paint.measureTextWidth(lab, 11, 600), 2)),
+                @floatFromInt(r.y + 19),
+                lab,
+                11,
+                600,
+                if (active) t.acc_r else t.text_r,
+                if (active) t.acc_g else t.text_g,
+                if (active) t.acc_b else t.text_b,
+                if (active) 1.0 else 0.62,
+            );
         }
     }
 
@@ -1415,6 +1834,7 @@ pub const Page = struct {
             const idx: i32 = id - 2;
             return gridCellRect(ge.engine, @mod(idx, 2), @divTrunc(idx, 2));
         }
+        if (id == 8) return comboRect(ge.latency, 0, self.latNodeDisplay());
         if (id >= 600 and id < 1000) {
             const i = id - 600;
             if (i >= 0 and i < @as(i32, @intCast(self.cards.len))) {
@@ -1584,6 +2004,15 @@ pub const Page = struct {
 
     fn hitEngine(self: *Page, ge: Geom, px: f64, ly: f64) ?Action {
         const sec = ge.engine;
+        const on_field = inRect(px, ly, latencyFieldRect(ge.latency));
+        if (!on_field) self.lat_focus = false;
+        if (inRect(px, ly, engineRefreshRect(sec))) {
+            self.engine_ms = 0;
+            self.top_ms = 0;
+            self.pcm_ms = 0;
+            self.snap_ms = 0;
+            return .repaint;
+        }
         for (0..6) |i| {
             const col: i32 = @intCast(i % 2);
             const row_i: i32 = @intCast(i / 2);
@@ -1593,22 +2022,104 @@ pub const Page = struct {
                 return .repaint;
             }
         }
-        if (inRect(px, ly, restartBtnRect(sec))) {
+        if (self.top.available and inRect(px, ly, xrunHitRect(sec))) {
+            self.xrun_base = self.top.xruns_total;
+            return .repaint;
+        }
+
+        const lat = ge.latency;
+        if (inRect(px, ly, comboRect(lat, 0, self.latNodeDisplay()))) {
+            self.openDropdown(8);
+            return .repaint;
+        }
+        if (on_field) {
+            self.lat_focus = true;
+            self.modal_select_all = true;
+            return .repaint;
+        }
+        if (inRect(px, ly, latencyUnitRect(lat))) {
+            self.lat_ns = !self.lat_ns;
+            return .repaint;
+        }
+        if (inRect(px, ly, latencyApplyRect(lat))) {
+            if (self.latNodeAt(self.lat_node) != null) self.applyLatency();
+            return .repaint;
+        }
+        if (inRect(px, ly, latencyResetAllRect(lat))) {
+            self.resetAllLatency();
+            return .repaint;
+        }
+
+        const rst = ge.restart;
+        if (inRect(px, ly, restartButtonRect(rst, 0))) {
             const now = nowMs();
-            const armed = self.restart_arm_ms >= 0 and now - self.restart_arm_ms <= k_restart_arm_ms;
+            const armed = self.restart_wp_arm_ms >= 0 and now - self.restart_wp_arm_ms <= k_restart_arm_ms;
             if (!armed) {
-                self.restart_arm_ms = now;
+                self.restart_wp_arm_ms = now;
                 return .repaint;
             }
-            self.restart_arm_ms = -1;
-            _ = live_audio.restartServices(self.io);
-            self.restart_done_ms = nowMs();
+            self.restart_wp_arm_ms = -1;
+            _ = live_audio.restartWirePlumber(self.io);
+            self.restart_wp_done_ms = nowMs();
+            self.snap_ms = 0;
+            self.engine_ms = 0;
+            self.cards_ms = 0;
+            return .repaint;
+        }
+        if (inRect(px, ly, restartButtonRect(rst, 1))) {
+            const now = nowMs();
+            const armed = self.restart_pw_arm_ms >= 0 and now - self.restart_pw_arm_ms <= k_restart_arm_ms;
+            if (!armed) {
+                self.restart_pw_arm_ms = now;
+                return .repaint;
+            }
+            self.restart_pw_arm_ms = -1;
+            _ = live_audio.restartPipeWire(self.io);
+            self.restart_pw_done_ms = nowMs();
             self.snap_ms = 0;
             self.engine_ms = 0;
             self.cards_ms = 0;
             return .repaint;
         }
         return null;
+    }
+
+    fn applyLatency(self: *Page) void {
+        const node = self.latNodeAt(self.lat_node) orelse return;
+        const raw = self.lat_field[0..self.lat_len];
+        const value: i64 = if (raw.len == 0) 0 else std.fmt.parseInt(i64, raw, 10) catch return;
+        if (live_audio.applyLatencyOffset(self.io, node.d.id, value, self.lat_ns)) {
+            self.loadLatencyField();
+        }
+    }
+
+    fn resetAllLatency(self: *Page) void {
+        var ids: [k_max_values * 2]u32 = undefined;
+        var n: usize = 0;
+        const count = self.latNodeCount();
+        var i: i32 = 0;
+        while (i < count and n < ids.len) : (i += 1) {
+            if (self.latNodeAt(i)) |node| {
+                if (node.d.id == 0) continue;
+                ids[n] = node.d.id;
+                n += 1;
+            }
+        }
+        _ = live_audio.resetAllLatency(self.io, ids[0..n]);
+        if (self.latNodeAt(self.lat_node) != null) self.loadLatencyField();
+    }
+
+    fn loadLatencyField(self: *Page) void {
+        const node = self.latNodeAt(self.lat_node) orelse return;
+        const off = live_audio.queryLatencyOffset(self.alloc, self.io, node.d.id);
+        if (!off.ok) {
+            self.lat_len = 0;
+            self.lat_ns = false;
+            return;
+        }
+        self.lat_ns = off.nanoseconds;
+        const s = std.fmt.bufPrint(&self.lat_field, "{d}", .{off.value}) catch "";
+        self.lat_len = s.len;
     }
 
     /// Apply a dropdown pick; returns the window-owned follow-up (persist or
@@ -1633,7 +2144,7 @@ pub const Page = struct {
             }
             return null;
         }
-        if (id >= 2 and id <= 7) return self.applyEnginePick(id, row);
+        if (id >= 2 and id <= 8) return self.applyEnginePick(id, row);
         if (id >= 600 and id < 1000) {
             const ci: usize = @intCast(id - 600);
             if (ci < self.cards.len) {
@@ -1684,20 +2195,41 @@ pub const Page = struct {
 
     fn applyEnginePick(self: *Page, id: i32, row: i32) ?Action {
         const now = nowMs();
+        if (id == 8) {
+            if (row >= 0 and row < self.latNodeCount()) {
+                self.lat_node = row;
+                self.loadLatencyField();
+            }
+            return .repaint;
+        }
+        const rate_n: i32 = @intCast(self.rate_values_len);
+        const qn_n: i32 = @intCast(self.quantum_values_len);
         if (id == 2) {
-            if (row >= 0 and row < k_engine_rates.len) {
-                const hz = k_engine_rates[@intCast(row)];
+            if (row >= 0 and row < rate_n) {
+                const hz = self.rate_values[@intCast(row)];
                 _ = live_audio.applyEngineClockRateHz(self.io, hz);
                 self.engine_ms = now - k_engine_ms + 150;
                 return .{ .persist = .{ .clock_hz = hz } };
             }
-            return null;
+            if (row == rate_n) self.openModal(.custom_rate, false);
+            if (row == rate_n + 1) self.openModal(.edit_rates, false);
+            return .repaint;
         }
         if (id == 3) {
-            const hz: i32 = if (row == 0) 0 else if (row - 1 < k_engine_rates.len) k_engine_rates[@intCast(row - 1)] else return null;
-            _ = live_audio.applyEngineForceRateHz(self.io, hz);
-            self.engine_ms = now - k_engine_ms + 150;
-            return .{ .persist = .{ .force_hz = hz } };
+            if (row == 0) {
+                _ = live_audio.applyEngineForceRateHz(self.io, 0);
+                self.engine_ms = now - k_engine_ms + 150;
+                return .{ .persist = .{ .force_hz = 0 } };
+            }
+            if (row >= 1 and row <= rate_n) {
+                const hz = self.rate_values[@intCast(row - 1)];
+                _ = live_audio.applyEngineForceRateHz(self.io, hz);
+                self.engine_ms = now - k_engine_ms + 150;
+                return .{ .persist = .{ .force_hz = hz } };
+            }
+            if (row == rate_n + 1) self.openModal(.custom_rate, true);
+            if (row == rate_n + 2) self.openModal(.edit_rates, true);
+            return .repaint;
         }
         if (id == 4) {
             if (row >= 0 and row < 4) {
@@ -1727,18 +2259,381 @@ pub const Page = struct {
             return null;
         }
         if (id == 6) {
-            const qn: i32 = if (row == 0) 0 else if (row - 1 < k_engine_quantums.len) k_engine_quantums[@intCast(row - 1)] else return null;
-            _ = live_audio.applyEngineQuantum(self.io, qn);
-            self.engine_ms = now - k_engine_ms + 150;
-            return .{ .persist = .{ .quantum = qn } };
+            if (row == 0) {
+                _ = live_audio.applyEngineQuantum(self.io, 0);
+                self.engine_ms = now - k_engine_ms + 150;
+                return .{ .persist = .{ .quantum = 0 } };
+            }
+            if (row >= 1 and row <= qn_n) {
+                const qn = self.quantum_values[@intCast(row - 1)];
+                _ = live_audio.applyEngineQuantum(self.io, qn);
+                self.engine_ms = now - k_engine_ms + 150;
+                return .{ .persist = .{ .quantum = qn } };
+            }
+            if (row == qn_n + 1) self.openModal(.custom_quantum, false);
+            if (row == qn_n + 2) self.openModal(.edit_quantums, false);
+            return .repaint;
         }
         if (id == 7) {
-            const qn: i32 = if (row == 0) 0 else if (row - 1 < k_engine_quantums.len) k_engine_quantums[@intCast(row - 1)] else return null;
-            _ = live_audio.applyEngineForceQuantum(self.io, qn);
-            self.engine_ms = now - k_engine_ms + 150;
-            return .{ .persist = .{ .force_quantum = qn } };
+            if (row == 0) {
+                _ = live_audio.applyEngineForceQuantum(self.io, 0);
+                self.engine_ms = now - k_engine_ms + 150;
+                return .{ .persist = .{ .force_quantum = 0 } };
+            }
+            if (row >= 1 and row <= qn_n) {
+                const qn = self.quantum_values[@intCast(row - 1)];
+                _ = live_audio.applyEngineForceQuantum(self.io, qn);
+                self.engine_ms = now - k_engine_ms + 150;
+                return .{ .persist = .{ .force_quantum = qn } };
+            }
+            if (row == qn_n + 1) self.openModal(.custom_quantum, true);
+            if (row == qn_n + 2) self.openModal(.edit_quantums, true);
+            return .repaint;
         }
         return null;
+    }
+
+    // -----------------------------------------------------------------------
+    // Custom value / edit-list modal
+    // -----------------------------------------------------------------------
+
+    fn openModal(self: *Page, kind: Modal, force: bool) void {
+        self.modal = kind;
+        self.modal_force = force;
+        self.dd_open = false;
+        self.dd_id = -1;
+        self.modal_arm = -1;
+        self.modal_hover = -1;
+        self.modal_select_all = true;
+        self.modal_len = 0;
+        switch (kind) {
+            .custom_rate => {
+                const v = if (self.es.clock_force_rate_hz > 0) self.es.clock_force_rate_hz else self.es.clock_rate_hz;
+                self.setModalText(std.fmt.bufPrint(&self.modal_buf, "{d}", .{v}) catch "");
+            },
+            .custom_quantum => {
+                const v = if (self.es.clock_force_quantum > 0) self.es.clock_force_quantum else self.es.clock_quantum;
+                if (v > 0) self.setModalText(std.fmt.bufPrint(&self.modal_buf, "{d}", .{v}) catch "");
+            },
+            .edit_rates => self.setModalList(self.rate_values[0..self.rate_values_len]),
+            .edit_quantums => self.setModalList(self.quantum_values[0..self.quantum_values_len]),
+            .none => {},
+        }
+    }
+
+    fn setModalText(self: *Page, s: []const u8) void {
+        const n = @min(s.len, self.modal_buf.len);
+        @memcpy(self.modal_buf[0..n], s[0..n]);
+        self.modal_len = n;
+    }
+
+    fn setModalList(self: *Page, list: []const i32) void {
+        self.modal_len = 0;
+        for (list, 0..) |v, i| {
+            const piece = if (i == 0)
+                std.fmt.bufPrint(self.modal_buf[self.modal_len..], "{d}", .{v})
+            else
+                std.fmt.bufPrint(self.modal_buf[self.modal_len..], ", {d}", .{v});
+            const w = piece catch break;
+            self.modal_len += w.len;
+        }
+    }
+
+    fn modalTitle(self: *const Page) []const u8 {
+        return switch (self.modal) {
+            .custom_rate => "Custom sample rate",
+            .custom_quantum => "Custom quantum",
+            .edit_rates => "Edit rate values",
+            .edit_quantums => "Edit quantum values",
+            .none => "",
+        };
+    }
+
+    fn modalHint(self: *const Page) []const u8 {
+        return switch (self.modal) {
+            .custom_rate => "The rate joins the allowed list and becomes the graph rate.",
+            .custom_quantum => "Frames per graph cycle. Use a value from the quantum list or your own.",
+            .edit_rates => "Comma-separated rates in Hz. These become the dropdown choices.",
+            .edit_quantums => "Comma-separated quantum sizes in frames. These become the dropdown choices.",
+            .none => "",
+        };
+    }
+
+    fn modalPrimary(self: *const Page) []const u8 {
+        return if (self.modal == .edit_rates or self.modal == .edit_quantums) "Save list" else "Apply";
+    }
+
+    const ModalLayout = struct {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        field: common.Rect,
+        cancel: common.Rect,
+        submit: common.Rect,
+    };
+
+    fn modalLayout(self: *const Page, win_w: i32, win_h: i32) ModalLayout {
+        _ = self;
+        var w: i32 = win_w - 80;
+        if (w > 480) w = 480;
+        if (w < 340) w = 340;
+        const h: i32 = 214;
+        var x = @divTrunc(win_w - w, 2);
+        if (x < 16) x = 16;
+        var y = @divTrunc(win_h - h, 2);
+        if (y < 16) y = 16;
+        const pad: i32 = 20;
+        return .{
+            .x = x,
+            .y = y,
+            .w = w,
+            .h = h,
+            .field = .{ .x = x + pad, .y = y + 92, .w = w - 2 * pad, .h = 34 },
+            .cancel = .{ .x = x + w - pad - 236, .y = y + h - pad - 36, .w = 110, .h = 36 },
+            .submit = .{ .x = x + w - pad - 116, .y = y + h - pad - 36, .w = 116, .h = 36 },
+        };
+    }
+
+    fn modalItemAt(self: *const Page, win_w: i32, win_h: i32, px: f64, py: f64) i32 {
+        const l = self.modalLayout(win_w, win_h);
+        if (inRect(px, py, l.field)) return -1;
+        if (inRect(px, py, l.cancel)) return -11;
+        if (inRect(px, py, l.submit)) return -12;
+        return -2;
+    }
+
+    fn submitModal(self: *Page) void {
+        const raw = std.mem.trim(u8, self.modal_buf[0..self.modal_len], " \t\r\n");
+        switch (self.modal) {
+            .custom_rate => {
+                const hz = std.fmt.parseInt(i32, raw, 10) catch return;
+                if (hz <= 0 or hz > 2_000_000) return;
+                const changed = self.addValue(&self.rate_values, &self.rate_values_len, hz);
+                if (self.modal_force) {
+                    _ = live_audio.applyEngineForceRateHz(self.io, hz);
+                    self.pending_action = .{ .persist = .{
+                        .force_hz = hz,
+                        .rate_values = if (changed) self.rate_values[0..self.rate_values_len] else null,
+                    } };
+                } else {
+                    _ = live_audio.applyEngineClockRateHz(self.io, hz);
+                    self.pending_action = .{ .persist = .{
+                        .clock_hz = hz,
+                        .rate_values = if (changed) self.rate_values[0..self.rate_values_len] else null,
+                    } };
+                }
+                self.engine_ms = nowMs() - k_engine_ms + 150;
+            },
+            .custom_quantum => {
+                const qn = std.fmt.parseInt(i32, raw, 10) catch return;
+                if (qn <= 0 or qn > 2_000_000) return;
+                const changed = self.addValue(&self.quantum_values, &self.quantum_values_len, qn);
+                if (self.modal_force) {
+                    _ = live_audio.applyEngineForceQuantum(self.io, qn);
+                    self.pending_action = .{ .persist = .{
+                        .force_quantum = qn,
+                        .quantum_values = if (changed) self.quantum_values[0..self.quantum_values_len] else null,
+                    } };
+                } else {
+                    _ = live_audio.applyEngineQuantum(self.io, qn);
+                    self.pending_action = .{ .persist = .{
+                        .quantum = qn,
+                        .quantum_values = if (changed) self.quantum_values[0..self.quantum_values_len] else null,
+                    } };
+                }
+                self.engine_ms = nowMs() - k_engine_ms + 150;
+            },
+            .edit_rates => {
+                if (!self.parseList(&self.rate_values, &self.rate_values_len, raw)) return;
+                self.pending_action = .{ .persist = .{ .rate_values = self.rate_values[0..self.rate_values_len] } };
+            },
+            .edit_quantums => {
+                if (!self.parseList(&self.quantum_values, &self.quantum_values_len, raw)) return;
+                self.pending_action = .{ .persist = .{ .quantum_values = self.quantum_values[0..self.quantum_values_len] } };
+            },
+            .none => return,
+        }
+        self.modal = .none;
+    }
+
+    fn addValue(self: *Page, dst: *[k_max_values]i32, len: *usize, v: i32) bool {
+        _ = self;
+        for (dst[0..len.*]) |have| if (have == v) return false;
+        if (len.* < dst.len) {
+            dst[len.*] = v;
+            len.* += 1;
+        } else {
+            dst[dst.len - 1] = v;
+        }
+        return true;
+    }
+
+    fn parseList(self: *Page, dst: *[k_max_values]i32, len: *usize, raw: []const u8) bool {
+        _ = self;
+        var n: usize = 0;
+        var it = std.mem.tokenizeAny(u8, raw, ", \t");
+        while (it.next()) |tok| {
+            const v = std.fmt.parseInt(i32, tok, 10) catch continue;
+            if (v <= 0 or v > 2_000_000 or n >= dst.len) continue;
+            var dup = false;
+            for (dst[0..n]) |have| {
+                if (have == v) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+            dst[n] = v;
+            n += 1;
+        }
+        if (n == 0) return false;
+        len.* = n;
+        return true;
+    }
+
+    pub fn modalActive(self: *const Page) bool {
+        return self.modal != .none;
+    }
+
+    pub fn modalDown(self: *Page, win_w: i32, win_h: i32, px: f64, py: f64) bool {
+        if (self.modal == .none) return false;
+        const l = self.modalLayout(win_w, win_h);
+        const inside = px >= @as(f64, @floatFromInt(l.x)) and
+            px <= @as(f64, @floatFromInt(l.x + l.w)) and
+            py >= @as(f64, @floatFromInt(l.y)) and
+            py <= @as(f64, @floatFromInt(l.y + l.h));
+        if (!inside) {
+            self.modal = .none;
+            return true;
+        }
+        self.modal_arm = self.modalItemAt(win_w, win_h, px, py);
+        if (self.modal_arm == -1) self.modal_select_all = true;
+        return true;
+    }
+
+    pub fn modalUp(self: *Page, win_w: i32, win_h: i32, px: f64, py: f64) bool {
+        if (self.modal == .none) return false;
+        const armed = self.modal_arm;
+        self.modal_arm = -1;
+        const item = self.modalItemAt(win_w, win_h, px, py);
+        if (item != armed) return true;
+        switch (item) {
+            -11 => self.modal = .none,
+            -12 => self.submitModal(),
+            else => {},
+        }
+        return true;
+    }
+
+    pub fn modalMotion(self: *Page, win_w: i32, win_h: i32, px: f64, py: f64) void {
+        if (self.modal == .none) return;
+        self.modal_hover = self.modalItemAt(win_w, win_h, px, py);
+    }
+
+    pub fn handleKey(self: *Page, sym: u32, text: []const u8) bool {
+        if (!self.inited) return false;
+        if (self.modal != .none) {
+            switch (sym) {
+                xkb.XKB_KEY_Escape => {
+                    self.modal = .none;
+                    return true;
+                },
+                xkb.XKB_KEY_Return, xkb.XKB_KEY_KP_Enter => {
+                    self.submitModal();
+                    return true;
+                },
+                xkb.XKB_KEY_BackSpace => {
+                    if (self.modal_select_all) {
+                        self.modal_len = 0;
+                        self.modal_select_all = false;
+                    } else if (self.modal_len > 0) {
+                        self.modal_len -= 1;
+                    }
+                    return true;
+                },
+                else => {},
+            }
+            if (text.len > 0 and text[0] >= 0x20 and text[0] != 0x7f) {
+                if (self.modal_select_all) {
+                    self.modal_len = 0;
+                    self.modal_select_all = false;
+                }
+                const n = @min(text.len, self.modal_buf.len - self.modal_len);
+                @memcpy(self.modal_buf[self.modal_len..][0..n], text[0..n]);
+                self.modal_len += n;
+            }
+            return true;
+        }
+        if (!self.lat_focus) return false;
+        switch (sym) {
+            xkb.XKB_KEY_Escape => {
+                self.lat_focus = false;
+                return true;
+            },
+            xkb.XKB_KEY_Return, xkb.XKB_KEY_KP_Enter => {
+                self.applyLatency();
+                self.lat_focus = false;
+                return true;
+            },
+            xkb.XKB_KEY_BackSpace => {
+                if (self.modal_select_all) {
+                    self.lat_len = 0;
+                    self.modal_select_all = false;
+                } else if (self.lat_len > 0) {
+                    self.lat_len -= 1;
+                }
+                return true;
+            },
+            else => {},
+        }
+        if (text.len > 0 and text[0] >= 0x20 and text[0] != 0x7f) {
+            if (self.modal_select_all) {
+                self.lat_len = 0;
+                self.modal_select_all = false;
+            }
+            for (text) |ch| {
+                if (ch < '0' or ch > '9') continue;
+                if (self.lat_len >= self.lat_field.len) break;
+                self.lat_field[self.lat_len] = ch;
+                self.lat_len += 1;
+            }
+        }
+        return true;
+    }
+
+    pub fn takeAction(self: *Page) ?Action {
+        const act = self.pending_action;
+        self.pending_action = null;
+        return act;
+    }
+
+    fn paintModal(self: *Page, c: *cairo.cairo_t, win_w: i32, win_h: i32) void {
+        const t = common.Theme;
+        const l = self.modalLayout(win_w, win_h);
+        cairo.cairo_save(c);
+        cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.45);
+        cairo.cairo_rectangle(c, 0, 0, @floatFromInt(win_w), @floatFromInt(win_h));
+        cairo.cairo_fill(c);
+        cairo.cairo_restore(c);
+        ui_paint.card(c, @floatFromInt(l.x), @floatFromInt(l.y), @floatFromInt(l.w), @floatFromInt(l.h), 0.92);
+        ui_paint.roundRect(c, @floatFromInt(l.x), @floatFromInt(l.y), @floatFromInt(l.w), @floatFromInt(l.h), 16);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.12);
+        cairo.cairo_stroke(c);
+
+        ui_paint.showText(c, @floatFromInt(l.x + 20), @floatFromInt(l.y + 30), self.modalTitle(), 18, 600, t.text_r, t.text_g, t.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(l.x + 20), @floatFromInt(l.y + 54), self.modalHint(), 12, 400, @as(f64, @floatFromInt(l.w - 40)), t.text_r, t.text_g, t.text_b, 0.5);
+        ui_paint.showText(c, @floatFromInt(l.x + 20), @floatFromInt(l.y + 84), if (self.modal == .edit_rates or self.modal == .edit_quantums) "Values" else "Value", 11, 500, t.text_r, t.text_g, t.text_b, 0.62);
+        paintTextField(c, l.field, self.modal_buf[0..self.modal_len], true, "");
+        const prim = self.modalPrimary();
+        ui_paint.paintBtn(c, l.cancel.x, l.cancel.y, l.cancel.w, l.cancel.h, "Cancel", false);
+        ui_paint.paintBtn(c, l.submit.x, l.submit.y, l.submit.w, l.submit.h, prim, false);
+        if (self.modal_hover == -12) {
+            ui_paint.roundRect(c, @floatFromInt(l.submit.x), @floatFromInt(l.submit.y), @floatFromInt(l.submit.w), @floatFromInt(l.submit.h), 8);
+            cairo.cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.14);
+            cairo.cairo_fill(c);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1888,6 +2783,45 @@ test "sound-tab: dropdown fits the longest row and stays in the window" {
     const nlist = p.ddListRect(narrow, .{ .x = 100, .y = 200, .w = 220, .h = 30 });
     try t.expect(nlist.x >= 12);
     try t.expect(nlist.x + nlist.w <= narrow.win_w - 12);
+}
+
+test "sound-tab: latency display uses the effective rate and quantum" {
+    const t = std.testing;
+    var p: Page = .{};
+    var buf: [32]u8 = undefined;
+    p.es.clock_rate_hz = 48000;
+    p.es.clock_quantum = 256;
+    try t.expectEqualStrings("5.33 ms", p.latencyDisplay(&buf));
+
+    p.es.clock_force_quantum = 512;
+    try t.expectEqualStrings("10.67 ms", p.latencyDisplay(&buf));
+
+    p.es.clock_force_rate_hz = 96000;
+    p.es.clock_force_quantum = 0;
+    try t.expectEqualStrings("2.67 ms", p.latencyDisplay(&buf));
+
+    const g = Geo{ .content_x = 386, .content_w = 700, .win_w = 1100, .win_h = 900, .tab = engine_tab };
+    const ge = p.computeGeom(g);
+    try t.expect(ge.engine.h >= 3 * k_grid_row_h + 64);
+    try t.expect(ge.latency.y > ge.engine.y);
+    try t.expect(ge.restart.y > ge.latency.y);
+    const f = latencyFieldRect(ge.latency);
+    const u = latencyUnitRect(ge.latency);
+    try t.expect(f.x + f.w <= ge.latency.x + ge.latency.w - common.card_pad);
+    try t.expect(u.x + u.w <= ge.latency.x + ge.latency.w - common.card_pad);
+}
+
+test "sound-tab: edit-list parsing keeps positive unique values" {
+    const t = std.testing;
+    var p: Page = .{};
+    var vals: [k_max_values]i32 = undefined;
+    var n: usize = 0;
+    try t.expect(p.parseList(&vals, &n, "44100, 48000 48000, nope, -1, 96000"));
+    try t.expectEqual(@as(usize, 3), n);
+    try t.expectEqual(@as(i32, 44100), vals[0]);
+    try t.expectEqual(@as(i32, 48000), vals[1]);
+    try t.expectEqual(@as(i32, 96000), vals[2]);
+    try t.expect(!p.parseList(&vals, &n, "nope, -5"));
 }
 
 test "sound-tab: allowed-rates preset detection" {

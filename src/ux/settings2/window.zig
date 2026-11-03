@@ -534,6 +534,8 @@ pub const Win = struct {
             // Sound's over-amp toggle lives in `audio/audio.toml`
             // (`[audio] allow_over_amplification`), same deal.
             self.settings.audio_allow_overamp = loaded.cfg.audio.allow_over_amplification;
+            seedIntList(&self.settings.audio_rate_values, &self.settings.audio_rate_values_len, loaded.cfg.audio.engine_rate_values);
+            seedIntList(&self.settings.audio_quantum_values, &self.settings.audio_quantum_values_len, loaded.cfg.audio.engine_quantum_values);
             // Notifications seed from the decoded `[notifications]` section,
             // so the tab opens on what the daemon is actually serving.
             notifications_persist.load(a.allocator(), &self.settings, &loaded.cfg.notifications);
@@ -1163,6 +1165,36 @@ pub const Win = struct {
         n.* += 1;
     }
 
+    fn seedIntList(dst: *[16]i32, len: *u8, src: []const i32) void {
+        const n = @min(src.len, dst.len);
+        @memcpy(dst[0..n], src[0..n]);
+        len.* = @intCast(n);
+    }
+
+    fn writeIntList(
+        entries: []section_store.Entry,
+        vals: *[14][256]u8,
+        n: *usize,
+        key: []const u8,
+        list: []const i32,
+    ) void {
+        const buf = &vals[n.*];
+        var off: usize = 0;
+        const head = std.fmt.bufPrint(buf[off..], "[ ", .{}) catch return;
+        off += head.len;
+        for (list, 0..) |v, i| {
+            const piece = if (i == 0)
+                std.fmt.bufPrint(buf[off..], "{d}", .{v})
+            else
+                std.fmt.bufPrint(buf[off..], ", {d}", .{v});
+            const w = piece catch break;
+            off += w.len;
+        }
+        const tail = std.fmt.bufPrint(buf[off..], " ]", .{}) catch return;
+        off += tail.len;
+        setAudioEntry(entries, n, key, buf[0..off]);
+    }
+
     /// Upsert the Sound page's audio keys inside `audio/audio.toml [audio]`.
     /// Only the keys carried by `p` are touched; `section_store` leaves every
     /// other byte of the document alone.
@@ -1170,8 +1202,8 @@ pub const Win = struct {
         const state = self.state_dir orelse return;
         const path = config.componentPath(self.gpa, state, "audio") catch return;
         defer self.gpa.free(path);
-        var entries_buf: [12]section_store.Entry = undefined;
-        var vals: [12][64]u8 = undefined;
+        var entries_buf: [14]section_store.Entry = undefined;
+        var vals: [14][256]u8 = undefined;
         var n: usize = 0;
         if (p.overamp) |v| {
             setAudioEntry(&entries_buf, &n, "allow_over_amplification", section_store.boolValue(v));
@@ -1214,6 +1246,12 @@ pub const Win = struct {
             const tail = std.fmt.bufPrint(buf[off..], " ]", .{}) catch "";
             off += tail.len;
             setAudioEntry(&entries_buf, &n, "engine_allowed_rates_hz", buf[0..off]);
+        }
+        if (p.rate_values) |list| {
+            writeIntList(&entries_buf, &vals, &n, "engine_rate_values", list);
+        }
+        if (p.quantum_values) |list| {
+            writeIntList(&entries_buf, &vals, &n, "engine_quantum_values", list);
         }
         if (p.quantum) |v| {
             const q = std.fmt.bufPrint(&vals[n], "{d}", .{v}) catch "0";
@@ -1757,7 +1795,11 @@ pub const Win = struct {
         // Borrow this frame's auto-reconnect flag into the Bluetooth page so
         // its toggle tracks `Settings` (the window owns persistence).
         self.bt.sync(self.settings.bt_auto_reconnect);
-        self.snd.sync(self.settings.audio_allow_overamp);
+        self.snd.sync(
+            self.settings.audio_allow_overamp,
+            self.settings.audio_rate_values[0..self.settings.audio_rate_values_len],
+            self.settings.audio_quantum_values[0..self.settings.audio_quantum_values_len],
+        );
         // Templates page: detection is already done; keep the output-file
         // statuses warm while its tab is up.
         if (self.content.tplPage() != null) self.tpl.sync();
@@ -1972,6 +2014,13 @@ pub const Win = struct {
             self.repaint();
             return;
         }
+        // Sound Engine dialogs (custom value / edit lists): same window-space
+        // hover tracking.
+        if (self.content.sndPage() != null and self.snd.modalActive()) {
+            self.snd.modalMotion(self.win_w, self.win_h, x, y);
+            self.repaint();
+            return;
+        }
         // Hyprland bezier handle drag + anim dropdown hover
         // (Hyprland section pages only).
         if (hyprland_tab.isSectionTab(self.content.active_tab)) {
@@ -2051,6 +2100,15 @@ pub const Win = struct {
             // dials; the VPN Add form spawns the create).
             if (self.content.netPage() != null and self.net.modalActive()) {
                 if (self.net.modalUp(self.win_w, self.win_h, self.ptr_x, self.ptr_y)) {
+                    self.repaint();
+                    return;
+                }
+            }
+            // Sound Engine dialogs resolve their armed action (a submit may
+            // have queued an `audio/audio.toml` persist).
+            if (self.content.sndPage() != null and self.snd.modalActive()) {
+                if (self.snd.modalUp(self.win_w, self.win_h, self.ptr_x, self.ptr_y)) {
+                    if (self.snd.takeAction()) |act| self.onSoundAction(act);
                     self.repaint();
                     return;
                 }
@@ -2184,6 +2242,13 @@ pub const Win = struct {
         // 1d. Network modals (Wi-Fi password / VPN Add): eat every click.
         if (self.content.netPage() != null and self.net.modalActive()) {
             if (self.net.modalDown(self.win_w, self.win_h, x, y)) {
+                self.repaint();
+                return;
+            }
+        }
+        // 1e. Sound Engine dialogs: eat every click while open.
+        if (self.content.sndPage() != null and self.snd.modalActive()) {
+            if (self.snd.modalDown(self.win_w, self.win_h, x, y)) {
                 self.repaint();
                 return;
             }
@@ -2508,6 +2573,11 @@ pub const Win = struct {
                 return;
             }
         }
+        // Sound Engine dialog: absorb the wheel over it.
+        if (self.content.sndPage() != null and self.snd.modalActive()) {
+            self.repaint();
+            return;
+        }
         if (self.ptr_x >= 0 and self.ptr_x < common.rail_w + common.list_w) {
             self.sidebar.scroll_px += @intFromFloat(@round(step));
             self.sidebar.clampScroll();
@@ -2665,6 +2735,13 @@ pub const Win = struct {
         // them while open (Tab cycles the VPN fields, Enter submits).
         if (self.content.netPage() != null and self.net.key(ev.sym, ev.utf8[0..ev.utf8_len])) {
             self.scrollVpnFocus();
+            self.repaint();
+            return;
+        }
+        // Sound Engine text entry: the latency-offset field and the custom
+        // value / edit-list dialogs own keys while focused.
+        if (self.content.sndPage() != null and self.snd.handleKey(ev.sym, ev.utf8[0..ev.utf8_len])) {
+            if (self.snd.takeAction()) |act| self.onSoundAction(act);
             self.repaint();
             return;
         }
