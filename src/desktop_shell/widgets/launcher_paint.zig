@@ -723,11 +723,26 @@ fn firstVisible(v: View) usize {
     return @min(row * bodyStride(v), v.hits.len - 1);
 }
 
+/// The whole row the body surface starts on, and the fraction of the next
+/// pitch still to move. The fraction is applied when the surface is blitted;
+/// keeping it out of the cached surface is what lets a wheel step move the
+/// picture smoothly without rebuilding the row cache.
+const BodyScroll = struct { first: usize, offset: f64 };
+
+fn bodyScroll(v: View) BodyScroll {
+    const first = firstVisible(v);
+    const top = @as(f64, @floatFromInt(first / bodyStride(v))) * bodyPitch(v);
+    return .{ .first = first, .offset = @max(0.0, v.scroll) - top };
+}
+
 fn ensureBody(v: View) ?*cairo.cairo_surface_t {
     const res = v.res;
     const cw: i32 = @intFromFloat(@ceil(v.geo.body.w));
-    const ch: i32 = @intFromFloat(@ceil(@max(1.0, v.geo.body.h)));
-    const first = firstVisible(v);
+    // One row taller than the viewport: the fractional part of the scroll is
+    // applied when the surface is blitted, so the bottom of the viewport can
+    // show the row just past `body.h`.
+    const ch: i32 = @intFromFloat(@ceil(@max(1.0, v.geo.body.h + bodyPitch(v))));
+    const first = bodyScroll(v).first;
     const b = &res.body;
     if (b.cr == null or b.w != cw or b.h != ch or b.gen != v.gen or
         b.list_mode != v.list_mode or b.first != first)
@@ -746,9 +761,12 @@ fn paintBody(c: ?*cairo.cairo_t, v: View) void {
     cairo.cairo_rectangle(cr, g.body.x, g.body.y, g.body.w, g.body.h);
     cairo.cairo_clip(cr);
     if (ensureBody(v)) |surf| {
-        // The scroll is already inside the surface — it was composed at the
-        // offset the viewport asks for.
-        cairo.cairo_set_source_surface(cr, surf, g.body.x, g.body.y);
+        // The surface starts on a whole row. The rest of the scroll is a
+        // blit offset, so partial-row scrolling moves the picture by the same
+        // amount the hit test uses — otherwise the pointer drifts from the
+        // row under it as the wheel moves through a row.
+        const s = bodyScroll(v);
+        cairo.cairo_set_source_surface(cr, surf, g.body.x, g.body.y - s.offset);
         cairo.cairo_paint(cr);
     }
     cairo.cairo_restore(cr);
@@ -766,6 +784,9 @@ fn paintBodyContent(cr: ?*cairo.cairo_t, v: View, first: usize) void {
     const pitch = bodyPitch(v);
     const stride = bodyStride(v);
     const shift = @as(f64, @floatFromInt(first / stride)) * pitch;
+    // `ensureBody` makes the surface one pitch taller than the viewport, so a
+    // fractional blit still has the row that fills its bottom edge.
+    const band = v.geo.body.h + pitch;
     cairo.cairo_save(cr);
     cairo.cairo_translate(cr, 0.0, -shift);
     var i = first;
@@ -773,7 +794,7 @@ fn paintBodyContent(cr: ?*cairo.cairo_t, v: View, first: usize) void {
         // The row that starts below the fold is the last that can show at all;
         // anything after it would be composed and clipped straight away.
         const y = @as(f64, @floatFromInt(i / stride)) * pitch - shift;
-        if (y >= v.geo.body.h) break;
+        if (y >= band) break;
         if (v.list_mode) {
             paintRow(cr, v, v.hits[i], i);
         } else {
@@ -989,6 +1010,50 @@ pub fn paintMagnifier(c: ?*cairo.cairo_t, cx: f64, cy: f64, r: f64, a: f64) void
     cairo.cairo_move_to(cr, cx + 4.5, cy + 4.5);
     cairo.cairo_line_to(cr, cx + 10.0, cy + 10.0);
     cairo.cairo_stroke(cr);
+}
+
+test "launcher: a partial-row scroll becomes a blit offset, not a snapped row" {
+    const t = std.testing;
+    var res = Resources.init(t.allocator, std.testing.io);
+    defer res.deinit();
+    const g = layout.Geo.of(layout.preferred_w, layout.preferred_h);
+    const hits = [_]usize{0} ** 40;
+
+    var v = View{ .geo = g, .res = &res, .hits = &hits };
+    const pitch = layout.cell_h + layout.grid_gap;
+
+    var s = bodyScroll(v);
+    try t.expectEqual(@as(usize, 0), s.first);
+    try t.expectApproxEqAbs(@as(f64, 0.0), s.offset, 1e-9);
+
+    // Inside the first row the surface is not rebuilt; the fraction reaches
+    // the screen through the blit.
+    v.scroll = pitch * 0.5;
+    s = bodyScroll(v);
+    try t.expectEqual(@as(usize, 0), s.first);
+    try t.expectApproxEqAbs(pitch * 0.5, s.offset, 1e-9);
+
+    // Crossing the pitch starts the next row at zero offset, so the surface
+    // key changes exactly where the visible row does.
+    v.scroll = pitch;
+    s = bodyScroll(v);
+    try t.expectEqual(@as(usize, layout.cols), s.first);
+    try t.expectApproxEqAbs(@as(f64, 0.0), s.offset, 1e-9);
+
+    v.scroll = pitch + 49.0;
+    s = bodyScroll(v);
+    try t.expectEqual(@as(usize, layout.cols), s.first);
+    try t.expectApproxEqAbs(@as(f64, 49.0), s.offset, 1e-9);
+
+    // The hit test at the same scroll agrees with the row the paint starts on.
+    try t.expectEqual(@as(?usize, layout.cols), layout.cellIndexAt(g, g.body.x + 1, g.body.y + 1, v.scroll, hits.len));
+
+    // List mode uses its own pitch with the same split.
+    v.list_mode = true;
+    v.scroll = layout.row_h + 36.0;
+    s = bodyScroll(v);
+    try t.expectEqual(@as(usize, 1), s.first);
+    try t.expectApproxEqAbs(@as(f64, 36.0), s.offset, 1e-9);
 }
 
 test "launcher: the card is translucent, so the compositor's blur reads" {
