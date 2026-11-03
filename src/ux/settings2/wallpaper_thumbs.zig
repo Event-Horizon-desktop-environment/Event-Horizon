@@ -152,6 +152,11 @@ pub const Service = struct {
             self.pend_len -= 1;
             return false;
         };
+        // The worker parks on `cond` whenever the queue empties. Without this
+        // signal a request made after the initial burst (a newly added
+        // wallpaper, or a tile evicted from the LRU) sat in `pend` forever and
+        // its tile stayed black.
+        _ = c.pthread_cond_signal(&self.cond);
         return true;
     }
 
@@ -257,7 +262,15 @@ pub const Service = struct {
             const gen = self.generation;
             self.unlock();
 
-            const res = render(self.alloc, self.io, job) orelse continue;
+            const res = render(self.alloc, self.io, job) orelse {
+                // A failed allocation is not a decode result. Forget the path
+                // so the next frame can queue it again instead of leaving the
+                // tile blank forever.
+                self.lock();
+                self.forgetLocked(job.path[0..job.path_len]);
+                self.unlock();
+                continue;
+            };
 
             self.lock();
             if (gen != self.generation or self.stop) {
@@ -472,6 +485,56 @@ test "wallpaper-thumbs: service queues, renders and drains a real image" {
     try t.expect(!svc.request(pic, 128));
     svc.releaseAll();
     try t.expect(svc.request(pic, 128));
+}
+
+test "wallpaper-thumbs: a request after the worker idles wakes it" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(alloc, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    defer alloc.free(root);
+    const first = try std.fs.path.join(alloc, &.{ root, "first.bmp" });
+    defer alloc.free(first);
+    const second = try std.fs.path.join(alloc, &.{ root, "second.bmp" });
+    defer alloc.free(second);
+    try writeTestBmp(alloc, first);
+    try writeTestBmp(alloc, second);
+
+    var svc = Service.init(alloc, std.testing.io);
+    defer svc.deinit();
+    var out: std.ArrayList(Result) = .empty;
+    defer {
+        for (out.items) |r| freeResult(alloc, r);
+        out.deinit(alloc);
+    }
+
+    // First job: this also starts the worker thread.
+    try t.expect(svc.request(first, 128));
+    var spins: usize = 0;
+    while (out.items.len < 1 and spins < 2000) : (spins += 1) {
+        svc.drain(&out);
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 1_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+    try t.expectEqual(@as(usize, 1), out.items.len);
+
+    // Let the worker finish the loop and park on its condvar, so the next
+    // request genuinely exercises the wake path.
+    std.Io.sleep(std.testing.io, .fromMilliseconds(50), .awake) catch {};
+
+    // The worker is now parked on its condvar. A later request must signal it;
+    // otherwise the new wallpaper's thumbnail stays queued and its tile black.
+    try t.expect(svc.request(second, 128));
+    spins = 0;
+    while (out.items.len < 2 and spins < 2000) : (spins += 1) {
+        svc.drain(&out);
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 1_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+    try t.expectEqual(@as(usize, 2), out.items.len);
+    try t.expect(out.items[1].ok);
 }
 
 test "wallpaper-thumbs: releaseAll drops the request set" {

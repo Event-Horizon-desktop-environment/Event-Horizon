@@ -633,14 +633,14 @@ pub const Page = struct {
         var tmp = scan.Gallery.init(self.alloc);
         scan.scanFolder(self.alloc, self.io, key, &tmp);
 
-        var fresh = std.StringHashMap(void).init(self.alloc);
+        var fresh = std.StringHashMap(i96).init(self.alloc);
         defer fresh.deinit();
         var live = std.StringHashMap(void).init(self.alloc);
         defer live.deinit();
 
         var maps_ok = true;
         for (tmp.entries.items) |e| {
-            fresh.put(e.path, {}) catch {
+            fresh.put(e.path, e.mtime_ns) catch {
                 maps_ok = false;
                 break;
             };
@@ -661,13 +661,21 @@ pub const Page = struct {
             return;
         }
 
-        // Departures: out of the gallery and out of the cache.
+        // Survivors: keep the gallery entry, but a rewritten source (same
+        // name, new bytes — a re-download or an editor save) must drop its
+        // stale thumbnail and go back through the decode queue.
         var i: usize = 0;
         while (i < self.gallery.entries.items.len) {
             const old_path = self.gallery.entries.items[i].path;
-            if (fresh.contains(old_path)) {
+            if (fresh.get(old_path)) |new_mtime| {
+                if (new_mtime != self.gallery.entries.items[i].mtime_ns) {
+                    self.gallery.entries.items[i].mtime_ns = new_mtime;
+                    self.dropCached(old_path);
+                    _ = self.svc.request(old_path, cache_px);
+                }
                 i += 1;
             } else {
+                // Departures: out of the gallery and out of the cache.
                 self.dropCached(old_path);
                 self.alloc.free(old_path);
                 _ = self.gallery.entries.orderedRemove(i);
@@ -2929,6 +2937,15 @@ test "wallpaper-tab: a new file merges without dropping cached thumbs" {
 
     try t.expectEqual(@as(usize, 3), p.gallery.entries.items.len);
     try t.expect(p.cache.count() == 2);
+
+    // A source rewritten in place (same name, new bytes) is a cache miss
+    // again: the stale thumbnail is dropped instead of being painted forever.
+    for (p.gallery.entries.items) |*e| {
+        if (std.mem.eql(u8, std.fs.path.basename(e.path), "a.png")) e.mtime_ns = 0;
+    }
+    p.syncIncremental(key);
+    try t.expectEqual(@as(usize, 3), p.gallery.entries.items.len);
+    try t.expectEqual(@as(usize, 1), p.cache.count());
 
     // The source file goes away: gallery and cache both let go of it, and
     // only it.

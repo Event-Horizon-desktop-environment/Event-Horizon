@@ -1910,7 +1910,12 @@ pub const Win = struct {
         // The Network pages poll the D-Bus snapshot / VPN roster and animate
         // the scan label on the same tick.
         const net_live = network_tab.ownsTab(self.content.active_tab);
-        if (!animating and !bt_live and !snd_live and !tm_live and !acc_live and !net_live) return;
+        // The Wallpaper gallery rescans its folder and retries thumbnails that
+        // failed while a download was still in flight. Without this tick those
+        // only happened on pointer input, so a wallpaper added while the window
+        // sat idle stayed a black tile.
+        const wall_live = self.content.active_tab == wallpaper_tab.tab_id;
+        if (!animating and !bt_live and !snd_live and !tm_live and !acc_live and !net_live and !wall_live) return;
         if (self.timer_fd < 0) {
             const rc: isize = @bitCast(linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true }));
             if (rc < 0) return;
