@@ -1520,22 +1520,59 @@ pub const PwTopSample = struct {
     dsp_load_pct: f64 = 0,
     xruns_total: i64 = 0,
     active_nodes: i32 = 0,
+    /// Row of the node the caller asked for (usually the default sink, which
+    /// drives the graph): its actual cycle, not the configured `clock.quantum`.
+    focus_quantum: i32 = 0,
+    focus_rate_hz: i32 = 0,
 };
 
 fn pwTopUs(s: []const u8) f64 {
-    const t = std.mem.trim(u8, s, " ");
+    // Real pw-top rows carry a unit ("5.2us", "1.3ms", "0.9s"); the plain
+    // number only appears in hand-written tests. Ignoring the suffix made
+    // parseFloat fail and every WAIT/BUSY read as 0, which is why the DSP
+    // load gauge sat at 0%.
+    var t = std.mem.trim(u8, s, " ");
     if (t.len == 0 or std.mem.eql(u8, t, "---") or std.mem.eql(u8, t, "???")) return 0;
-    return std.fmt.parseFloat(f64, t) catch 0;
+    var scale: f64 = 1;
+    const units = [_]struct { suffix: []const u8, scale: f64 }{
+        .{ .suffix = "ns", .scale = 0.001 },
+        .{ .suffix = "us", .scale = 1 },
+        .{ .suffix = "ms", .scale = 1000 },
+        .{ .suffix = "s", .scale = 1_000_000 },
+    };
+    for (units) |u| {
+        // Longest suffix first: "ms" must not match as "s".
+        if (std.mem.endsWith(u8, t, u.suffix)) {
+            scale = u.scale;
+            t = std.mem.trim(u8, t[0 .. t.len - u.suffix.len], " ");
+            break;
+        }
+    }
+    const v = std.fmt.parseFloat(f64, t) catch return 0;
+    return v * scale;
 }
 
 fn pwTopErr(s: []const u8) i64 {
     return std.fmt.parseInt(i64, std.mem.trim(u8, s, " "), 10) catch 0;
 }
 
-/// `pw_parse_pw_top_batch` — keeps the last complete block (`-n 2` frames
-/// with the first always idle), drops idle nodes, busiest-first.
+/// `pw_parse_pw_top_batch` — keeps the last block, drops idle nodes,
+/// busiest-first. `pw-top -b -n 2` prints an initial snapshot (all zeros)
+/// followed by one measured block, so the trailing block is the useful one.
 pub fn parsePwTopBatch(text: []const u8) PwTopSample {
+    return parsePwTopBatchFocus(text, "");
+}
+
+/// Same parse, plus the `QUANT`/`RATE` of the node named `focus_name`.
+/// The default sink's row is the graph's real cycle; `clock.quantum` is only
+/// the maximum a client may ask for.
+///
+/// Matching is by name, not id: `pactl`/the node graph use PulseAudio ids
+/// (`241`) while `pw-top` prints PipeWire ids (`93`) for the same sink.
+pub fn parsePwTopBatchFocus(text: []const u8, focus_name: []const u8) PwTopSample {
     var sample = PwTopSample{};
+    var focus_q: i32 = 0;
+    var focus_r: i32 = 0;
     var name_col: ?usize = null;
     var nodes_buf: [256]PwTopNode = undefined;
     var nnodes: usize = 0;
@@ -1573,21 +1610,39 @@ pub fn parsePwTopBatch(text: []const u8) PwTopSample {
             }
         }
         if (!all_digits or nnodes >= nodes_buf.len) continue;
+        const id = std.fmt.parseInt(u32, cols[1], 10) catch continue;
+        const qn = std.fmt.parseInt(i32, cols[2], 10) catch 0;
+        const rate = std.fmt.parseInt(i32, cols[3], 10) catch 0;
         nodes_buf[nnodes] = .{
-            .node_id = std.fmt.parseInt(u32, cols[1], 10) catch continue,
-            .quantum = std.fmt.parseInt(i32, cols[2], 10) catch 0,
-            .rate_hz = std.fmt.parseInt(i32, cols[3], 10) catch 0,
+            .node_id = id,
+            .quantum = qn,
+            .rate_hz = rate,
             .wait_us = pwTopUs(cols[4]),
             .busy_us = pwTopUs(cols[5]),
             .errors = pwTopErr(cols[8]),
         };
+        const row_name = std.mem.trim(u8, line[nc..], " ");
+        if (focus_name.len != 0 and std.mem.eql(u8, row_name, focus_name)) {
+            focus_q = qn;
+            focus_r = rate;
+        }
         nnodes += 1;
     }
+    // The trailing block never gets committed by a following header, but it
+    // is the only one with measurements: prefer it over the idle first block.
+    if (nnodes > 0) {
+        @memcpy(last_nodes[0..nnodes], nodes_buf[0..nnodes]);
+        nlast = nnodes;
+    }
     if (nlast == 0) return sample;
-    sample.available = true;
+    sample.focus_quantum = focus_q;
+    sample.focus_rate_hz = focus_r;
     var best: f64 = -1;
     for (last_nodes[0..nlast]) |*nd| {
         if (nd.quantum == 0 and nd.busy_us == 0) continue;
+        // A block made only of idle nodes (paused graph, dummy drivers) is
+        // not a live sample; the strip shows "—" instead of a fake 0%.
+        sample.available = true;
         sample.xruns_total += nd.errors;
         if (nd.quantum > 0) sample.active_nodes += 1;
         if (nd.quantum > 0 and nd.rate_hz > 0 and nd.busy_us > 0) {
@@ -1608,12 +1663,19 @@ pub fn parsePwTopBatch(text: []const u8) PwTopSample {
 
 /// `query_pw_top_batch` — `pw-top -b -n 2`, no TTL here (popup: 5 s).
 pub fn queryPwTop(alloc: std.mem.Allocator, io: std.Io) PwTopSample {
+    return queryPwTopForName(alloc, io, "");
+}
+
+/// `pw-top -b -n 2`, also reporting the `focus_name` node's cycle (the Audio
+/// Center asks for the default sink so its latency strip shows the rate the
+/// graph is actually running at).
+pub fn queryPwTopForName(alloc: std.mem.Allocator, io: std.Io, focus_name: []const u8) PwTopSample {
     var ebuf: [64]u8 = undefined;
     const exe = toolPath(&ebuf, "pw-top") orelse return .{};
     const argv = [_][]const u8{ exe, "-b", "-n", "2" };
     const text = live.runCapture(alloc, io, &argv) orelse return .{};
     defer alloc.free(text);
-    return parsePwTopBatch(text);
+    return parsePwTopBatchFocus(text, focus_name);
 }
 
 pub const AudioCardProfile = struct {
@@ -2694,13 +2756,13 @@ test "live-audio: engine metadata parsing" {
 
 test "live-audio: pw-top batch parsing keeps the last block" {
     const t = std.testing;
-    // A header commits the block before it: live rows in block one win
-    // over the dummy tail, which never commits (matches `-n 2` framing).
+    // `pw-top -b -n 2` frames an initial snapshot (all zeros) followed by one
+    // measured block. The trailing block has the real data, so it must win.
     const text =
-        "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q   ERRORS  NAME\n" ++
-        "R   42   1024  48000  12.0    200.5   0.02  0.01      3   alsa_output\n" ++
-        "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q   ERRORS  NAME\n" ++
-        "R   33      0      0  ---     ---   ---   ---     0   Dummy-Driver\n";
+        "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME \n" ++
+        "R   33      0      0  ---     ---   ---   ---     0                                                                       Dummy-Driver\n" ++
+        "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME \n" ++
+        "R   42   1024  48000  12.0    200.5   0.02  0.01      3                                                                       alsa_output\n";
     const sample = parsePwTopBatch(text);
     try t.expect(sample.available);
     try t.expectEqual(@as(i64, 3), sample.xruns_total);
@@ -2717,6 +2779,17 @@ test "live-audio: pw-top batch parsing keeps the last block" {
     try t.expect(!idle.available);
     try t.expectEqual(@as(f64, 0), pwTopUs("---"));
     try t.expectEqual(@as(i64, 0), pwTopErr("???"));
+    // pw-top prints units; they used to make every WAIT/BUSY read as 0.
+    try t.expectApproxEqAbs(@as(f64, 5.2), pwTopUs("5.2us"), 0.001);
+    try t.expectApproxEqAbs(@as(f64, 1300), pwTopUs("1.3ms"), 0.001);
+    try t.expectApproxEqAbs(@as(f64, 0.5), pwTopUs("500ns"), 0.001);
+    // The focused node's own cycle drives the Engine latency strip. Match by
+    // name: pactl ids and pw-top ids differ for the same sink.
+    const focused = parsePwTopBatchFocus(text, "alsa_output");
+    try t.expectEqual(@as(i32, 1024), focused.focus_quantum);
+    try t.expectEqual(@as(i32, 48000), focused.focus_rate_hz);
+    const no_focus = parsePwTopBatchFocus(text, "not-a-node");
+    try t.expectEqual(@as(i32, 0), no_focus.focus_quantum);
 }
 
 test "live-audio: process latency pod" {

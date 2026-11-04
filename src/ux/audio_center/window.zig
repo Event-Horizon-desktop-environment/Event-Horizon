@@ -1,14 +1,17 @@
 //! Audio Center — the shell's pavucontrol.
 //!
-//! One xdg-toplevel with the shell's rail + page chrome and five pages:
-//! Playback, Recording, Output Devices, Input Devices and Configuration.
-//! Every list entry is a card:
+//! One xdg-toplevel with the shell's rail + page chrome and six pages:
+//! Playback, Recording, Output Devices, Input Devices, Configuration and
+//! Engine. Every list entry is a card:
 //!
 //!   - stream rows   (Playback / Recording): app icon, title, "on <device>"
 //!     move combo, terminate, volume slider, mute and L/R meters;
 //!   - device rows   (Output / Input):       device icon, name, port combo,
 //!     "Default" button, volume slider, mute and monitor meters;
-//!   - card rows      (Configuration):       card name and profile combo.
+//!   - card rows      (Configuration):       card name and profile combo;
+//!   - engine rows    (Engine):              `clock.*` metadata combos, the
+//!     `pw-top` latency/xrun/DSP strip, per-node latency offsets and the
+//!     WirePlumber/PipeWire restarts.
 //!
 //! All audio state comes from the native libpipewire backend in this
 //! directory (`client.zig` reads and writes, `graph.zig` is the model,
@@ -41,6 +44,7 @@ const chrome_colors = @import("../../desktop_shell/widgets/shared/chrome_colors.
 const scroll_mod = @import("../settings2/scroll.zig");
 const dropdown_mod = @import("../settings2/dropdown.zig");
 const graph_mod = @import("graph.zig");
+const live_audio = @import("../../desktop_shell/controlcenter/live_audio.zig");
 const prefs_mod = @import("prefs.zig");
 const client_mod = @import("client.zig");
 const meter_mod = @import("meter.zig");
@@ -106,6 +110,7 @@ pub const Page = enum(u8) {
     output = 2,
     input = 3,
     configuration = 4,
+    engine = 5,
 
     fn title(self: Page) []const u8 {
         return switch (self) {
@@ -114,6 +119,7 @@ pub const Page = enum(u8) {
             .output => "Output Devices",
             .input => "Input Devices",
             .configuration => "Configuration",
+            .engine => "Audio Engine",
         };
     }
 
@@ -124,6 +130,7 @@ pub const Page = enum(u8) {
             .output => "volume_up",
             .input => "headset_mic",
             .configuration => "tune",
+            .engine => "tune",
         };
     }
 
@@ -134,6 +141,7 @@ pub const Page = enum(u8) {
             .output => "Output",
             .input => "Input",
             .configuration => "Config",
+            .engine => "Engine",
         };
     }
 
@@ -145,17 +153,65 @@ pub const Page = enum(u8) {
             .output => "output",
             .input => "input",
             .configuration => "configuration",
+            .engine => "engine",
         };
     }
 
     /// True when the page lists nodes (streams or devices) rather than cards,
     /// and thus drives meters.
     fn hasMeters(self: Page) bool {
-        return self != .configuration;
+        return self != .configuration and self != .engine;
     }
 };
 
-const pages = [_]Page{ .playback, .recording, .output, .input, .configuration };
+const pages = [_]Page{ .playback, .recording, .output, .input, .configuration, .engine };
+
+// ── engine page ─────────────────────────────────────────────────────────────
+/// Values the Engine page's combos offer. The live allowed list can be any
+/// set, but these are the rates every PipeWire build ships.
+const engine_rates = [_]i32{ 44100, 48000, 88200, 96000, 176400, 192000 };
+const engine_quantums = [_]i32{ 128, 256, 512, 1024, 2048, 4096, 8192 };
+const engine_preset_hifi = [_]i32{ 44100, 48000, 88200, 96000, 176400, 192000 };
+const engine_preset_consumer = [_]i32{ 44100, 48000 };
+const engine_preset_pro = [_]i32{ 48000, 96000, 192000 };
+/// Engine rows, in paint order.
+const engine_row_count: usize = 11;
+/// `pw-metadata` spawns are not free; the page re-reads at most this often.
+const engine_refresh_ns: u64 = 1200 * std.time.ns_per_ms;
+/// `pw-dump` for hardware capabilities is heavier: 4 s like settings2.
+const engine_caps_ns: u64 = 4000 * std.time.ns_per_ms;
+const engine_restart_arm_ns: u64 = 3500 * std.time.ns_per_ms;
+const engine_restart_done_ns: u64 = 2600 * std.time.ns_per_ms;
+/// Retry spacing while a read is still failing (PipeWire/session coming up).
+const engine_retry_ns: u64 = 300 * std.time.ns_per_ms;
+
+/// Engine rows, in paint order.
+const EngineRow = enum(u32) {
+    clock_rate = 0,
+    force_rate = 1,
+    allowed_rates = 2,
+    pcm = 3,
+    quantum = 4,
+    force_quantum = 5,
+    status = 6,
+    latency_node = 7,
+    latency_offset = 8,
+    restart_wp = 9,
+    restart_pw = 10,
+};
+
+/// Engine page: the numeric-entry dialog behind "Custom rate…" / "Custom
+/// quantum…". A port of the settings app's modal, minus the value-list editor
+/// (that one only rewrites its own dropdown contents, which the Audio Center
+/// derives from the live graph instead).
+const EngineModal = enum { none, rate, quantum };
+
+const engine_pcm_labels = [_][]const u8{
+    "16-bit PCM (S16 LE)",
+    "24-bit PCM (S24 LE)",
+    "32-bit PCM (S32 LE)",
+    "32-bit float (F32 LE)",
+};
 
 /// Monotonic now in nanoseconds (frame timing + drag write throttle).
 fn liveNowNs() u64 {
@@ -469,7 +525,7 @@ const Drag = struct {
     last_apply_ns: u64,
 };
 
-const DdKind = enum { none, move, port, profile };
+const DdKind = enum { none, move, port, profile, engine };
 
 /// Which list the open dropdown shows. `id` is the stream for `.move`, the
 /// node for `.port` and the card device for `.profile`; `dir` is the port
@@ -547,6 +603,40 @@ pub const Win = struct {
     all_streams: bool = false,
     /// Output/Input: only devices with a `device.id`.
     hw_only: bool = false,
+    /// Engine page: the last `pw-metadata` read.
+    es: live_audio.EngineSettings = .{},
+    engine_loaded: bool = false,
+    engine_at_ns: u64 = 0,
+    /// Scratch for combo labels (rates/quantums are formatted per frame).
+    engine_label_buf: [64]u8 = undefined,
+    /// Default PCM format of the sink (0..3, -1 unknown).
+    pcm_choice: i32 = -1,
+    have_pcm: bool = false,
+    /// `pw-top` live sample for the status strip and the xrun counter base.
+    top: live_audio.PwTopSample = .{},
+    xrun_base: i64 = 0,
+    xrun_based: bool = false,
+    /// Selected output's advertised formats/rates (Engine caption + menus).
+    caps: live_audio.NodeCaps = .{},
+    caps_at_ns: u64 = 0,
+    /// Latency offset card: selected node index and editable field.
+    lat_node: i32 = -1,
+    lat_field: [24]u8 = [_]u8{0} ** 24,
+    lat_len: usize = 0,
+    lat_focus: bool = false,
+    lat_ns: bool = false,
+    restart_wp_arm_ns: u64 = 0,
+    restart_wp_done_ns: u64 = 0,
+    restart_pw_arm_ns: u64 = 0,
+    restart_pw_done_ns: u64 = 0,
+    /// Engine page: open custom-value dialog and its text field.
+    emodal: EngineModal = .none,
+    emodal_force: bool = false,
+    emodal_buf: [16]u8 = [_]u8{0} ** 16,
+    emodal_len: usize = 0,
+    /// Latency unit toggle: the x offset of the frames/ns divider, measured by
+    /// the last paint so the hit test picks the segment the user actually sees.
+    engine_unit_split: i32 = 0,
     /// Per-node resolved application icons (Playback/Recording rows).
     icons: std.AutoHashMapUnmanaged(u32, IconEntry) = .empty,
     /// Last value of the icon cache's completion counter; a change means a
@@ -555,6 +645,9 @@ pub const Win = struct {
     /// Click rects of the header toggles, refreshed every frame by paint.
     hit_meters: common.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     hit_page_toggle: ?common.Rect = null,
+    /// Engine page: the header's Refresh button (it replaces the Meters
+    /// toggle, since this page has no meters).
+    hit_engine_refresh: ?common.Rect = null,
     needs_repaint: bool = false,
     /// `~/.config/Event-Horizon/audio-center/audio-center.toml`, or "" when
     /// the config root could not be resolved (then nothing is persisted).
@@ -819,11 +912,20 @@ pub const Win = struct {
             self.scroll.setMax(band);
         } else |_| {}
 
-        // Debug/testing: open straight onto a page (EH_AUDIO_CENTER_PAGE=0..4).
+        // Debug/testing: open straight onto a page (EH_AUDIO_CENTER_PAGE=0..5).
         if (std.c.getenv("EH_AUDIO_CENTER_PAGE")) |v| {
             self.prefs_locked = true;
             if (std.fmt.parseInt(u8, std.mem.span(v), 10) catch null) |p| {
                 self.setPage(@enumFromInt(@min(p, pages.len - 1)));
+            }
+        }
+        // Debug/testing: start scrolled (EH_AUDIO_CENTER_SCROLL=<px>), so a
+        // screenshot test can reach the Engine page's lower cards.
+        if (std.c.getenv("EH_AUDIO_CENTER_SCROLL")) |v| {
+            self.prefs_locked = true;
+            if (std.fmt.parseInt(i32, std.mem.span(v), 10) catch null) |px| {
+                self.scroll.setMax(self.scrollMax());
+                self.scroll.snapTo(px);
             }
         }
         // Debug/testing: pre-open a dropdown on the first row, so a
@@ -842,16 +944,18 @@ pub const Win = struct {
                 .port
             else if (std.mem.eql(u8, kind_s, "profile"))
                 .profile
+            else if (std.mem.eql(u8, kind_s, "engine"))
+                .engine
             else
                 .none;
             const id = std.fmt.parseInt(u32, id_s, 10) catch 0;
             const dir: u32 = if (dir_s) |d| (std.fmt.parseInt(u32, d, 10) catch 1) else 1;
-            if (kind != .none and id != 0) {
+            if (kind != .none and (id != 0 or kind == .engine)) {
                 const r0 = self.cardRect(0);
                 const trigger = switch (kind) {
                     .move => moveComboRect(r0),
                     .port => portComboRect(r0),
-                    .profile => profileComboRect(r0),
+                    .profile, .engine => profileComboRect(r0),
                     .none => r0,
                 };
                 self.openDropdown(kind, id, dir, trigger);
@@ -882,6 +986,24 @@ pub const Win = struct {
         // EH_AUDIO_CENTER_FULL=1 — with the hover driver, force every frame to
         // be a full scene paint: the worst case, sampled on demand.
         self.hover_full = std.c.getenv("EH_AUDIO_CENTER_FULL") != null;
+        // The saved page may already be Engine: setPage() early-returns for an
+        // unchanged page, so read the live state before the first frame or the
+        // page opens on "Unavailable".
+        if (self.page == .engine) self.refreshEngine(true);
+        // Debug/testing: open the custom-value dialog without synthetic input
+        // (EH_AUDIO_CENTER_EMODAL="rate|quantum[:force]").
+        if (std.c.getenv("EH_AUDIO_CENTER_EMODAL")) |v| {
+            self.prefs_locked = true;
+            const spec = std.mem.span(v);
+            var it = std.mem.splitScalar(u8, spec, ':');
+            const kind_s = it.next() orelse "";
+            const force = if (it.next()) |f| std.mem.eql(u8, f, "1") else false;
+            if (std.mem.eql(u8, kind_s, "rate")) {
+                self.openEngineModal(.rate, force);
+            } else if (std.mem.eql(u8, kind_s, "quantum")) {
+                self.openEngineModal(.quantum, force);
+            }
+        }
         logz.log("audio-center ready: {d}x{d} scale={d} page={s} meters={} hw_only={} all_streams={} trace={}", .{
             self.win_w,
             self.win_h,
@@ -911,6 +1033,7 @@ pub const Win = struct {
             self.gpa.free(e.value_ptr.name);
         }
         self.icons.deinit(self.gpa);
+        live_audio.freeEngineSettings(self.gpa, &self.es);
         if (self.client) |c| {
             self.meters.deinit();
             c.destroy();
@@ -970,7 +1093,7 @@ pub const Win = struct {
     }
 
     fn rowH(self: *const Win) i32 {
-        return if (self.page == .configuration) card_h_config else card_h;
+        return if (self.page == .configuration or self.page == .engine) card_h_config else card_h;
     }
 
     /// Layout-space y of card `i` (before scroll).
@@ -1015,11 +1138,12 @@ pub const Win = struct {
                 if (self.hw_only and !node.isHardware()) return false;
                 return true;
             },
-            .configuration => return false,
+            .configuration, .engine => return false,
         }
     }
 
     fn rowCount(self: *const Win) usize {
+        if (self.page == .engine) return engine_row_count;
         if (self.page == .configuration) {
             var n: usize = 0;
             for (self.graph.devices.items) |*d| {
@@ -1064,14 +1188,283 @@ pub const Win = struct {
         if (self.page == p) return;
         self.page = p;
         self.closeDropdown();
+        self.emodal = .none;
         self.drag = null;
         self.scroll.snapTo(0);
         self.scroll.setMax(self.scrollMax());
         self.damageAll();
         self.needs_repaint = true;
         self.markAction("page");
+        if (p == .engine) {
+            self.refreshEngine(true);
+            if (self.lat_node < 0) {
+                self.lat_node = self.latencyDefaultIndex();
+                self.loadLatencyField();
+            }
+        }
         logz.log("ux: page -> {s} (rows={d})", .{ p.tag(), self.rowCount() });
         self.savePrefs();
+    }
+
+    /// Re-read everything the Engine page shows: metadata, PCM choice, the
+    /// `pw-top` strip and (every 4 s) the sink's advertised capabilities.
+    /// Invalidates pixels only when a value actually moved.
+    fn refreshEngine(self: *Win, force: bool) void {
+        const now = liveNowNs();
+        if (!force and self.engine_at_ns != 0 and now - self.engine_at_ns < engine_refresh_ns) return;
+        self.engine_at_ns = now;
+        var changed = false;
+
+        var next = live_audio.queryEngineSettings(self.gpa, self.io);
+        if (next.available != self.es.available) {
+            logz.log("engine: metadata {s}", .{if (next.available) "available" else "unavailable"});
+        }
+        if (!engineSame(&self.es, &next)) changed = true;
+        live_audio.freeEngineSettings(self.gpa, &self.es);
+        self.es = next;
+        self.engine_loaded = true;
+
+        const pcm = live_audio.queryCompatPcm(self.gpa, self.io);
+        if (!self.have_pcm or pcm != self.pcm_choice) {
+            self.pcm_choice = pcm;
+            self.have_pcm = true;
+            changed = true;
+        }
+
+        // The default sink drives the graph, so its pw-top row is the real
+        // cycle; ask for it by name, since pactl ids and pw-top ids differ.
+        const sink_id = self.defaultSinkNodeId();
+        const top = live_audio.queryPwTopForName(self.gpa, self.io, self.graph.default_sink.get());
+        if (top.available != self.top.available) {
+            logz.log("engine: pw-top {s} xruns={d}", .{ if (top.available) "available" else "unavailable", top.xruns_total });
+        }
+        if (!self.xrun_based) {
+            self.xrun_base = top.xruns_total;
+            self.xrun_based = true;
+        }
+        if (top.available != self.top.available or
+            top.xruns_total != self.top.xruns_total or
+            top.dsp_load_pct != self.top.dsp_load_pct or
+            top.reference_quantum != self.top.reference_quantum or
+            top.reference_rate_hz != self.top.reference_rate_hz or
+            top.focus_quantum != self.top.focus_quantum or
+            top.focus_rate_hz != self.top.focus_rate_hz)
+        {
+            changed = true;
+        }
+        self.top = top;
+
+        if (force or self.caps_at_ns == 0 or now - self.caps_at_ns >= engine_caps_ns) {
+            const id = sink_id;
+            const caps = if (id != 0) live_audio.queryNodeCaps(self.gpa, self.io, id) else live_audio.NodeCaps{};
+            if (caps.available != self.caps.available) {
+                logz.log("engine: caps {s} id={d}", .{ if (caps.available) "available" else "unavailable", id });
+            }
+            // No sink yet (graph still arriving): do not start the 4 s window,
+            // so the caption fills in on the next tick. A failed `pw-dump` is
+            // retried sooner, not 4 s later.
+            self.caps_at_ns = if (id == 0)
+                0
+            else if (caps.available)
+                now
+            else
+                now -| (engine_caps_ns - engine_retry_ns);
+            if (caps.available != self.caps.available or
+                caps.rate_min != self.caps.rate_min or
+                caps.rate_max != self.caps.rate_max or
+                caps.quantum_limit != self.caps.quantum_limit or
+                caps.channels != self.caps.channels or
+                caps.formats != self.caps.formats)
+            {
+                changed = true;
+            }
+            self.caps = caps;
+        }
+
+        // Pick the default output for the latency card once the graph has
+        // nodes; also recover when the selected node disappeared.
+        const ln = self.latencyNodeCount();
+        if (ln == 0) {
+            if (self.lat_node != -1) {
+                self.lat_node = -1;
+                changed = true;
+            }
+        } else if (self.lat_node < 0 or self.lat_node >= @as(i32, @intCast(ln))) {
+            self.lat_node = self.latencyDefaultIndex();
+            self.loadLatencyField();
+            changed = true;
+        }
+
+        if (changed) {
+            self.damageAll();
+            self.needs_repaint = true;
+        }
+
+        // A missing read is usually a startup race (the session is still
+        // coming up) or a device that has not appeared yet: retry on a short
+        // cadence instead of waiting the full 1.2 s.
+        if (!self.es.available or !self.have_pcm or self.pcm_choice < 0 or !self.top.available) {
+            self.engine_at_ns = now -| (engine_refresh_ns - engine_retry_ns);
+        }
+    }
+
+    /// Restart buttons show a short "Confirm" window and a short "Restarted"
+    /// one. Clear an expired window here so the label falls back on the next
+    /// paint instead of waiting for an unrelated redraw.
+    fn expireEngineTransients(self: *Win, now: u64) void {
+        var changed = false;
+        if (self.restart_wp_arm_ns != 0 and now - self.restart_wp_arm_ns > engine_restart_arm_ns) {
+            self.restart_wp_arm_ns = 0;
+            changed = true;
+        }
+        if (self.restart_pw_arm_ns != 0 and now - self.restart_pw_arm_ns > engine_restart_arm_ns) {
+            self.restart_pw_arm_ns = 0;
+            changed = true;
+        }
+        if (self.restart_wp_done_ns != 0 and now - self.restart_wp_done_ns > engine_restart_done_ns) {
+            self.restart_wp_done_ns = 0;
+            changed = true;
+        }
+        if (self.restart_pw_done_ns != 0 and now - self.restart_pw_done_ns > engine_restart_done_ns) {
+            self.restart_pw_done_ns = 0;
+            changed = true;
+        }
+        if (changed) self.needs_repaint = true;
+    }
+
+    /// `node.id` of the live default sink, or 0 when it is not in the graph.
+    fn defaultSinkNodeId(self: *const Win) u32 {
+        const name = self.graph.default_sink.get();
+        if (name.len == 0) return 0;
+        for (self.graph.nodes.items) |*n| {
+            if (n.role == .sink and !n.is_meter and std.mem.eql(u8, n.node_name.get(), name)) return n.id;
+        }
+        return 0;
+    }
+
+    /// Hardware sinks and sources that accept a processing offset.
+    fn latencyNodeCount(self: *const Win) usize {
+        var n: usize = 0;
+        for (self.graph.nodes.items) |*node| {
+            if ((node.role == .sink or node.role == .source) and !node.is_meter) n += 1;
+        }
+        return n;
+    }
+
+    fn latencyNodeAt(self: *const Win, i: usize) ?*Node {
+        var n: usize = 0;
+        for (self.graph.nodes.items) |*node| {
+            if (node.role != .sink and node.role != .source) continue;
+            if (node.is_meter) continue;
+            if (n == i) return node;
+            n += 1;
+        }
+        return null;
+    }
+
+    fn latencyNode(self: *const Win) ?*Node {
+        if (self.lat_node < 0) return null;
+        return self.latencyNodeAt(@intCast(self.lat_node));
+    }
+
+    fn latencyNodeLabel(self: *const Win) []const u8 {
+        const node = self.latencyNode() orelse return "Choose a node";
+        return node.displayName();
+    }
+
+    /// Index of the default sink in the latency node list (else the first
+    /// node, else -1 when there is nothing to offset yet).
+    fn latencyDefaultIndex(self: *const Win) i32 {
+        const n = self.latencyNodeCount();
+        if (n == 0) return -1;
+        const id = self.defaultSinkNodeId();
+        if (id != 0) {
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                const node = self.latencyNodeAt(i) orelse continue;
+                if (node.id == id) return @intCast(i);
+            }
+        }
+        return 0;
+    }
+
+    fn loadLatencyField(self: *Win) void {
+        const node = self.latencyNode() orelse return;
+        const off = live_audio.queryLatencyOffset(self.gpa, self.io, node.id);
+        self.lat_len = 0;
+        if (!off.ok) {
+            self.lat_ns = false;
+            return;
+        }
+        self.lat_ns = off.nanoseconds;
+        const written = std.fmt.bufPrint(&self.lat_field, "{d}", .{off.value}) catch "";
+        self.lat_len = written.len;
+    }
+
+    /// Open the numeric dialog for a custom rate/quantum. Mirrors the
+    /// settings app: the field starts on the value the row is using now.
+    fn openEngineModal(self: *Win, kind: EngineModal, force: bool) void {
+        self.emodal = kind;
+        self.emodal_force = force;
+        self.emodal_len = 0;
+        const current: i32 = switch (kind) {
+            .rate => if (force and self.es.clock_force_rate_hz > 0) self.es.clock_force_rate_hz else self.es.clock_rate_hz,
+            .quantum => if (force and self.es.clock_force_quantum > 0) self.es.clock_force_quantum else self.es.clock_quantum,
+            .none => 0,
+        };
+        if (current > 0) {
+            const s = std.fmt.bufPrint(&self.emodal_buf, "{d}", .{current}) catch "";
+            self.emodal_len = s.len;
+        }
+        self.needs_repaint = true;
+        self.damageAll();
+    }
+
+    fn submitEngineModal(self: *Win) void {
+        const raw = std.mem.trim(u8, self.emodal_buf[0..self.emodal_len], " \t\r\n");
+        const v = std.fmt.parseInt(i32, raw, 10) catch return;
+        if (v <= 0 or v > 2_000_000) return;
+        const ok = switch (self.emodal) {
+            .rate => if (self.emodal_force)
+                live_audio.applyEngineForceRateHz(self.io, v)
+            else
+                live_audio.applyEngineClockRateHz(self.io, v),
+            .quantum => if (self.emodal_force)
+                live_audio.applyEngineForceQuantum(self.io, v)
+            else
+                live_audio.applyEngineQuantum(self.io, v),
+            .none => return,
+        };
+        if (!ok) logz.err("engine: custom write failed kind={s} v={d}", .{ @tagName(self.emodal), v });
+        self.emodal = .none;
+        if (ok) self.refreshEngine(true);
+        self.needs_repaint = true;
+        self.damageAll();
+    }
+
+    fn applyLatency(self: *Win) void {
+        const node = self.latencyNode() orelse return;
+        const raw = self.lat_field[0..self.lat_len];
+        const value: i64 = if (raw.len == 0) 0 else std.fmt.parseInt(i64, raw, 10) catch return;
+        if (live_audio.applyLatencyOffset(self.io, node.id, value, self.lat_ns)) self.loadLatencyField();
+        self.needs_repaint = true;
+        self.damageAll();
+    }
+
+    fn resetAllLatency(self: *Win) void {
+        var ids: [64]u32 = undefined;
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < self.latencyNodeCount() and n < ids.len) : (i += 1) {
+            const node = self.latencyNodeAt(i) orelse continue;
+            if (node.id == 0) continue;
+            ids[n] = node.id;
+            n += 1;
+        }
+        _ = live_audio.resetAllLatency(self.io, ids[0..n]);
+        if (self.latencyNode() != null) self.loadLatencyField();
+        self.needs_repaint = true;
+        self.damageAll();
     }
 
     /// Persist the view flags (page, meters, filters). Cheap enough to call
@@ -1238,6 +1631,10 @@ pub const Win = struct {
             h = mixHash(h, @intCast(d.pct));
         }
         h = mixHash(h, self.icons.count());
+        // The Engine rows are not graph nodes: their values come from
+        // pw-metadata/pw-top/pw-dump, so the loop below hashes nothing for
+        // them. Without this the page would keep its first frame forever.
+        if (self.page == .engine) h = self.engineSceneHash(h);
 
         const n = self.rowCount();
         h = mixHash(h, n);
@@ -1270,6 +1667,61 @@ pub const Win = struct {
         return h;
     }
 
+    /// Fold everything the Engine page can display into the scene hash:
+    /// metadata, PCM choice, `pw-top` sample, sink capabilities, the latency
+    /// card's field/unit and the restart buttons' arm/done windows.
+    fn engineSceneHash(self: *Win, h0: u64) u64 {
+        var h = h0;
+        h = mixHash(h, @intFromBool(self.es.available));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.es.clock_rate_hz))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.es.clock_force_rate_hz))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.es.clock_quantum))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.es.clock_force_quantum))));
+        for (self.es.allowed_rates_hz) |hz| h = mixHash(h, @as(u64, @bitCast(@as(i64, hz))));
+
+        h = mixHash(h, @intFromBool(self.have_pcm));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.pcm_choice))));
+
+        h = mixHash(h, @intFromBool(self.top.available));
+        h = mixHash(h, @as(u64, @bitCast(self.top.xruns_total)));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.top.reference_quantum))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.top.reference_rate_hz))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.top.focus_quantum))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.top.focus_rate_hz))));
+        // Hundredths: the strip prints up to two decimals below 1%, so a
+        // change the user can see has to change the hash.
+        h = mixHash(h, @as(u64, @intFromFloat(@round(@max(0, @min(100, self.top.dsp_load_pct)) * 100.0))));
+
+        h = mixHash(h, @intFromBool(self.caps.available));
+        h = mixHash(h, @intCast(self.caps.rate_count));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.caps.rate_min))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.caps.rate_max))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.caps.channels))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.caps.formats))));
+        h = mixHash(h, @as(u64, @bitCast(@as(i64, self.caps.quantum_limit))));
+
+        h = mixHash(h, @intCast(self.lat_node + 1));
+        h = mixHash(h, @intFromBool(self.lat_focus));
+        h = mixHash(h, @intFromBool(self.lat_ns));
+        h = mixHash(h, self.lat_len);
+        h = hashStr(h, self.lat_field[0..self.lat_len]);
+
+        h = mixHash(h, @intFromEnum(self.emodal));
+        h = mixHash(h, @intFromBool(self.emodal_force));
+        h = mixHash(h, self.emodal_len);
+        h = hashStr(h, self.emodal_buf[0..self.emodal_len]);
+
+        // The restart buttons change label (Restart -> Confirm -> Restarted)
+        // purely with time; folding the current window in lets the label flip
+        // repaint and then settle.
+        const now = liveNowNs();
+        h = mixHash(h, @intFromBool(self.restart_wp_arm_ns != 0 and now - self.restart_wp_arm_ns <= engine_restart_arm_ns));
+        h = mixHash(h, @intFromBool(self.restart_wp_done_ns != 0 and now - self.restart_wp_done_ns <= engine_restart_done_ns));
+        h = mixHash(h, @intFromBool(self.restart_pw_arm_ns != 0 and now - self.restart_pw_arm_ns <= engine_restart_arm_ns));
+        h = mixHash(h, @intFromBool(self.restart_pw_done_ns != 0 and now - self.restart_pw_done_ns <= engine_restart_done_ns));
+        return h;
+    }
+
     /// What the pointer actually hovers, as one value: the widget *and* the row
     /// it belongs to (row 0's mute button is different pixels from row 1's), or
     /// 0 for "nothing here reacts to hover". The scene hash folds this in
@@ -1296,7 +1748,7 @@ pub const Win = struct {
         const r = self.cardRect(i);
         const row: u64 = @as(u64, i) + 1;
         switch (self.page) {
-            .configuration => {},
+            .configuration, .engine => {},
             .output, .input => {
                 if (common.pointInRect(x, y, defaultBtnRect(r))) return (0x2 << 8) | row;
                 if (common.pointInRect(x, y, muteBtnRect(r))) return (0x4 << 8) | row;
@@ -1388,7 +1840,7 @@ pub const Win = struct {
         if (self.hitCard(x, y)) |i| {
             const r = self.cardRect(i);
             switch (self.page) {
-                .configuration => {},
+                .configuration, .engine => {},
                 .output, .input => {
                     const br = defaultBtnRect(r);
                     if (common.pointInRect(x, y, br)) return padRect(br, 4);
@@ -1628,6 +2080,7 @@ pub const Win = struct {
         self.paintCards(cr);
         const t_cards = liveNowNs();
         self.paintDropdown(cr);
+        self.paintEngineModal(cr);
         const t_dd = liveNowNs();
         drawClose(cr, self.win_w);
         const t_paint1 = liveNowNs();
@@ -1815,6 +2268,15 @@ pub const Win = struct {
             return;
         }
         if (self.hover_test) self.hoverStep();
+        // The Engine page reads processes (`pw-metadata`, `pw-top`, `pw-dump`),
+        // so it polls from the tick rather than polling inside a paint: an idle
+        // page still notices an external rate change or a new xrun. An open
+        // dropdown does not stop the polling: checking a value while the popup
+        // is up is exactly when the read has to be current.
+        if (self.page == .engine) {
+            self.refreshEngine(false);
+            self.expireEngineTransients(liveNowNs());
+        }
         // A background icon decode landed: redraw so the placeholder becomes
         // the real artwork.
         if (icon_cache.shared()) |ic| {
@@ -1931,6 +2393,7 @@ pub const Win = struct {
                 if (self.portCount(node, dir) == 0) return;
                 self.openDropdown(.port, node.id, dir, portComboRect(r));
             },
+            .engine => {},
             else => {
                 const node = self.nodeAt(0) orelse return;
                 const dir: u32 = if (self.page == .playback) 1 else 0;
@@ -2150,8 +2613,42 @@ fn paintHeader(self: *Win, c: *cairo.cairo_t) void {
     // Right-side options: page-specific filter, then the meters toggle. The
     // click rects are stored on the way past so hit tests reuse exactly what
     // the frame drew.
+    if (self.page == .engine) {
+        var cap_buf: [160]u8 = undefined;
+        const cap = self.engineHardwareCaption(&cap_buf);
+        const right = self.win_w - content_pad_r - 250;
+        const width = ui_paint.measureTextWidth(cap, 11, 500);
+        const x = @max(content_x + 280, right - width);
+        if (right > x) {
+            ui_paint.showTextW(
+                c,
+                @floatFromInt(x),
+                58,
+                cap,
+                11,
+                500,
+                @floatFromInt(right - x),
+                Theme.text_r,
+                Theme.text_g,
+                Theme.text_b,
+                0.45,
+            );
+        }
+    }
     const mx = self.win_w - content_pad_r - 10;
-    self.hit_meters = paintHeaderToggle(c, mx, "Meters", self.show_meters);
+    self.hit_engine_refresh = null;
+    if (self.page == .engine) {
+        // No meters on this page: offer the manual re-read the settings app
+        // has instead of a toggle that does nothing.
+        self.hit_meters = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+        const bw: i32 = 104;
+        const bh: i32 = 32;
+        const bx = mx - bw;
+        ui_paint.paintBtn(c, bx, 58, bw, bh, "Refresh", false);
+        self.hit_engine_refresh = .{ .x = bx, .y = 58, .w = bw, .h = bh };
+    } else {
+        self.hit_meters = paintHeaderToggle(c, mx, "Meters", self.show_meters);
+    }
     self.hit_page_toggle = null;
     switch (self.page) {
         .recording => self.hit_page_toggle = paintHeaderToggle(c, self.hit_meters.x - 20, "All streams", self.all_streams),
@@ -2181,6 +2678,7 @@ fn paintCards(self: *Win, c: *cairo.cairo_t) void {
             .output => "No output devices",
             .input => "No input devices",
             .configuration => "No audio cards",
+            .engine => "Engine settings",
         };
         ui_paint.showText(c, @floatFromInt(content_x + 4), 160, msg, 14, 400, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
     }
@@ -2194,6 +2692,7 @@ fn paintCards(self: *Win, c: *cairo.cairo_t) void {
                 const dev = self.deviceAt(i) orelse continue;
                 self.paintConfigCard(c, r, dev);
             },
+            .engine => self.paintEngineCard(c, r, i),
             else => {
                 const node = self.nodeAt(i) orelse continue;
                 if (self.page == .output or self.page == .input) {
@@ -2372,6 +2871,776 @@ fn paintDeviceCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const N
     t = liveNowNs();
     self.paintVolumeRow(c, r, node, false);
     self.card_prof.vol += liveNowNs() - t;
+}
+
+// ── engine page ─────────────────────────────────────────────────────────────
+
+fn engineRow(row: usize) EngineRow {
+    return @enumFromInt(@as(u32, @intCast(row)));
+}
+
+fn engineRowValueCount(self: *Win, row: u32) usize {
+    if (row >= engine_row_count) return 0;
+    return switch (engineRow(@intCast(row))) {
+        .clock_rate => blk: {
+            var buf: [24]i32 = undefined;
+            break :blk 1 + self.engineMenuRatesFor(&buf).len;
+        },
+        .force_rate => blk: {
+            var buf: [24]i32 = undefined;
+            break :blk 2 + self.engineMenuRatesFor(&buf).len;
+        },
+        .allowed_rates => 4,
+        .pcm => 4,
+        .latency_node => self.latencyNodeCount(),
+        .quantum, .force_quantum => blk: {
+            var buf: [24]i32 = undefined;
+            break :blk 2 + self.engineMenuQuantumsFor(&buf).len;
+        },
+        else => 0,
+    };
+}
+
+fn engineAppendSorted(out: *[24]i32, n: *usize, v: i32) void {
+    if (v <= 0 or n.* >= out.len) return;
+    var i: usize = 0;
+    while (i < n.*) : (i += 1) {
+        if (out[i] == v) return;
+        if (out[i] > v) break;
+    }
+    var j = n.*;
+    while (j > i) : (j -= 1) out[j] = out[j - 1];
+    out[i] = v;
+    n.* += 1;
+}
+
+/// Rates offered by the two rate combos: the live allowed list plus the
+/// common set, trimmed to the selected sink's advertised range when known.
+fn engineMenuRates(out: *[24]i32) []const i32 {
+    var n: usize = 0;
+    for (engine_rates) |hz| engineAppendSorted(out, &n, hz);
+    return out[0..n];
+}
+
+fn engineMenuRatesFor(self: *Win, out: *[24]i32) []const i32 {
+    const lo: i32 = if (self.caps.available and self.caps.rate_min > 0) self.caps.rate_min else 1;
+    const hi: i32 = if (self.caps.available and self.caps.rate_max > 0) self.caps.rate_max else std.math.maxInt(i32);
+    var n: usize = 0;
+    for (engine_rates) |hz| {
+        if (hz >= lo and hz <= hi) engineAppendSorted(out, &n, hz);
+    }
+    for (self.es.allowed_rates_hz) |hz| engineAppendSorted(out, &n, hz);
+    engineAppendSorted(out, &n, self.es.clock_rate_hz);
+    engineAppendSorted(out, &n, self.es.clock_force_rate_hz);
+    engineAppendSorted(out, &n, self.caps.rate_min);
+    engineAppendSorted(out, &n, self.caps.rate_max);
+    engineAppendSorted(out, &n, self.caps.rate_default);
+    if (n == 0) {
+        for (engine_rates) |hz| engineAppendSorted(out, &n, hz);
+    }
+    return out[0..n];
+}
+
+fn engineMenuQuantums(out: *[24]i32) []const i32 {
+    var n: usize = 0;
+    for (engine_quantums) |q| engineAppendSorted(out, &n, q);
+    return out[0..n];
+}
+
+fn engineMenuQuantumsFor(self: *Win, out: *[24]i32) []const i32 {
+    const limit: i32 = if (self.caps.available) self.caps.quantum_limit else 0;
+    var n: usize = 0;
+    for (engine_quantums) |q| {
+        if (limit <= 0 or q <= limit) engineAppendSorted(out, &n, q);
+    }
+    if (limit <= 0 or self.es.clock_quantum <= limit) engineAppendSorted(out, &n, self.es.clock_quantum);
+    if (limit <= 0 or self.es.clock_force_quantum <= limit) engineAppendSorted(out, &n, self.es.clock_force_quantum);
+    if (n == 0) {
+        for (engine_quantums) |q| engineAppendSorted(out, &n, q);
+    }
+    return out[0..n];
+}
+
+fn engineRateIndex(self: *Win, hz: i32) i32 {
+    var buf: [24]i32 = undefined;
+    const rates = self.engineMenuRatesFor(&buf);
+    for (rates, 0..) |v, k| {
+        if (v == hz) return @intCast(k);
+    }
+    return -1;
+}
+
+fn engineQuantumIndex(self: *Win, q: i32) i32 {
+    var buf: [24]i32 = undefined;
+    const qs = self.engineMenuQuantumsFor(&buf);
+    for (qs, 0..) |v, k| {
+        if (v == q) return @intCast(k);
+    }
+    return -1;
+}
+
+fn enginePresetRates(i: usize) ?[]const i32 {
+    return switch (i) {
+        0 => &engine_preset_hifi,
+        1 => &engine_preset_consumer,
+        2 => &engine_preset_pro,
+        else => null,
+    };
+}
+
+fn enginePresetSel(es: *const live_audio.EngineSettings) i32 {
+    var buf: [24]i32 = undefined;
+    const n = @min(es.allowed_rates_hz.len, buf.len);
+    @memcpy(buf[0..n], es.allowed_rates_hz[0..n]);
+    std.mem.sort(i32, buf[0..n], {}, std.sort.asc(i32));
+    const norm = buf[0..n];
+    if (std.mem.eql(i32, norm, &engine_preset_hifi)) return 0;
+    if (std.mem.eql(i32, norm, &engine_preset_consumer)) return 1;
+    if (std.mem.eql(i32, norm, &engine_preset_pro)) return 2;
+    if (norm.len == 1 and norm[0] == es.clock_rate_hz) return 3;
+    return -1;
+}
+
+fn enginePresetLabel(sel: i32) []const u8 {
+    return switch (sel) {
+        0 => "Hi-Fi (44.1-192 kHz)",
+        1 => "Consumer (44.1 / 48 kHz)",
+        2 => "Pro (48 / 96 / 192 kHz)",
+        3 => "Single (default rate only)",
+        else => "Custom",
+    };
+}
+
+fn enginePcmLabel(choice: i32) []const u8 {
+    if (choice < 0 or choice >= engine_pcm_labels.len) return "(unknown)";
+    return engine_pcm_labels[@intCast(choice)];
+}
+
+fn engineHzDisplay(buf: []u8, hz: i32) []const u8 {
+    if (hz <= 0) return std.fmt.bufPrint(buf, "{d}", .{hz}) catch "?";
+    const k = @divTrunc(hz, 1000);
+    const frac = @rem(hz, 1000);
+    if (frac == 0) return std.fmt.bufPrint(buf, "{d} kHz", .{k}) catch "?";
+    return std.fmt.bufPrint(buf, "{d}.{d} kHz", .{ k, @divTrunc(frac, 100) }) catch "?";
+}
+
+fn engineSame(a: *const live_audio.EngineSettings, b: *const live_audio.EngineSettings) bool {
+    if (a.available != b.available) return false;
+    if (a.clock_rate_hz != b.clock_rate_hz) return false;
+    if (a.clock_force_rate_hz != b.clock_force_rate_hz) return false;
+    if (a.clock_quantum != b.clock_quantum) return false;
+    if (a.clock_force_quantum != b.clock_force_quantum) return false;
+    return std.mem.eql(i32, a.allowed_rates_hz, b.allowed_rates_hz);
+}
+
+fn engineRowTitle(row: usize) []const u8 {
+    return switch (engineRow(row)) {
+        .clock_rate => "Default clock rate",
+        .force_rate => "Force graph rate",
+        .allowed_rates => "Allowed rates",
+        .pcm => "Default PCM format",
+        .quantum => "Default quantum",
+        .force_quantum => "Force quantum",
+        .status => "Live engine",
+        .latency_node => "Latency offset node",
+        .latency_offset => "Latency offset",
+        .restart_wp => "Restart WirePlumber",
+        .restart_pw => "Restart PipeWire",
+    };
+}
+
+fn engineRowHint(row: usize) []const u8 {
+    return switch (engineRow(row)) {
+        .clock_rate => "The graph rate PipeWire settles on",
+        .force_rate => "Pin the graph instead of following streams",
+        .allowed_rates => "Rates the graph may switch between",
+        .pcm => "Pin the default sink's sample format",
+        .quantum => "Buffer size in frames (lower = less latency)",
+        .force_quantum => "Pin the buffer size instead of adapting",
+        .status => "Latency, xruns (click to reset) and DSP load",
+        .latency_node => "Output or input that accepts a processing offset",
+        .latency_offset => "Stored on the node as an offset",
+        .restart_wp => "Reload device and session policy",
+        .restart_pw => "Restarts the graph; every client reconnects",
+    };
+}
+
+fn engineRowItemLabel(self: *Win, row: usize, i: usize) []const u8 {
+    switch (engineRow(row)) {
+        .clock_rate => {
+            var buf: [24]i32 = undefined;
+            const rates = self.engineMenuRatesFor(&buf);
+            if (i == rates.len) return "Custom rate…";
+            if (i > rates.len) return "";
+            return engineHzDisplay(&self.engine_label_buf, rates[i]);
+        },
+        .force_rate => {
+            if (i == 0) return "Auto";
+            var buf: [24]i32 = undefined;
+            const rates = self.engineMenuRatesFor(&buf);
+            if (i - 1 == rates.len) return "Custom rate…";
+            if (i - 1 > rates.len) return "";
+            return engineHzDisplay(&self.engine_label_buf, rates[i - 1]);
+        },
+        .allowed_rates => return enginePresetLabel(@intCast(i)),
+        .pcm => return enginePcmLabel(@intCast(i)),
+        .quantum, .force_quantum => {
+            if (i == 0) return if (engineRow(row) == .quantum) "Auto (default)" else "Auto";
+            var buf: [24]i32 = undefined;
+            const qs = self.engineMenuQuantumsFor(&buf);
+            if (i - 1 == qs.len) return "Custom quantum…";
+            if (i - 1 > qs.len) return "";
+            return std.fmt.bufPrint(&self.engine_label_buf, "{d} frames", .{qs[i - 1]}) catch "?";
+        },
+        .latency_node => {
+            const node = self.latencyNodeAt(i) orelse return "";
+            return node.displayName();
+        },
+        else => return "",
+    }
+}
+
+fn engineRowValue(self: *Win, row: usize, buf: []u8) []const u8 {
+    return switch (engineRow(row)) {
+        .clock_rate => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else engineHzDisplay(buf, self.es.clock_rate_hz),
+        .force_rate => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_force_rate_hz == 0) "Auto" else engineHzDisplay(buf, self.es.clock_force_rate_hz),
+        .allowed_rates => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else enginePresetLabel(enginePresetSel(&self.es)),
+        .pcm => if (!self.have_pcm) "Reading…" else if (self.pcm_choice < 0) "(unknown)" else enginePcmLabel(self.pcm_choice),
+        .quantum => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_quantum == 0) "Auto (default)" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_quantum}) catch "?",
+        .force_quantum => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_force_quantum == 0) "Auto" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_force_quantum}) catch "?",
+        .latency_node => self.latencyNodeLabel(),
+        else => "",
+    };
+}
+
+fn engineRowSel(self: *Win, row: usize) i32 {
+    if (row >= engine_row_count) return -1;
+    return switch (engineRow(row)) {
+        .clock_rate => if (!self.es.available) -1 else self.engineRateIndex(self.es.clock_rate_hz),
+        .force_rate => if (!self.es.available) -1 else if (self.es.clock_force_rate_hz == 0) 0 else blk: {
+            const k = self.engineRateIndex(self.es.clock_force_rate_hz);
+            break :blk if (k < 0) -1 else k + 1;
+        },
+        .allowed_rates => if (!self.es.available) -1 else enginePresetSel(&self.es),
+        .pcm => self.pcm_choice,
+        .quantum => if (!self.es.available) -1 else if (self.es.clock_quantum == 0) 0 else blk: {
+            const k = self.engineQuantumIndex(self.es.clock_quantum);
+            break :blk if (k < 0) -1 else k + 1;
+        },
+        .force_quantum => if (!self.es.available) -1 else if (self.es.clock_force_quantum == 0) 0 else blk: {
+            const k = self.engineQuantumIndex(self.es.clock_force_quantum);
+            break :blk if (k < 0) -1 else k + 1;
+        },
+        .latency_node => self.lat_node,
+        else => -1,
+    };
+}
+
+fn applyEngineRow(self: *Win, row: usize, i: usize) void {
+    if (row >= engine_row_count) return;
+    var rb: [24]i32 = undefined;
+    var qb: [24]i32 = undefined;
+    var ok = false;
+    switch (engineRow(row)) {
+        .clock_rate => {
+            const rates = self.engineMenuRatesFor(&rb);
+            if (i < rates.len) {
+                ok = live_audio.applyEngineClockRateHz(self.io, rates[i]);
+            } else if (i == rates.len) {
+                self.openEngineModal(.rate, false);
+                return;
+            }
+        },
+        .force_rate => {
+            if (i == 0) {
+                ok = live_audio.applyEngineForceRateHz(self.io, 0);
+            } else {
+                const rates = self.engineMenuRatesFor(&rb);
+                if (i - 1 < rates.len) {
+                    ok = live_audio.applyEngineForceRateHz(self.io, rates[i - 1]);
+                } else if (i - 1 == rates.len) {
+                    self.openEngineModal(.rate, true);
+                    return;
+                }
+            }
+        },
+        .allowed_rates => {
+            if (i == 3) {
+                ok = live_audio.applyEngineAllowedRatesHz(self.io, &.{self.es.clock_rate_hz});
+            } else if (enginePresetRates(i)) |rates| {
+                ok = live_audio.applyEngineAllowedRatesHz(self.io, rates);
+            }
+        },
+        .pcm => {
+            if (i < engine_pcm_labels.len) {
+                ok = live_audio.applyCompatPcm(self.gpa, self.io, @intCast(i));
+                if (ok) {
+                    self.pcm_choice = @intCast(i);
+                    self.have_pcm = true;
+                }
+            }
+        },
+        .quantum => {
+            if (i == 0) {
+                ok = live_audio.applyEngineQuantum(self.io, 0);
+            } else {
+                const qs = self.engineMenuQuantumsFor(&qb);
+                if (i - 1 < qs.len) {
+                    ok = live_audio.applyEngineQuantum(self.io, qs[i - 1]);
+                } else if (i - 1 == qs.len) {
+                    self.openEngineModal(.quantum, false);
+                    return;
+                }
+            }
+        },
+        .force_quantum => {
+            if (i == 0) {
+                ok = live_audio.applyEngineForceQuantum(self.io, 0);
+            } else {
+                const qs = self.engineMenuQuantumsFor(&qb);
+                if (i - 1 < qs.len) {
+                    ok = live_audio.applyEngineForceQuantum(self.io, qs[i - 1]);
+                } else if (i - 1 == qs.len) {
+                    self.openEngineModal(.quantum, true);
+                    return;
+                }
+            }
+        },
+        .latency_node => {
+            if (i < self.latencyNodeCount()) {
+                self.lat_node = @intCast(i);
+                self.loadLatencyField();
+                self.needs_repaint = true;
+            }
+            return;
+        },
+        else => {},
+    }
+    if (!ok) logz.err("engine: write failed row={d} item={d}", .{ row, i });
+    if (ok) {
+        self.refreshEngine(true);
+        self.damageAll();
+        self.needs_repaint = true;
+    }
+}
+
+// Engine row geometry. The list rows all use `card_h_config`.
+
+fn engineModalRect(win_w: i32, win_h: i32) common.Rect {
+    var w: i32 = win_w - 80;
+    if (w > 440) w = 440;
+    if (w < 320) w = 320;
+    const h: i32 = 208;
+    return .{ .x = @divTrunc(win_w - w, 2), .y = @divTrunc(win_h - h, 2), .w = w, .h = h };
+}
+
+fn engineModalFieldRect(r: common.Rect) common.Rect {
+    return .{ .x = r.x + 20, .y = r.y + 76, .w = r.w - 40, .h = combo_h };
+}
+
+fn engineModalCancelRect(r: common.Rect) common.Rect {
+    return .{ .x = r.x + r.w - 20 - 100 - 8 - 100, .y = r.y + r.h - 20 - combo_h, .w = 100, .h = combo_h };
+}
+
+fn engineModalSubmitRect(r: common.Rect) common.Rect {
+    return .{ .x = r.x + r.w - 20 - 100, .y = r.y + r.h - 20 - combo_h, .w = 100, .h = combo_h };
+}
+
+fn engineStatusColW(r: common.Rect) i32 {
+    return @divTrunc(r.w - 56 - card_pad, 3);
+}
+
+fn engineXrunResetRect(r: common.Rect) common.Rect {
+    const cw = engineStatusColW(r);
+    return .{ .x = r.x + 56 + cw + cw - 30, .y = r.y + 16, .w = 20, .h = 20 };
+}
+
+fn engineXrunHitRect(r: common.Rect) common.Rect {
+    const cw = engineStatusColW(r);
+    return .{ .x = r.x + 56 + cw, .y = r.y, .w = cw, .h = r.h };
+}
+
+fn engineLatFieldRect(r: common.Rect) common.Rect {
+    const w: i32 = 84;
+    const h: i32 = combo_h;
+    const y = r.y + @divTrunc(r.h - h, 2);
+    const x = engineLatResetRect(r).x - 8 - 118 - 8 - 104 - 8 - w;
+    return .{ .x = x, .y = y, .w = w, .h = h };
+}
+
+fn engineLatUnitRect(r: common.Rect) common.Rect {
+    const f = engineLatFieldRect(r);
+    return .{ .x = f.x + f.w + 8, .y = f.y, .w = 104, .h = f.h };
+}
+
+fn engineLatApplyRect(r: common.Rect) common.Rect {
+    const u = engineLatUnitRect(r);
+    return .{ .x = u.x + u.w + 8, .y = u.y, .w = 118, .h = u.h };
+}
+
+fn engineLatResetRect(r: common.Rect) common.Rect {
+    return .{ .x = r.x + r.w - card_pad - 128, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = 128, .h = combo_h };
+}
+
+fn engineRestartBtnRect(r: common.Rect) common.Rect {
+    return .{ .x = r.x + r.w - card_pad - 120, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = 120, .h = combo_h };
+}
+
+fn paintEngineTextField(c: *cairo.cairo_t, r: common.Rect, value: []const u8, focused: bool, placeholder: []const u8) void {
+    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (focused) 0.10 else 0.06);
+    cairo.cairo_fill_preserve(c);
+    cairo.cairo_set_line_width(c, 1.0);
+    if (focused) {
+        cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.9);
+    } else {
+        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
+    }
+    cairo.cairo_stroke(c);
+    const shown = if (value.len > 0) value else placeholder;
+    ui_paint.showTextW(
+        c,
+        @floatFromInt(r.x + 10),
+        @floatFromInt(r.y + 19),
+        shown,
+        12,
+        500,
+        @floatFromInt(@max(0, r.w - 18)),
+        Theme.text_r,
+        Theme.text_g,
+        Theme.text_b,
+        if (value.len > 0) 0.92 else 0.38,
+    );
+}
+
+/// Width of the "frames" segment in the latency unit toggle. The control is a
+/// fixed 104 px; the split follows the measured label so both words keep the
+/// same breathing room instead of an equal 50/50 split cramming "frames".
+fn paintEngineUnitToggle(self: *Win, c: *cairo.cairo_t, r: common.Rect, use_ns: bool) void {
+    // Size each segment to its label plus padding, then share the leftover
+    // width equally. Measuring keeps the padding symmetric whatever the font
+    // renders "frames" as.
+    const pad: i32 = 12;
+    const lw = ui_paint.measureTextWidth("frames", 11, 600);
+    const nw = ui_paint.measureTextWidth("ns", 11, 600);
+    var split = lw + 2 * pad + @divTrunc(@max(0, r.w - (lw + nw + 4 * pad)), 2);
+    if (split < 8 or split > r.w - 8) split = @divTrunc(r.w, 2);
+    self.engine_unit_split = split;
+    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.06);
+    cairo.cairo_fill_preserve(c);
+    cairo.cairo_set_line_width(c, 1.0);
+    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
+    cairo.cairo_stroke(c);
+
+    const ax = if (use_ns) r.x + split else r.x;
+    const aw = if (use_ns) r.w - split else split;
+    ui_paint.roundRect(c, @floatFromInt(ax + 2), @floatFromInt(r.y + 2), @floatFromInt(aw - 4), @floatFromInt(r.h - 4), 6);
+    cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.20);
+    cairo.cairo_fill(c);
+
+    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.28);
+    cairo.cairo_set_line_width(c, 1.0);
+    cairo.cairo_move_to(c, @floatFromInt(r.x + split), @floatFromInt(r.y + 6));
+    cairo.cairo_line_to(c, @floatFromInt(r.x + split), @floatFromInt(r.y + r.h - 6));
+    cairo.cairo_stroke(c);
+
+    const labels = [_][]const u8{ "frames", "ns" };
+    for (labels, 0..) |lab, i| {
+        const active = (i == 1) == use_ns;
+        const center = if (i == 0)
+            r.x + @divTrunc(split, 2)
+        else
+            r.x + split + @divTrunc(r.w - split, 2);
+        ui_paint.showText(
+            c,
+            @floatFromInt(center - @divTrunc(ui_paint.measureTextWidth(lab, 11, 600), 2)),
+            @floatFromInt(r.y + 19),
+            lab,
+            11,
+            600,
+            if (active) Theme.acc_r else Theme.text_r,
+            if (active) Theme.acc_g else Theme.text_g,
+            if (active) Theme.acc_b else Theme.text_b,
+            if (active) 1.0 else 0.62,
+        );
+    }
+}
+
+fn paintEngineStatus(self: *Win, c: *cairo.cairo_t, r: common.Rect) void {
+    const cw = engineStatusColW(r);
+    const x0 = r.x + 56;
+    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "timer", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+
+    // Column separators.
+    var k: i32 = 1;
+    while (k < 3) : (k += 1) {
+        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.22);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_move_to(c, @floatFromInt(x0 + k * cw), @floatFromInt(r.y + 12));
+        cairo.cairo_line_to(c, @floatFromInt(x0 + k * cw), @floatFromInt(r.y + r.h - 12));
+        cairo.cairo_stroke(c);
+    }
+
+    var lat_buf: [32]u8 = undefined;
+    const lat = self.engineLatencyDisplay(&lat_buf);
+    ui_paint.showText(c, @floatFromInt(x0 + 14), @floatFromInt(r.y + 24), "LATENCY", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+    ui_paint.showText(c, @floatFromInt(x0 + 14), @floatFromInt(r.y + 48), lat, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+
+    const xr: i64 = @max(@as(i64, 0), self.top.xruns_total - self.xrun_base);
+    var xr_buf: [24]u8 = undefined;
+    const xr_s = if (!self.top.available) "—" else std.fmt.bufPrint(&xr_buf, "{d}", .{xr}) catch "0";
+    ui_paint.showText(c, @floatFromInt(x0 + cw + 14), @floatFromInt(r.y + 24), "XRUNS", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+    ui_paint.showText(c, @floatFromInt(x0 + cw + 14), @floatFromInt(r.y + 48), xr_s, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    if (self.top.available) {
+        const rr = engineXrunResetRect(r);
+        ui_paint.roundRect(c, @floatFromInt(rr.x), @floatFromInt(rr.y), @floatFromInt(rr.w), @floatFromInt(rr.h), 6);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.06);
+        cairo.cairo_fill(c);
+        ui_paint.glyph(c, @floatFromInt(rr.x + @divTrunc(rr.w, 2)), @floatFromInt(rr.y + @divTrunc(rr.h, 2)), 12, "restart_alt", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+    }
+
+    var dsp_buf: [24]u8 = undefined;
+    const dsp_s = if (!self.top.available)
+        "—"
+    else blk: {
+        const pct = @max(0, @min(100, self.top.dsp_load_pct));
+        // DSP load is often well under 1% for a desktop graph. Scale the
+        // precision so the number actually moves instead of reading "0%".
+        break :blk if (pct < 1)
+            std.fmt.bufPrint(&dsp_buf, "{d:.2}%", .{pct}) catch "0%"
+        else if (pct < 10)
+            std.fmt.bufPrint(&dsp_buf, "{d:.1}%", .{pct}) catch "0%"
+        else
+            std.fmt.bufPrint(&dsp_buf, "{d:.0}%", .{pct}) catch "0%";
+    };
+    const dx = x0 + 2 * cw + 14;
+    ui_paint.showText(c, @floatFromInt(dx), @floatFromInt(r.y + 24), "DSP LOAD", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+    ui_paint.showText(c, @floatFromInt(dx), @floatFromInt(r.y + 48), dsp_s, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    const my = r.y + r.h - 16;
+    const mw = cw - 28;
+    ui_paint.roundRect(c, @floatFromInt(dx), @floatFromInt(my), @floatFromInt(mw), 4, 2);
+    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.10);
+    cairo.cairo_fill(c);
+    if (self.top.available and self.top.dsp_load_pct > 0) {
+        const pct: f64 = @max(0, @min(100, self.top.dsp_load_pct));
+        const fw: f64 = @as(f64, @floatFromInt(mw)) * pct / 100.0;
+        ui_paint.roundRect(c, @floatFromInt(dx), @floatFromInt(my), fw, 4, 2);
+        cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
+        cairo.cairo_fill(c);
+    }
+}
+
+/// Expected graph latency from the resolved quantum and rate.
+fn engineLatencyDisplay(self: *Win, buf: []u8) []const u8 {
+    // Prefer the sink's live pw-top row: it is the cycle the graph is actually
+    // running, while `clock.quantum` is only the ceiling clients may ask for.
+    const qn: i32 = if (self.top.focus_quantum > 0)
+        self.top.focus_quantum
+    else if (self.es.clock_force_quantum > 0)
+        self.es.clock_force_quantum
+    else if (self.es.clock_quantum > 0)
+        self.es.clock_quantum
+    else
+        self.top.reference_quantum;
+    const rate: i32 = if (self.top.focus_rate_hz > 0)
+        self.top.focus_rate_hz
+    else if (self.es.clock_force_rate_hz > 0)
+        self.es.clock_force_rate_hz
+    else if (self.es.clock_rate_hz > 0)
+        self.es.clock_rate_hz
+    else
+        self.top.reference_rate_hz;
+    if (qn <= 0 or rate <= 0) return "—";
+    const ms = @as(f64, @floatFromInt(qn)) / @as(f64, @floatFromInt(rate)) * 1000.0;
+    return std.fmt.bufPrint(buf, "{d:.2} ms", .{ms}) catch "—";
+}
+
+fn paintEngineLatencyRow(self: *Win, c: *cairo.cairo_t, r: common.Rect) void {
+    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "timer", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(8), 15, 500, @floatFromInt(r.w - 500), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(8), 11, 400, @floatFromInt(r.w - 500), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+
+    const has_node = self.latencyNode() != null;
+    paintEngineTextField(c, engineLatFieldRect(r), self.lat_field[0..self.lat_len], self.lat_focus, "0");
+    paintEngineUnitToggle(self, c, engineLatUnitRect(r), self.lat_ns);
+    const ar = engineLatApplyRect(r);
+    if (has_node) {
+        ui_paint.paintBtn(c, ar.x, ar.y, ar.w, ar.h, "Apply", false);
+    } else {
+        ui_paint.paintBtnDisabled(c, ar.x, ar.y, ar.w, ar.h, "Apply");
+    }
+    const rr = engineLatResetRect(r);
+    if (self.latencyNodeCount() > 0) {
+        ui_paint.paintBtn(c, rr.x, rr.y, rr.w, rr.h, "Reset all", false);
+    } else {
+        ui_paint.paintBtnDisabled(c, rr.x, rr.y, rr.w, rr.h, "Reset all");
+    }
+}
+
+fn paintEngineRestartRow(self: *Win, c: *cairo.cairo_t, r: common.Rect, row: usize) void {
+    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "restart_alt", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(row), 15, 500, @floatFromInt(r.w - 260), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(row), 11, 400, @floatFromInt(r.w - 260), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+
+    const now = liveNowNs();
+    const is_wp = engineRow(row) == .restart_wp;
+    const arm_ns = if (is_wp) self.restart_wp_arm_ns else self.restart_pw_arm_ns;
+    const done_ns = if (is_wp) self.restart_wp_done_ns else self.restart_pw_done_ns;
+    const armed = arm_ns != 0 and now - arm_ns <= engine_restart_arm_ns;
+    const done = done_ns != 0 and now - done_ns <= engine_restart_done_ns;
+    const br = engineRestartBtnRect(r);
+    const label = if (done) "Restarted" else if (armed) "Confirm" else "Restart";
+    ui_paint.paintBtn(c, br.x, br.y, br.w, br.h, label, false);
+    if (done) {
+        ui_paint.glyph(c, @floatFromInt(br.x + 22), @floatFromInt(br.y + @divTrunc(br.h, 2)), 15, "check", Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
+    }
+}
+
+fn paintEngineModal(self: *Win, c: *cairo.cairo_t) void {
+    if (self.emodal == .none) return;
+    // Dim the page so the dialog reads as modal.
+    cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.55);
+    cairo.cairo_paint(c);
+
+    const r = engineModalRect(self.win_w, self.win_h);
+    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 16);
+    cairo.cairo_set_source_rgba(c, Theme.bg_r * 0.55, Theme.bg_g * 0.55, Theme.bg_b * 0.55, 0.99);
+    cairo.cairo_fill_preserve(c);
+    cairo.cairo_set_line_width(c, 1.0);
+    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
+    cairo.cairo_stroke(c);
+
+    const title = switch (self.emodal) {
+        .rate => "Custom sample rate",
+        .quantum => "Custom quantum",
+        .none => "",
+    };
+    const hint = switch (self.emodal) {
+        .rate => "Written to the graph through pw-metadata.",
+        .quantum => "Frames per graph cycle; lower means less latency.",
+        .none => "",
+    };
+    ui_paint.showText(c, @floatFromInt(r.x + 20), @floatFromInt(r.y + 34), title, 17, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 20), @floatFromInt(r.y + 56), hint, 11, 400, @floatFromInt(r.w - 40), Theme.text_r, Theme.text_g, Theme.text_b, 0.55);
+
+    const placeholder = switch (self.emodal) {
+        .rate => "e.g. 48000",
+        .quantum => "e.g. 1024",
+        .none => "",
+    };
+    paintEngineTextField(c, engineModalFieldRect(r), self.emodal_buf[0..self.emodal_len], true, placeholder);
+    const cr = engineModalCancelRect(r);
+    ui_paint.paintBtn(c, cr.x, cr.y, cr.w, cr.h, "Cancel", false);
+    const sr = engineModalSubmitRect(r);
+    ui_paint.paintBtn(c, sr.x, sr.y, sr.w, sr.h, "Apply", false);
+}
+
+fn paintEngineCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, i: usize) void {
+    self.paintCardBg(c, r);
+    switch (engineRow(i)) {
+        .status => return paintEngineStatus(self, c, r),
+        .latency_offset => return paintEngineLatencyRow(self, c, r),
+        .restart_wp, .restart_pw => return paintEngineRestartRow(self, c, r, i),
+        else => {},
+    }
+    const row = engineRow(i);
+    const glyph_name: []const u8 = switch (row) {
+        .latency_node => "timer",
+        .pcm => "tune",
+        else => "tune",
+    };
+    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, glyph_name, Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(i), 15, 500, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(i), 11, 400, @floatFromInt(r.w - 420), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+    var buf: [64]u8 = undefined;
+    const cr = profileComboRect(r);
+    const open = self.dd.open and self.dd_state.kind == .engine and self.dd_state.id == @as(u32, @intCast(i));
+    paintCombo(c, r, cr, self.engineRowValue(i, &buf), open);
+}
+
+/// "What this output can actually do" line: sink, rate span, formats,
+/// channels and quantum limit from its `EnumFormat`.
+fn engineHardwareCaption(self: *Win, buf: []u8) []const u8 {
+    const caps = &self.caps;
+    if (!caps.available) {
+        return if (self.defaultSinkNodeId() != 0) "Hardware limits unavailable" else "No output device";
+    }
+    var n: usize = 0;
+    const append = struct {
+        fn add(b: []u8, at: *usize, part: []const u8) void {
+            if (part.len == 0) return;
+            const sep = if (at.* == 0) "" else " · ";
+            if (at.* + sep.len + part.len > b.len) return;
+            @memcpy(b[at.*..][0..sep.len], sep);
+            at.* += sep.len;
+            @memcpy(b[at.*..][0..part.len], part);
+            at.* += part.len;
+        }
+    }.add;
+
+    var rate_b: [40]u8 = undefined;
+    if (caps.rate_min > 0 and caps.rate_max >= caps.rate_min) {
+        var lo_b: [12]u8 = undefined;
+        var hi_b: [12]u8 = undefined;
+        const lo = engineShortRate(&lo_b, caps.rate_min);
+        const hi = engineShortRate(&hi_b, caps.rate_max);
+        if (caps.rate_min == caps.rate_max) {
+            append(buf, &n, std.fmt.bufPrint(&rate_b, "{s} kHz", .{lo}) catch "");
+        } else {
+            append(buf, &n, std.fmt.bufPrint(&rate_b, "{s}-{s} kHz", .{ lo, hi }) catch "");
+        }
+    } else if (caps.rate_count > 0) {
+        var lo_b: [12]u8 = undefined;
+        var hi_b: [12]u8 = undefined;
+        const lo = engineShortRate(&lo_b, caps.rates[0]);
+        const hi = engineShortRate(&hi_b, caps.rates[caps.rate_count - 1]);
+        append(buf, &n, std.fmt.bufPrint(&rate_b, "{s}-{s} kHz", .{ lo, hi }) catch "");
+    }
+
+    var fmt_b: [32]u8 = undefined;
+    const fmt_s = engineCapsFormats(caps.formats, &fmt_b);
+    append(buf, &n, fmt_s);
+
+    var ch_b: [24]u8 = undefined;
+    if (caps.channels > 0) append(buf, &n, std.fmt.bufPrint(&ch_b, "{d} ch", .{caps.channels}) catch "");
+
+    var q_b: [32]u8 = undefined;
+    if (caps.quantum_limit > 0) append(buf, &n, std.fmt.bufPrint(&q_b, "quantum <={d}", .{caps.quantum_limit}) catch "");
+
+    return buf[0..n];
+}
+
+fn engineShortRate(buf: []u8, hz: i32) []const u8 {
+    if (hz <= 0) return "?";
+    if (@mod(hz, 1000) == 0) return std.fmt.bufPrint(buf, "{d}", .{@divTrunc(hz, 1000)}) catch "?";
+    return std.fmt.bufPrint(buf, "{d}.{d}", .{
+        @divTrunc(hz, 1000),
+        @divTrunc(@mod(hz, 1000), 100),
+    }) catch "?";
+}
+
+fn engineCapsFormats(bits: u16, buf: []u8) []const u8 {
+    const names = [_]struct { bit: u16, name: []const u8 }{
+        .{ .bit = live_audio.fmt_s16, .name = "S16LE" },
+        .{ .bit = live_audio.fmt_s24, .name = "S24LE" },
+        .{ .bit = live_audio.fmt_s32, .name = "S32LE" },
+        .{ .bit = live_audio.fmt_f32, .name = "F32LE" },
+        .{ .bit = live_audio.fmt_f64, .name = "F64LE" },
+    };
+    var n: usize = 0;
+    for (names) |entry| {
+        if (bits & entry.bit == 0) continue;
+        const need: usize = entry.name.len + (if (n == 0) @as(usize, 0) else 3);
+        if (n + need > buf.len) break;
+        if (n > 0) {
+            @memcpy(buf[n..][0..3], " / ");
+            n += 3;
+        }
+        @memcpy(buf[n..][0..entry.name.len], entry.name);
+        n += entry.name.len;
+    }
+    return buf[0..n];
 }
 
 fn paintConfigCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, dev: *const Device) void {
@@ -2693,6 +3962,7 @@ fn ddCount(self: *Win) usize {
             const dev = self.graph.findDevice(self.dd_state.id) orelse return 0;
             return dev.profiles.items.len;
         },
+        .engine => return engineRowValueCount(self, self.dd_state.id),
     }
 }
 
@@ -2710,6 +3980,11 @@ fn ddLabel(self: *Win, i: usize) []const u8 {
         .profile => {
             const prof = self.ddItemProfile(i) orelse return "";
             return prof.label();
+        },
+        .engine => {
+            const row: usize = @intCast(self.dd_state.id);
+            if (row >= engine_row_count) return "";
+            return self.engineRowItemLabel(row, i);
         },
     }
 }
@@ -2749,32 +4024,40 @@ fn ddCurrentSel(self: *Win) i32 {
             }
             return -1;
         },
+        .engine => {
+            const row: usize = @intCast(self.dd_state.id);
+            return self.engineRowSel(row);
+        },
     }
 }
 
 /// Land a popup row: move the stream, switch the port or the profile.
 fn ddApply(self: *Win, row: i32) void {
     if (row < 0) return;
-    const c = self.client orelse return;
     const i: usize = @intCast(row);
-    switch (self.dd_state.kind) {
-        .none => {},
-        .move => {
-            const target = self.ddItemNode(i) orelse return;
-            _ = c.moveStream(self.dd_state.id, target.id);
-        },
-        .port => {
-            const node = self.graph.findNode(self.dd_state.id) orelse return;
-            const route = self.ddItemRoute(i) orelse return;
-            const dev = self.deviceFor(node) orelse return;
-            // Exactly what pipewire-pulse does: the route's index plus the
-            // node's `card.profile.device`.
-            _ = c.setRoute(dev.id, route.index, node.card_profile_device);
-        },
-        .profile => {
-            const prof = self.ddItemProfile(i) orelse return;
-            _ = c.setProfile(self.dd_state.id, prof.index);
-        },
+    if (self.dd_state.kind == .engine) {
+        self.applyEngineRow(@intCast(self.dd_state.id), i);
+    } else {
+        const c = self.client orelse return;
+        switch (self.dd_state.kind) {
+            .none, .engine => {},
+            .move => {
+                const target = self.ddItemNode(i) orelse return;
+                _ = c.moveStream(self.dd_state.id, target.id);
+            },
+            .port => {
+                const node = self.graph.findNode(self.dd_state.id) orelse return;
+                const route = self.ddItemRoute(i) orelse return;
+                const dev = self.deviceFor(node) orelse return;
+                // Exactly what pipewire-pulse does: the route's index plus the
+                // node's `card.profile.device`.
+                _ = c.setRoute(dev.id, route.index, node.card_profile_device);
+            },
+            .profile => {
+                const prof = self.ddItemProfile(i) orelse return;
+                _ = c.setProfile(self.dd_state.id, prof.index);
+            },
+        }
     }
     logz.log("ux: combo select {s} id={d} row={d}", .{ @tagName(self.dd_state.kind), self.dd_state.id, row });
     self.markAction("combo-select");
@@ -2871,6 +4154,55 @@ fn onAxis(ctx: *anyopaque, delta: f64) void {
 fn onKey(ctx: *anyopaque, ev: *const wl_seat.KeyEvent) void {
     const self: *Win = @ptrCast(@alignCast(ctx));
     if (ev.state != 1) return; // pressed only
+    if (self.emodal != .none) {
+        switch (ev.sym) {
+            wl_seat.xkb.XKB_KEY_Escape => self.emodal = .none,
+            wl_seat.xkb.XKB_KEY_Return, wl_seat.xkb.XKB_KEY_KP_Enter => self.submitEngineModal(),
+            wl_seat.xkb.XKB_KEY_BackSpace => {
+                if (self.emodal_len > 0) self.emodal_len -= 1;
+            },
+            else => {
+                if (ev.utf8_len > 0) {
+                    const ch = ev.utf8[0];
+                    if (ch >= '0' and ch <= '9' and self.emodal_len < self.emodal_buf.len - 1) {
+                        self.emodal_buf[self.emodal_len] = ch;
+                        self.emodal_len += 1;
+                    }
+                }
+            },
+        }
+        self.needs_repaint = true;
+        self.damageAll();
+        self.repaint();
+        return;
+    }
+    if (self.lat_focus and self.page == .engine) {
+        switch (ev.sym) {
+            wl_seat.xkb.XKB_KEY_Escape => {
+                self.lat_focus = false;
+            },
+            wl_seat.xkb.XKB_KEY_Return, wl_seat.xkb.XKB_KEY_KP_Enter => {
+                self.applyLatency();
+                self.lat_focus = false;
+            },
+            wl_seat.xkb.XKB_KEY_BackSpace => {
+                if (self.lat_len > 0) self.lat_len -= 1;
+            },
+            else => {
+                if (ev.utf8_len > 0) {
+                    const ch = ev.utf8[0];
+                    if (ch >= '0' and ch <= '9' and self.lat_len < self.lat_field.len - 1) {
+                        self.lat_field[self.lat_len] = ch;
+                        self.lat_len += 1;
+                    }
+                }
+            },
+        }
+        self.needs_repaint = true;
+        self.damageAll();
+        self.repaint();
+        return;
+    }
     switch (ev.sym) {
         wl_seat.xkb.XKB_KEY_Escape => {
             if (self.dd.open) {
@@ -2901,6 +4233,20 @@ fn onButton(ctx: *anyopaque, button: u32, state: u32) void {
             self.drag = null;
             self.repaint();
         }
+        return;
+    }
+
+    // The custom-value dialog is modal: it swallows every click.
+    if (self.emodal != .none) {
+        const r = engineModalRect(self.win_w, self.win_h);
+        if (common.pointInRect(px, py, engineModalSubmitRect(r))) {
+            self.submitEngineModal();
+        } else {
+            self.emodal = .none;
+            self.needs_repaint = true;
+            self.damageAll();
+        }
+        self.repaint();
         return;
     }
 
@@ -2944,6 +4290,16 @@ fn onButton(ctx: *anyopaque, button: u32, state: u32) void {
     // Header toggles.
     if (py < @as(f64, @floatFromInt(header_h))) {
         var changed = false;
+        if (self.hit_engine_refresh) |r| {
+            if (common.pointInRect(px, py, r)) {
+                self.refreshEngine(true);
+                self.needs_repaint = true;
+                self.damageAll();
+                self.markAction("engine-refresh");
+                self.repaint();
+                return;
+            }
+        }
         if (common.pointInRect(px, py, self.hit_meters)) {
             self.show_meters = !self.show_meters;
             changed = true;
@@ -2952,6 +4308,7 @@ fn onButton(ctx: *anyopaque, button: u32, state: u32) void {
                 switch (self.page) {
                     .recording => self.all_streams = !self.all_streams,
                     .output, .input => self.hw_only = !self.hw_only,
+                    .engine => {},
                     else => {},
                 }
                 changed = true;
@@ -2984,6 +4341,80 @@ fn onButton(ctx: *anyopaque, button: u32, state: u32) void {
         .output, .input => {
             const node = self.nodeAt(idx) orelse return;
             self.clickNodeRow(r, node);
+        },
+        .engine => {
+            const now = liveNowNs();
+            switch (engineRow(idx)) {
+                .status => {
+                    if (self.top.available and common.pointInRect(px, py, engineXrunHitRect(r))) {
+                        self.xrun_base = self.top.xruns_total;
+                        self.needs_repaint = true;
+                        self.markAction("xrun-reset");
+                        self.damageAll();
+                    }
+                },
+                .latency_offset => {
+                    if (common.pointInRect(px, py, engineLatFieldRect(r))) {
+                        self.lat_focus = true;
+                        self.needs_repaint = true;
+                        self.markAction("latency-focus");
+                    } else if (common.pointInRect(px, py, engineLatUnitRect(r))) {
+                        // Pick the half that was clicked, not a blind toggle.
+                        const ur = engineLatUnitRect(r);
+                        const split = if (self.engine_unit_split > 0) self.engine_unit_split else @divTrunc(ur.w, 2);
+                        self.lat_ns = px >= @as(f64, @floatFromInt(ur.x + split));
+                        self.needs_repaint = true;
+                        self.damageAll();
+                    } else if (common.pointInRect(px, py, engineLatApplyRect(r))) {
+                        if (self.latencyNode() != null) self.applyLatency();
+                    } else if (common.pointInRect(px, py, engineLatResetRect(r))) {
+                        if (self.latencyNodeCount() > 0) self.resetAllLatency();
+                    } else {
+                        self.lat_focus = false;
+                    }
+                },
+                .restart_wp => {
+                    if (common.pointInRect(px, py, engineRestartBtnRect(r))) {
+                        const armed = self.restart_wp_arm_ns != 0 and now - self.restart_wp_arm_ns <= engine_restart_arm_ns;
+                        if (!armed) {
+                            self.restart_wp_arm_ns = now;
+                        } else {
+                            self.restart_wp_arm_ns = 0;
+                            _ = live_audio.restartWirePlumber(self.io);
+                            self.restart_wp_done_ns = now;
+                            self.engine_at_ns = 0;
+                            self.caps_at_ns = 0;
+                        }
+                        self.needs_repaint = true;
+                        self.damageAll();
+                        self.markAction("restart-wp");
+                    }
+                },
+                .restart_pw => {
+                    if (common.pointInRect(px, py, engineRestartBtnRect(r))) {
+                        const armed = self.restart_pw_arm_ns != 0 and now - self.restart_pw_arm_ns <= engine_restart_arm_ns;
+                        if (!armed) {
+                            self.restart_pw_arm_ns = now;
+                        } else {
+                            self.restart_pw_arm_ns = 0;
+                            _ = live_audio.restartPipeWire(self.io);
+                            self.restart_pw_done_ns = now;
+                            self.engine_at_ns = 0;
+                            self.caps_at_ns = 0;
+                        }
+                        self.needs_repaint = true;
+                        self.damageAll();
+                        self.markAction("restart-pw");
+                    }
+                },
+                else => {
+                    const cr = profileComboRect(r);
+                    if (common.pointInRect(px, py, cr)) {
+                        self.lat_focus = false;
+                        self.openDropdown(.engine, @intCast(idx), 0, cr);
+                    }
+                },
+            }
         },
         else => {
             const node = self.nodeAt(idx) orelse return;
