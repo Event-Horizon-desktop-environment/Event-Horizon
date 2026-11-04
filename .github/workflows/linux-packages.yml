@@ -43,6 +43,11 @@ jobs:
       - name: Build, test, and stage install
         run: |
           set -euo pipefail
+          # Zig translate-c uses Clang's include search. Make Fedora's standard
+          # system header directory explicit so native headers such as
+          # wayland-client.h and xkbcommon/xkbcommon.h are visible to it.
+          export CPATH="/usr/include${CPATH:+:$CPATH}"
+
           # The build script downloads Zig 0.16.0 when the distro version is
           # missing or too old, and builds ReleaseFast for portable x86-64-v2.
           ./build.sh --skip-deps --cpu v2 --no-install
