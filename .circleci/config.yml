@@ -21,78 +21,14 @@ commands:
     steps:
       - run:
           name: Install dependencies
+          # Same set as build.sh's Fedora list. Zig itself is fetched by
+          # build.sh (0.16.0+), not taken from dnf.
           command: |
             dnf install -y \
-              git \
-              zig \
+              git pkgconf-pkg-config curl xz tar gzip \
               wayland-devel wayland-protocols-devel \
-              cairo-devel pango-devel \
-              freetype-devel fontconfig-devel \
-              libxkbcommon-devel \
-              sdbus-cpp-devel \
-              pipewire-devel \
-              pam-devel libcurl-devel libwebp-devel libpng-devel \
-              vulkan-loader-devel vulkan-headers \
-              librsvg2-devel libdrm-devel \
-              polkit-devel glib2-devel \
-              openssl-devel libjpeg-turbo-devel \
-              dbus-devel \
-              poppler-glib-devel libarchive-devel \
-              jemalloc-devel lcms2-devel \
-              ruby ruby-devel \
-              lz4-devel \
-              liburing-devel \
-              rpm-build zstd dpkg bsdtar
-            gem install --no-document fpm
-
-  configure-debug:
-    steps:
-      - run:
-          name: Configure debug
-          command: |
-            echo "Using Zig build system"
-
-  build-debug:
-    steps:
-      - run:
-          name: Build debug
-          command: zig build -Drelease-debug=true
-
-  configure-release:
-    steps:
-      - run:
-          name: Configure release
-          command: |
-            echo "Using Zig build system"
-
-  build-release:
-    steps:
-      - run:
-          name: Build release
-          command: zig build -Drelease-safe=true
-
-  test:
-    steps:
-      - run:
-          name: Run unit tests
-          command: zig build test
-
-  install-staging:
-    steps:
-      - run:
-          name: Install to staging
-          command: |
-            DESTDIR=$PWD/staging-debug   zig build install --prefix=/usr
-            DESTDIR=$PWD/staging-release zig build install --prefix=/usr
-
-  get-version:
-    steps:
-      - run:
-          name: Get version
-          command: |
-            VER=$(grep "^ *version:" meson.build | sed "s/.*'\(.*\)'.*/\1/")
-            echo "$VER" > .version
-            echo "export VERSION=$VER" >> $BASH_ENV
+              cairo-devel pango-devel libxkbcommon-devel \
+              librsvg2-devel libwebp-devel pipewire-devel
 
 jobs:
   build:
@@ -100,46 +36,38 @@ jobs:
     steps:
       - run:
           name: Install git and ssh
-          command: dnf install -y git openssh-clients
+          command: dnf install -y git openssh-clients tar gzip
       - checkout
-      - install-deps
       - run:
           name: Initialize submodules
+          command: git submodule sync && git submodule update --init --recursive --depth 1
+      - install-deps
+      - run:
+          name: Build (ReleaseFast, x86-64-v2)
+          environment:
+            CPATH: /usr/include
+          command: ./build.sh --skip-deps --cpu v2 --no-install
+      - run:
+          name: Test and stage install
+          environment:
+            CPATH: /usr/include
           command: |
             set -euo pipefail
-            git submodule sync
-            git submodule update --init --depth 1 || true
-
-            # Workaround for incomplete submodule registration:
-            # .gitmodules declares several third_party/ and subprojects/ as submodules,
-            # but only nanosvg is recorded as a gitlink (160000) in the tree.
-            # The rest rely on this step populating them, and are .gitignore'd.
-            # In a fresh clone (CircleCI), `submodule update` only handles real gitlinks.
-            # Force-populate any that are still missing by cloning (shallow) from the
-            # URLs recorded in .gitmodules. This gets us the default branch tip,
-            # which is acceptable for these mostly-header/protocol libraries.
-            git config --file .gitmodules --get-regexp 'submodule\..*\.path' \
-            | while read -r cfgkey path; do
-                if [ ! -d "$path" ] || { [ ! -e "$path/.git" ] && [ ! -f "$path/meson.build" ] && [ ! -f "$path/README.md" ]; }; then
-                  url=$(git config --file .gitmodules --get "${cfgkey%.path}.url")
-                  echo "Force-populating missing submodule: $path from $url"
-                  rm -rf "$path"
-                  git clone --depth 1 "$url" "$path"
-                fi
-              done
-
-      - configure-debug
-      - build-debug
-      - configure-release
-      - build-release
-      - test
-      - install-staging
-      - get-version
+            if [ -x "$HOME/.cache/event-horizon/zig-0.16.0/zig" ]; then
+              ZIG_BIN="$HOME/.cache/event-horizon/zig-0.16.0/zig"
+            else
+              ZIG_BIN="$(command -v zig)"
+            fi
+            "$ZIG_BIN" build test
+            rm -rf staging
+            DESTDIR="$PWD/staging" "$ZIG_BIN" build install --prefix=/usr
+            DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix=/usr/share
+            sed -n 's/^[[:space:]]*pub const string = "\([^"]*\)";/\1/p' src/version.zig > .version
+            test -s .version
       - persist_to_workspace:
           root: .
           paths:
-            - staging-debug
-            - staging-release
+            - staging
             - .version
 
   package-arch:
@@ -155,21 +83,15 @@ jobs:
       - run:
           name: Create Arch packages
           command: |
-            VER=$(cat .version)
+            VER=$(cat .version); VER="${VER//-/_}"
             mkdir -p packages
             fpm -s dir -t pacman --pacman-compression zstd \
               --name event-horizon-de --version "$VER" --iteration 1 --architecture x86_64 \
               --description "Event Horizon Desktop Environment" \
               --license "MIT" \
               --url "https://github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
-              --depends wayland,cairo,pango,freetype2,fontconfig,libxkbcommon,sdbus-cpp,pipewire,pam,libcurl,libwebp,openssl,vulkan-icd-loader,hicolor-icon-theme,glib2,lz4 \
-              -C staging-release -p "packages/event-horizon-de-${VER}-1-x86_64.pkg.tar.zst"
-            fpm -s dir -t pacman --pacman-compression zstd \
-              --name event-horizon-de-debug --version "$VER" --iteration 1 --architecture x86_64 \
-              --description "Event Horizon DE (debug symbols)" \
-              --license "MIT" \
-              --url "https://github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
-              -C staging-debug -p "packages/event-horizon-de-debug-${VER}-1-x86_64.pkg.tar.zst"
+              --depends wayland,cairo,pango,freetype2,fontconfig,libxkbcommon,pipewire,libwebp,hicolor-icon-theme \
+              -C staging -p "packages/event-horizon-de-${VER}-1-x86_64.pkg.tar.zst"
       - store_artifacts:
           path: packages
           destination: arch
@@ -188,12 +110,10 @@ jobs:
       - run:
           name: Create Debian packages
           command: |
-            VER=$(cat .version)
+            VER=$(cat .version); VER="${VER//-/_}"
             mkdir -p packages
             fpm -s dir -t deb -n event-horizon-de -v "$VER" --architecture amd64 \
-              -C staging-release -p "packages/event-horizon-de_${VER}_amd64.deb"
-            fpm -s dir -t deb -n event-horizon-de-debug -v "$VER" --architecture amd64 \
-              -C staging-debug -p "packages/event-horizon-de-debug_${VER}_amd64.deb"
+              -C staging -p "packages/event-horizon-de_${VER}_amd64.deb"
       - store_artifacts:
           path: packages
           destination: debian
@@ -211,12 +131,10 @@ jobs:
       - run:
           name: Create RPM packages
           command: |
-            VER=$(cat .version)
+            VER=$(cat .version); VER="${VER//-/_}"
             mkdir -p packages
             fpm -s dir -t rpm -n event-horizon-de -v "$VER" --architecture x86_64 \
-              -C staging-release -p "packages/event-horizon-de-${VER}-1.x86_64.rpm"
-            fpm -s dir -t rpm -n event-horizon-de-debug -v "$VER" --architecture x86_64 \
-              -C staging-debug -p "packages/event-horizon-de-debug-${VER}-1.x86_64.rpm"
+              -C staging -p "packages/event-horizon-de-${VER}-1.x86_64.rpm"
       - store_artifacts:
           path: packages
           destination: rpm

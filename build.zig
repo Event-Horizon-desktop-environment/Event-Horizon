@@ -190,6 +190,11 @@ fn addPkgConfigIncludesToTranslateC(b: *std.Build, tc: *std.Build.Step.Translate
             tc.addSystemIncludePath(.{ .cwd_relative = b.dupe(flag[2..]) });
         }
     }
+    // pkg-config drops -I for the default system include dir, and translate-c
+    // does not always search it on its own (it failed to find <cairo/cairo.h>,
+    // <wayland-client.h> and <xkbcommon/xkbcommon.h> in a Fedora container even
+    // with CPATH set). Name it explicitly; a missing dir is harmless.
+    tc.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
 }
 
 const CImports = struct {
