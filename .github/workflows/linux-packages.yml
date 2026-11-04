@@ -80,7 +80,7 @@ jobs:
           echo "$VERSION" > dist/VERSION
           echo "build version: $VERSION"
           ls staging
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: staging
           path: |
@@ -114,7 +114,7 @@ jobs:
             --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon" \
             -C pkg/staging -p "dist/event-horizon-de_${VERSION}_amd64.deb"
           ls -l dist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: deb
           path: dist/*.deb
@@ -148,7 +148,7 @@ jobs:
             --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon" \
             -C pkg/staging -p "dist/event-horizon-de-${SAFE_VERSION}-1.x86_64.rpm"
           ls -l dist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: rpm
           path: dist/*.rpm
@@ -184,7 +184,7 @@ jobs:
             --depends wayland,cairo,pango,freetype2,fontconfig,libxkbcommon,pipewire,libwebp,hicolor-icon-theme \
             -C pkg/staging -p "dist/event-horizon-de-${SAFE_VERSION}-1-x86_64.pkg.tar.zst"
           ls -l dist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: arch
           path: dist/*.pkg.tar.zst
@@ -205,7 +205,7 @@ jobs:
           mkdir -p dist
           tar -czf "dist/event-horizon-de-${VERSION}-x86_64.tar.gz" -C pkg/staging usr
           ls -l dist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: tarball
           path: dist/*.tar.gz
