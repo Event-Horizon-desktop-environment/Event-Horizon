@@ -576,6 +576,12 @@ const Dock = struct {
     pin_drag: PinDrag = .{},
     /// Hover lift: 5 px over 165 ms of ease-out-cubic.
     lift: anim.Tween = .{},
+    /// Auto-hide slide: 0 = fully shown, 1 = fully tucked below the edge.
+    hide_slide: anim.Tween = .{},
+    /// Auto-hide: the pointer has reached the bottom edge (or is on the dock).
+    reveal: bool = false,
+    /// Auto-hide: monotonic ms at which to tuck the dock away; 0 = none due.
+    hide_at_ms: u64 = 0,
     /// Running windows from `ext_foreign_toplevel_list_v1`. Initialised in
     /// `main` before anything can dispatch to it, freed in `deinit`.
     toplevels: foreign.Tracker = undefined,
@@ -3480,15 +3486,121 @@ const Dock = struct {
     /// applies on the next commit, which both callers perform right after.
     fn syncInputRegion(self: *Dock) void {
         const surf = self.surface.wl_surface orelse return;
-        if (self.app.loaded.cfg.dock.dock_show_dock) {
+        const hot = self.autohideFullyHidden();
+        if (self.app.loaded.cfg.dock.dock_show_dock and !hot) {
             wl.wl_surface_set_input_region(surf, null);
             return;
         }
         const comp = self.app.bound.compositor orelse return;
         const reg = wl.wl_compositor_create_region(comp) orelse return;
-        wl.wl_region_add(reg, 0, 0, 1, 1);
+        if (hot) {
+            // Tucked away: only a thin strip along the screen edge listens,
+            // and it is what reveals the dock.
+            const hh: i32 = @max(1, self.req_h);
+            const t: i32 = @min(hh, k_autohide_hot_px);
+            wl.wl_region_add(reg, 0, hh - t, @max(1, self.req_w), t);
+        } else {
+            wl.wl_region_add(reg, 0, 0, 1, 1);
+        }
         wl.wl_surface_set_input_region(surf, reg);
         wl.wl_region_destroy(reg);
+    }
+
+    // -----------------------------------------------------------------
+    // Auto-hide
+    // -----------------------------------------------------------------
+
+    const k_autohide_hot_px: i32 = 4;
+    const k_autohide_delay_ms: u64 = 450;
+    const k_autohide_show_ns: u64 = 180 * std.time.ns_per_ms;
+    const k_autohide_hide_ns: u64 = 240 * std.time.ns_per_ms;
+
+    fn autohideOn(self: *Dock) bool {
+        const d = &self.app.loaded.cfg.dock;
+        return d.dock_show_dock and d.dock_autohide;
+    }
+
+    /// Tucked away and at rest: nothing is drawn and only the edge strip
+    /// takes input.
+    fn autohideFullyHidden(self: *Dock) bool {
+        return self.autohideOn() and !self.reveal and !self.hide_slide.running and self.hide_slide.value >= 1.0;
+    }
+
+    /// Something is keeping the dock up regardless of where the pointer is.
+    fn autohideHeld(self: *Dock) bool {
+        return self.ptr_on != .none or self.popup.open or self.cc.open or self.pear.open or
+            self.pin_drag.dragging or self.pin_drag.candidate;
+    }
+
+    fn autohideShow(self: *Dock) void {
+        if (!self.autohideOn()) return;
+        self.hide_at_ms = 0;
+        if (self.reveal and self.hide_slide.to == 0.0) return;
+        self.reveal = true;
+        self.hide_slide.begin(0.0, anim.monotonicNs(), k_autohide_show_ns);
+        self.syncInputRegion();
+        if (self.hide_slide.running) self.armAnim();
+    }
+
+    fn autohideSchedule(self: *Dock) void {
+        if (!self.autohideOn() or !self.reveal) return;
+        const now: u64 = @intCast(@divTrunc(anim.monotonicNs(), std.time.ns_per_ms));
+        self.hide_at_ms = now + k_autohide_delay_ms;
+        self.armAnim();
+    }
+
+    /// Config (re)load and boot: follow the toggle without animating.
+    fn autohideSync(self: *Dock, boot: bool) void {
+        if (!self.autohideOn()) {
+            self.reveal = false;
+            self.hide_at_ms = 0;
+            self.hide_slide.jump(0.0);
+            return;
+        }
+        if (boot) {
+            self.reveal = false;
+            self.hide_slide.jump(1.0);
+            return;
+        }
+        if (!self.reveal and !self.hide_slide.running and self.hide_slide.value < 1.0) {
+            // Just switched on while shown: show now, tuck away shortly.
+            self.reveal = true;
+            self.autohideSchedule();
+        }
+    }
+
+    /// Tick-side: fire the pending hide, advance the slide. Returns true when
+    /// a repaint is owed; `next` is lowered to the nearest wanted wake-up.
+    fn autohideTick(self: *Dock, now_ns: u64, next: *u64) bool {
+        if (!self.autohideOn()) return false;
+        var dirty = false;
+        const now_ms: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
+        if (self.hide_at_ms != 0 and now_ms >= self.hide_at_ms) {
+            if (self.autohideHeld()) {
+                // Still in use (a popup is up, or the pointer is back): look again later.
+                self.hide_at_ms = now_ms + k_autohide_delay_ms;
+            } else {
+                self.hide_at_ms = 0;
+                self.reveal = false;
+                self.hide_slide.begin(1.0, now_ns, k_autohide_hide_ns);
+            }
+        }
+        if (self.hide_slide.running) {
+            const more = self.hide_slide.step(now_ns);
+            dirty = true;
+            if (more) {
+                next.* = if (next.* == 0) k_anim_frame_ns else @min(next.*, k_anim_frame_ns);
+            } else if (!self.reveal) {
+                // Landed hidden: shrink the input region to the edge strip.
+                self.syncInputRegion();
+            }
+        }
+        if (self.hide_at_ms != 0) {
+            const wait = (self.hide_at_ms -| now_ms) * std.time.ns_per_ms;
+            const w = @max(wait, std.time.ns_per_ms);
+            next.* = if (next.* == 0) w else @min(next.*, w);
+        }
+        return dirty;
     }
 
     /// The exclusive zone for the current config. A hidden dock reserves
@@ -3590,9 +3702,14 @@ const Dock = struct {
         // `show_dock = false` leaves a transparent, input-free surface behind
         // rather than tearing the layer down, so the toggle back on needs no
         // rebind — the same reason the exclusive zone goes to 0, not -1.
-        if (!cfg.dock.dock_show_dock) {
+        // An auto-hidden dock at rest is the same transparent surface.
+        if (!cfg.dock.dock_show_dock or self.autohideFullyHidden()) {
             self.present();
             return;
+        }
+        // Auto-hide slide: the whole drawing rides down off the surface edge.
+        if (self.autohideOn() and self.hide_slide.value > 0.0) {
+            cairo.cairo_translate(cr, 0, self.hide_slide.value * h);
         }
 
         const p = self.pill();
@@ -6693,6 +6810,7 @@ const Dock = struct {
             return;
         }
         self.ptr_on = .dock;
+        self.autohideShow();
         const pos = lastPointer(self);
         // A press that may still be a drag takes the pointer whole: it decides
         // where the pin goes, and the hover it would otherwise set is a slot
@@ -6742,6 +6860,8 @@ const Dock = struct {
     fn onLeave(ctx: *anyopaque) void {
         const self: *Dock = @ptrCast(@alignCast(ctx));
         logz.log("pointer: leave ({s})", .{@tagName(self.ptr_on)});
+        // Runs after every return path below, once `ptr_on` is settled.
+        defer self.autohideSchedule();
         // `seat.ptrLeave` clears `focus_surface` before this runs, so by now
         // the only record of *which* surface was left is `ptr_on`.
         if (self.ptr_on == .popup and self.popup.kind == .launcher) {
@@ -7277,6 +7397,7 @@ const Dock = struct {
             next = if (next == 0) k_anim_frame_ns else @min(next, k_anim_frame_ns);
             dirty = true;
         }
+        if (self.autohideTick(now_ns, &next)) dirty = true;
 
         // The world clock: the face's slide runs on this tick, and so does
         // the panel's own easing (the open transition, the switch flips, the
@@ -7685,6 +7806,7 @@ const Dock = struct {
         self.rebindOutput();
         // A `show_dock`/`autohide` flip with an unchanged size still moves the
         // exclusive zone, and `applySize` below only runs when the size moved.
+        self.autohideSync(false);
         self.syncExclusive();
         self.syncInputRegion();
         const want = self.desiredSize();
@@ -8392,6 +8514,7 @@ pub fn main(init: std.process.Init) !u8 {
     dock.pear.surface.ctx = &dock;
     dock.req_w = want.w;
     dock.req_h = want.h;
+    dock.autohideSync(true);
     dock.syncExclusive();
     dock.syncInputRegion();
     dock.surface.setSize(@intCast(want.w), @intCast(want.h));
