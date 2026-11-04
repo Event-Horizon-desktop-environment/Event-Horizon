@@ -501,6 +501,10 @@ const Taskbar = struct {
     slide_from_px: f64 = 0,
     slide_start_ms: u64 = 0,
     slide_active: bool = false,
+    /// Autohide: monotonic-ish ms (`nowMs`) at which to tuck the bar away; 0 = none due.
+    hide_at_ms: u64 = 0,
+    /// Autohide: the pointer is on one of the bars.
+    ptr_on_bar: bool = false,
     // Vsync pacer: one frame callback rearmed while anything animates.
     frame_pending: bool = false,
     /// Pointer moved inside an already-hovered running button: the pending
@@ -2660,7 +2664,7 @@ const Taskbar = struct {
         const ui = self.uiScale();
         const box_h: f64 = @floatFromInt(@max(1, self.barHeight()));
         const icon = self.iconPx(box_h);
-        const hidden = cfg.taskbar.auto_hide and !self.reveal;
+        const hidden = self.autohideFullyHidden();
         if (hidden and !self.warned_hidden) {
             self.warned_hidden = true;
             logz.log("repaint: hidden by auto_hide (reveal on pointer enter)", .{});
@@ -2693,6 +2697,9 @@ const Taskbar = struct {
             cairo.cairo_scale(cr, tsc, tsc);
             cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
             if (!hidden) {
+                if (cfg.taskbar.auto_hide and self.slide_off_px > 0.0) {
+                    cairo.cairo_translate(cr, 0, if (cfg.taskbar.position_top) -self.slide_off_px else self.slide_off_px);
+                }
                 self.paintBackground(cr, b.w, b.h);
                 const y = (box_h - icon) * 0.5;
                 self.paintRunPills(cr, b, y, icon);
@@ -2876,6 +2883,8 @@ const Taskbar = struct {
         self.pressed = -1;
         self.drag_candidate = false;
         if (!self.drag_dragging) self.tooltipHide();
+        self.ptr_on_bar = false;
+        self.autohideSchedule();
         self.repaint();
     }
 
@@ -2944,6 +2953,8 @@ const Taskbar = struct {
             return;
         }
         const bar = self.barAt(seat.focus_surface) orelse return;
+        self.ptr_on_bar = true;
+        self.hide_at_ms = 0;
         if (!self.reveal) self.setReveal(true);
         const hov: i32 = if (self.slotAt(bar, seat.pointer_x, seat.pointer_y)) |i| @intCast(i) else -1;
         if (hov != self.hover) {
@@ -5924,16 +5935,52 @@ const Taskbar = struct {
         const cfg = &self.app.loaded.cfg;
         const h = self.barHeight();
         for (self.bars.items) |*b| {
+            // Autohide never reserves space: -1 keeps windows from being
+            // resized every time the bar slides in or out.
             if (!cfg.taskbar.auto_hide) {
                 b.surface.setExclusiveZone(h + cfg.taskbar.exclusive_zone_gap);
-            } else if (self.reveal) {
-                b.surface.setExclusiveZone(h + cfg.taskbar.exclusive_zone_gap);
             } else {
-                b.surface.setExclusiveZone(0);
+                b.surface.setExclusiveZone(-1);
             }
+            self.syncBarRegion(b);
             b.surface.commit();
         }
         _ = self.app.conn.flush();
+        if (cfg.taskbar.auto_hide and self.reveal and !self.ptr_on_bar and self.hide_at_ms == 0) self.autohideSchedule();
+    }
+
+    /// Tucked away and at rest: only a thin strip on the screen edge listens.
+    fn autohideFullyHidden(self: *Taskbar) bool {
+        return self.app.loaded.cfg.taskbar.auto_hide and !self.reveal and !self.slide_active;
+    }
+
+    fn syncBarRegion(self: *Taskbar, b: *Bar) void {
+        const surf = b.surface.wl_surface orelse return;
+        if (!self.autohideFullyHidden()) {
+            wl.wl_surface_set_input_region(surf, null);
+            return;
+        }
+        const comp = self.app.bound.compositor orelse return;
+        const reg = wl.wl_compositor_create_region(comp) orelse return;
+        const t: i32 = @min(@max(1, b.h), 4);
+        const y: i32 = if (self.app.loaded.cfg.taskbar.position_top) 0 else @max(0, b.h - t);
+        wl.wl_region_add(reg, 0, y, @max(1, b.w), t);
+        wl.wl_surface_set_input_region(surf, reg);
+        wl.wl_region_destroy(reg);
+    }
+
+    /// Something keeps the bar up regardless of the pointer.
+    fn autohideHeld(self: *Taskbar) bool {
+        return self.ptr_on_bar or self.thumbs_open or self.wc_open or self.spot_open or
+            self.drag_dragging or self.drag_candidate or
+            (self.popup_init and self.popup.kind != .none) or
+            (self.cc_init and self.cc.open) or (self.pear_init and self.pear.open);
+    }
+
+    fn autohideSchedule(self: *Taskbar) void {
+        if (!self.app.loaded.cfg.taskbar.auto_hide or !self.reveal) return;
+        self.hide_at_ms = nowMs() + 450;
+        self.armAnim();
     }
 
     // -- live backends (battery/media/bt/vpn/mixer, dock parity) --------
@@ -7513,6 +7560,23 @@ const Taskbar = struct {
             self.repaint();
             work = true;
         }
+        if (self.app.loaded.cfg.taskbar.auto_hide) {
+            if (self.hide_at_ms != 0) {
+                work = true;
+                if (nowMs() >= self.hide_at_ms) {
+                    if (self.autohideHeld()) {
+                        self.hide_at_ms = nowMs() + 450;
+                    } else {
+                        self.hide_at_ms = 0;
+                        self.setReveal(false);
+                    }
+                }
+            }
+            if (self.slide_active) {
+                work = true;
+                if (self.tickSlide()) self.repaint();
+            }
+        }
         if (!work) {
             self.app.loop.unwatch(self.anim_fd);
             _ = linux.close(self.anim_fd);
@@ -7701,8 +7765,9 @@ const Taskbar = struct {
             b.surface.on_scale = Taskbar.onScale;
             b.surface.ctx = self;
             if (cfg.taskbar.auto_hide) {
-                b.surface.setExclusiveZone(0);
+                b.surface.setExclusiveZone(-1);
                 self.reveal = false;
+                self.slide_off_px = @floatFromInt(height);
             } else {
                 b.surface.setExclusiveZone(height + cfg.taskbar.exclusive_zone_gap);
             }
@@ -7817,18 +7882,15 @@ const Taskbar = struct {
             self.slide_off_px = target;
             self.slide_active = false;
         }
-        const off: i32 = @intFromFloat(@round(self.slide_off_px));
-        const top = self.app.loaded.cfg.taskbar.position_top;
-        for (self.bars.items) |*b| {
-            const m = b.margins;
-            if (top) {
-                b.surface.setMargins(m[0] + off, m[1], m[2], m[3]);
-            } else {
-                b.surface.setMargins(m[0], m[1], m[2] + off, m[3]);
+        // Pixels glide inside the surface (see `repaint`); once at rest the
+        // input region follows, shrinking to the edge strip when hidden.
+        if (!self.slide_active) {
+            for (self.bars.items) |*b| {
+                self.syncBarRegion(b);
+                b.surface.commit();
             }
-            b.surface.commit();
+            _ = self.app.conn.flush();
         }
-        _ = self.app.conn.flush();
         return true;
     }
 
