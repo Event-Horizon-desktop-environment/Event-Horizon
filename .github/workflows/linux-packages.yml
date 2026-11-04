@@ -70,8 +70,10 @@ jobs:
           # Without these flags `zig build install` rebuilds in Debug for the
           # runner's native CPU, which is neither fast nor portable.
           OPTS="-Doptimize=ReleaseFast -Dcpu=x86_64_v2"
-          DESTDIR="$PWD/staging" "$ZIG_BIN" build install $OPTS --prefix=/usr
-          DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix=/usr/share
+          # Zig 0.16 takes the prefix as a separate argument; '--prefix=/usr'
+          # is rejected as an unrecognized argument.
+          DESTDIR="$PWD/staging" "$ZIG_BIN" build install $OPTS --prefix /usr
+          DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix /usr/share
 
           VERSION="$(sed -n 's/^[[:space:]]*pub const string = "\([^"]*\)";/\1/p' src/version.zig)"
           test -n "$VERSION"
