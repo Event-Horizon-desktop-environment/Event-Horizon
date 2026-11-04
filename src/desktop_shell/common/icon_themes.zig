@@ -1098,8 +1098,16 @@ test "icon-themes: example, find-any-icons and preview loading" {
     const any = try themeFindAnyIcons(alloc, io, theme, 8);
     defer freeNames(alloc, any);
     try testing.expectEqual(@as(usize, 2), any.len);
-    try testing.expectEqualStrings("myapp", any[0]);
-    try testing.expectEqualStrings("loose", any[1]); // listed, not decoded
+    // Directory iteration order is filesystem-dependent (ext4 preserves
+    // creation order, the CI overlayfs does not), so compare as a set.
+    var saw_myapp = false;
+    var saw_loose = false;
+    for (any) |nm| {
+        if (std.mem.eql(u8, nm, "myapp")) saw_myapp = true;
+        if (std.mem.eql(u8, nm, "loose")) saw_loose = true; // listed, not decoded
+    }
+    try testing.expect(saw_myapp);
+    try testing.expect(saw_loose);
 
     const bases = [_][]const u8{base};
     // Vector renders at the requested size.
