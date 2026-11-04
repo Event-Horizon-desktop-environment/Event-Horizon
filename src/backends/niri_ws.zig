@@ -413,7 +413,7 @@ test "niri-ws: the event stream fills the tables, notifies, and stops at an Err"
         fn accept(self: @This()) ?i32 {
             const deadline = sock.nowMs() + 5000;
             while (sock.nowMs() < deadline) : ({
-                _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+                { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
             }) {
                 if (sock.acceptConn(self.lfd)) |c| return c;
             }
@@ -431,7 +431,7 @@ test "niri-ws: the event stream fills the tables, notifies, and stops at an Err"
                 const e = linux.errno(rc);
                 if (e == .INTR) continue;
                 if (e == .AGAIN) {
-                    _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+                    { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
                     continue;
                 }
                 if (e != .SUCCESS) return null;
@@ -479,7 +479,7 @@ test "niri-ws: the event stream fills the tables, notifies, and stops at an Err"
     const deadline = sock.nowMs() + 4000;
     while (m.eventFd() >= 0 and sock.nowMs() < deadline) {
         m.onEvent(POLL.IN);
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
     }
 
     // The subscription went out in the form niri expects.
@@ -552,7 +552,7 @@ test "niri-ws: a stream that never sends a newline is cut off at a megabyte" {
     const deadline = sock.nowMs() + 4000;
     while (m.eventFd() >= 0 and sock.nowMs() < deadline) {
         m.onEvent(POLL.IN);
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 2) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 2) catch 0; }
     }
 
     // Over the cap means the peer is broken: the connection is dropped, the

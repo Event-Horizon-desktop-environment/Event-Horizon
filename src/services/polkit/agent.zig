@@ -717,8 +717,9 @@ test "promptLabelFor: rewrites only for another user" {
         defer a1.free(got);
         try testing.expectEqualStrings("Password:", got);
     }
-    // Another user: rewritten, with "Full Name (user)" shortened.
-    {
+    // Another user: rewritten, with "Full Name (user)" shortened. Running as
+    // root (CI containers) makes "root" the same user, so there is no other.
+    if (!std.mem.eql(u8, me, "root")) {
         const got = promptLabelFor(a1, "Root Admin (root)", "Password: ");
         defer a1.free(got);
         try testing.expectEqualStrings("Password for root:", got);

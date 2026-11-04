@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           dnf -y install git pkgconf-pkg-config curl xz tar gzip \
-            wayland-devel wayland-protocols-devel \
+            which findutils wayland-devel wayland-protocols-devel \
             cairo-devel pango-devel libxkbcommon-devel \
             librsvg2-devel libwebp-devel pipewire-devel
       - name: Build, test, and stage install
@@ -60,10 +60,17 @@ jobs:
             ZIG_BIN="$(command -v zig)"
           fi
 
+          # Tests open sockets under XDG_RUNTIME_DIR; a bare container has none.
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          chmod 700 "$XDG_RUNTIME_DIR"
           "$ZIG_BIN" build test
           rm -rf staging dist
           mkdir -p dist
-          DESTDIR="$PWD/staging" "$ZIG_BIN" build install --prefix=/usr
+          # Stage the same ReleaseFast x86-64-v2 build that build.sh just made.
+          # Without these flags `zig build install` rebuilds in Debug for the
+          # runner's native CPU, which is neither fast nor portable.
+          OPTS="-Doptimize=ReleaseFast -Dcpu=x86_64_v2"
+          DESTDIR="$PWD/staging" "$ZIG_BIN" build install $OPTS --prefix=/usr
           DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix=/usr/share
 
           VERSION="$(sed -n 's/^[[:space:]]*pub const string = "\([^"]*\)";/\1/p' src/version.zig)"

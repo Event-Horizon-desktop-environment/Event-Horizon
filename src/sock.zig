@@ -60,7 +60,8 @@ fn check(rc: usize) ?linux.E {
 }
 
 fn sleepMs(ms: i32) void {
-    const n = std.posix.poll(&[_]std.posix.pollfd{}, ms) catch 0;
+    var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }};
+    const n = std.posix.poll(&nap, ms) catch 0;
     _ = n;
 }
 

@@ -488,7 +488,7 @@ fn readAndReply(c: i32, out: []u8) usize {
         }
         if (e == .INTR) continue;
         if (e == .AGAIN) {
-            _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+            { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
             continue;
         }
         break;

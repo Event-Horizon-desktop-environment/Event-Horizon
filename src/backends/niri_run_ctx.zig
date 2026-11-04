@@ -293,7 +293,7 @@ test "niri-run-ctx: request round trip over a real socket" {
         fn accept(self: @This()) ?i32 {
             const deadline = sock.nowMs() + 5000;
             while (sock.nowMs() < deadline) : ({
-                _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+                { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
             }) {
                 if (sock.acceptConn(self.lfd)) |c| return c;
             }
@@ -313,7 +313,7 @@ test "niri-run-ctx: request round trip over a real socket" {
                 const e = linux.errno(n);
                 if (e == .INTR) continue;
                 if (e == .AGAIN) {
-                    _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+                    { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
                     continue;
                 }
                 if (e != .SUCCESS) return null;

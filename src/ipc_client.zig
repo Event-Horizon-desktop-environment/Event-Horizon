@@ -271,7 +271,7 @@ fn waitWritable(fd: i32, deadline: i64) bool {
 
 fn sleepMs(ms: i64) void {
     const clamped: i32 = @intCast(@max(0, @min(ms, std.math.maxInt(i32))));
-    _ = std.posix.poll(&[_]std.posix.pollfd{}, clamped) catch 0;
+    { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, clamped) catch 0; }
 }
 
 pub fn socketPathFor(alloc: std.mem.Allocator, eh_ipc_socket: ?[]const u8, xdg_runtime: ?[]const u8) ![]u8 {
@@ -457,7 +457,7 @@ test "ipc_client: subscribe + publish delivers event with fd" {
     var ticks: u32 = 0;
     while (ticks < 400 and cap.topic == null) : (ticks += 1) {
         sub.onFdReady(sub.fd);
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
     }
     try t.expect(cap.topic != null);
     try t.expectEqualStrings("ws-a", cap.topic.?);
@@ -473,7 +473,7 @@ test "ipc_client: subscribe + publish delivers event with fd" {
     ticks = 0;
     while (ticks < 400 and (cap.topic == null or !std.mem.eql(u8, cap.topic.?, "ws-b"))) : (ticks += 1) {
         sub.onFdReady(sub.fd);
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
     }
     try t.expect(cap.topic != null);
     try t.expectEqualStrings("ws-b", cap.topic.?);

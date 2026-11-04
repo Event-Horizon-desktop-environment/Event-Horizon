@@ -169,7 +169,7 @@ test "watch: detects file write" {
     var seen = false;
     while (ticks < 50 and !seen) : (ticks += 1) {
         if (w.drainChanged("config.toml")) seen = true;
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 20) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 20) catch 0; }
     }
     try t.expect(seen);
 }
@@ -183,7 +183,7 @@ fn createThenDrain(w: *Watcher, path: [*:0]const u8, targets: []const []const u8
     var ticks: u32 = 0;
     while (ticks < 50) : (ticks += 1) {
         if (w.drainAnyOf(targets)) return true;
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 20) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 20) catch 0; }
     }
     return false;
 }
@@ -197,7 +197,7 @@ fn createThenDrainLive(w: *Watcher, path: [*:0]const u8) bool {
     var ticks: u32 = 0;
     while (ticks < 50) : (ticks += 1) {
         if (w.drainAnyLive(&live_extra_names)) return true;
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 20) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 20) catch 0; }
     }
     return false;
 }

@@ -663,7 +663,7 @@ test "hyprland-border: setKey trims trailing <= 0x20 only, then matches ok" {
 fn accept(listen_fd: i32) ?i32 {
     const deadline = sock.nowMs() + 5000;
     while (sock.nowMs() < deadline) : ({
-        _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
     }) {
         if (sock.acceptConn(listen_fd)) |c| return c;
     }
@@ -683,7 +683,7 @@ fn readOne(c: i32, out: *[512]u8) ?[]u8 {
         }
         if (e == .INTR) continue;
         if (e == .AGAIN) {
-            _ = std.posix.poll(&[_]std.posix.pollfd{}, 5) catch 0;
+            { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
             continue;
         }
         return null;
