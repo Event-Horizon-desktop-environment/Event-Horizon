@@ -41,6 +41,11 @@ jobs:
             cairo-devel pango-devel libxkbcommon-devel \
             librsvg2-devel libwebp-devel pipewire-devel
       - name: Build, test, and stage install
+        # Zig's bundled Clang does not consistently search the host's standard
+        # include directory in translate-c; these native headers live under
+        # /usr/include (including nested xkbcommon/ and cairo/ paths).
+        env:
+          CPATH: /usr/include
         run: |
           set -euo pipefail
           # The build script downloads Zig 0.16.0 when the distro version is
