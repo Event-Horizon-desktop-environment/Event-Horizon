@@ -3,31 +3,22 @@ name: Linux packages
 # Manual-only: nothing runs unless you trigger it from the Actions tab
 # (workflow_dispatch). Branch pushes, tag pushes and pull requests do NOT
 # build. Run it once with release=false for a plain build+test, or with
-# release=true to publish a stable release for the version meson.build
-# declares (the tag is created for you, bare 0.9.x style matching the
-# existing 0.9.6 tag).
+# release=true to publish a stable release using the version in src/version.zig.
 #
-# - Packages are built with fpm from a single release build, the same
-#   approach as .circleci/config.yml (release binaries only; no debug
-#   variants). The build runs in a fedora:44 container to match CircleCI's
-#   proven toolchain; packaging needs only ruby+fpm so it stays on plain
-#   Ubuntu runners.
-# - CI packages must stay portable: -Dnative_march=false is mandatory
-#   (local `just configure-release` builds -march=native for your own CPU).
+# Packages are built with fpm from one Zig ReleaseFast build. CI binaries target
+# x86-64-v2 for portability; the local build script may target the current CPU.
 
 on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Publish stable release using version from meson.build'
+        description: 'Publish stable release using version from src/version.zig'
         required: false
         default: false
         type: boolean
 
 permissions:
   contents: read
-
-
 
 jobs:
   build:
@@ -45,53 +36,35 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          dnf -y install git gcc-c++ cmake pkgconf python3 python3-pip \
+          dnf -y install git pkgconf-pkg-config curl xz tar gzip \
             wayland-devel wayland-protocols-devel \
-            cairo-devel pango-devel \
-            freetype-devel fontconfig-devel \
-            libxkbcommon-devel \
-            sdbus-cpp-devel \
-            pipewire-devel \
-            pam-devel libcurl-devel libwebp-devel libpng-devel \
-            vulkan-loader-devel vulkan-headers \
-            librsvg2-devel libdrm-devel \
-            polkit-devel glib2-devel \
-            openssl-devel libjpeg-turbo-devel \
-            dbus-devel \
-            poppler-glib-devel libarchive-devel \
-            jemalloc-devel lcms2-devel \
-            lz4-devel zlib-devel liburing-devel \
-            ffmpegthumbnailer-devel \
-            tar gzip
-          # Distro Meson lags behind meson.build's >=1.8.5 floor; Docs/Build.md
-          # recommends pip for the same reason.
-          pip install --break-system-packages "meson>=1.11" ninja
-      - name: Configure
-        run: meson setup build ${{ env.MESON_OPTS }}
-      - name: Compile
-        run: meson compile -C build
-      - name: Test (logic tests only)
-        # launch_harness needs a live Wayland compositor (WAYLAND_DISPLAY),
-        # which runners don't have; everything else is headless pure logic.
-        # vram_boost_live self-skips (exit 77) when unprivileged.
-        run: meson test -C build --print-errorlogs --exclude launch_harness
-      - name: Resolve version
+            cairo-devel pango-devel libxkbcommon-devel \
+            librsvg2-devel libwebp-devel pipewire-devel
+      - name: Build, test, and stage install
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
+          # The build script downloads Zig 0.16.0 when the distro version is
+          # missing or too old, and builds ReleaseFast for portable x86-64-v2.
+          ./build.sh --skip-deps --cpu v2 --no-install
+
+          # Use the script-downloaded Zig when it had to bootstrap one;
+          # otherwise use the system Zig that passed build.sh's version check.
+          if [ -x "$HOME/.cache/event-horizon/zig-0.16.0/zig" ]; then
+            ZIG_BIN="$HOME/.cache/event-horizon/zig-0.16.0/zig"
           else
-            VERSION="$(grep -oP "^[[:space:]]*version\s*:\s*'\K[^']+" meson.build)"
+            ZIG_BIN="$(command -v zig)"
           fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "build version: $VERSION"
-      - name: Stage install
-        run: |
-          set -euo pipefail
+
+          "$ZIG_BIN" build test
           rm -rf staging dist
           mkdir -p dist
-          DESTDIR="$PWD/staging" meson install -C build --no-rebuild
+          DESTDIR="$PWD/staging" "$ZIG_BIN" build install --prefix=/usr
+          DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix=/usr/share
+
+          VERSION="$(sed -n 's/^[[:space:]]*pub const string = "\([^"]*\)";/\1/p' src/version.zig)"
+          test -n "$VERSION"
           echo "$VERSION" > dist/VERSION
+          echo "build version: $VERSION"
           ls staging
       - uses: actions/upload-artifact@v5
         with:
@@ -124,7 +97,7 @@ jobs:
             --architecture amd64 \
             --description "Event Horizon Desktop Environment" \
             --license "MIT" \
-            --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon-Shell" \
+            --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon" \
             -C pkg/staging -p "dist/event-horizon-de_${VERSION}_amd64.deb"
           ls -l dist
       - uses: actions/upload-artifact@v5
@@ -148,7 +121,7 @@ jobs:
           sudo apt-get install -y ruby-full build-essential rpm
           sudo gem install --no-document fpm
       - name: Pack rpm
-        # RPM versions must not contain '-': 0.9.6-beta2 -> 0.9.6_beta2.
+        # RPM versions must not contain '-': 0.1.0-beta2 -> 0.1.0_beta2.
         run: |
           set -euo pipefail
           VERSION="$(cat pkg/dist/VERSION)"
@@ -158,7 +131,7 @@ jobs:
             --iteration 1 --architecture x86_64 \
             --description "Event Horizon Desktop Environment" \
             --license "MIT" \
-            --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon-Shell" \
+            --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon" \
             -C pkg/staging -p "dist/event-horizon-de-${SAFE_VERSION}-1.x86_64.rpm"
           ls -l dist
       - uses: actions/upload-artifact@v5
@@ -182,7 +155,7 @@ jobs:
           sudo apt-get install -y ruby-full build-essential zstd libarchive-tools
           sudo gem install --no-document fpm
       - name: Pack pacman package
-        # Pacman pkgver must not contain '-': 0.9.6-beta2 -> 0.9.6_beta2.
+        # Pacman pkgver must not contain '-': 0.1.0-beta2 -> 0.1.0_beta2.
         run: |
           set -euo pipefail
           VERSION="$(cat pkg/dist/VERSION)"
@@ -193,8 +166,8 @@ jobs:
             --iteration 1 --architecture x86_64 \
             --description "Event Horizon Desktop Environment" \
             --license "MIT" \
-            --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon-Shell" \
-            --depends wayland,cairo,pango,freetype2,fontconfig,libxkbcommon,sdbus-cpp,pipewire,pam,libcurl,libwebp,openssl,vulkan-icd-loader,hicolor-icon-theme,glib2,lz4 \
+            --url "https://github.com/Event-Horizon-desktop-environment/Event-Horizon" \
+            --depends wayland,cairo,pango,freetype2,fontconfig,libxkbcommon,pipewire,libwebp,hicolor-icon-theme \
             -C pkg/staging -p "dist/event-horizon-de-${SAFE_VERSION}-1-x86_64.pkg.tar.zst"
           ls -l dist
       - uses: actions/upload-artifact@v5
@@ -235,15 +208,14 @@ jobs:
         with:
           fetch-depth: 0
       - name: Resolve version and ensure tag
-        # Repo convention is bare version tags (existing 0.9.6); a leading
-        # 'v' on a pushed tag is accepted and stripped for file names.
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
             VERSION="${TAG#v}"
           else
-            VERSION="$(grep -oP "^[[:space:]]*version\s*:\s*'\K[^']+" meson.build)"
+            VERSION="$(sed -n 's/^[[:space:]]*pub const string = "\([^"]*\)";/\1/p' src/version.zig)"
+            test -n "$VERSION"
             TAG="$VERSION"
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
