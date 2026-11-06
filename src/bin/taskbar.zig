@@ -895,8 +895,19 @@ const Taskbar = struct {
 
     fn hyprEnv(self: *Taskbar) std.process.Environ.Map {
         var env = std.process.Environ.Map.init(self.app.gpa);
-        if (getenvStr("HYPRLAND_INSTANCE_SIGNATURE")) |v| env.put("HYPRLAND_INSTANCE_SIGNATURE", v) catch {};
-        if (getenvStr("XDG_RUNTIME_DIR")) |v| env.put("XDG_RUNTIME_DIR", v) catch {};
+        const keys = [_][:0]const u8{
+            "HYPRLAND_INSTANCE_SIGNATURE",  "XDG_RUNTIME_DIR",
+            "NIRI_SOCKET",                  "SWAYSOCK",
+            "LABWC_PID",                    "MANGO_INSTANCE_SIGNATURE",
+            "ZOOLANDER_INSTANCE_SIGNATURE", "ZOOLANDER_SOCKET",
+            "ZOOLANDER_RUNTIME_DIR",        "ZOOLANDER_CONFIG",
+            "WAYLAND_DISPLAY",              "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",          "DESKTOP_SESSION",
+            "XDG_CONFIG_HOME",              "HOME",
+        };
+        for (keys) |k| {
+            if (getenvStr(k)) |v| env.put(k, v) catch {};
+        }
         return env;
     }
 
@@ -928,6 +939,7 @@ const Taskbar = struct {
         errdefer {
             for (out.items) |*e| {
                 gpa.free(e.label);
+                gpa.free(e.target);
                 for (e.app_keys) |k| gpa.free(k);
                 gpa.free(e.app_keys);
             }
@@ -962,13 +974,21 @@ const Taskbar = struct {
                 gpa.free(owned_keys);
                 continue :ws_loop;
             };
+            const target = gpa.dupe(u8, w.target) catch {
+                gpa.free(label);
+                for (owned_keys) |k| gpa.free(k);
+                gpa.free(owned_keys);
+                continue :ws_loop;
+            };
             out.append(gpa, .{
                 .id = w.id,
                 .label = label,
+                .target = target,
                 .active = w.active,
                 .occupied = w.occupied,
                 .app_keys = owned_keys,
             }) catch {
+                gpa.free(target);
                 gpa.free(label);
                 for (owned_keys) |k| gpa.free(k);
                 gpa.free(owned_keys);
@@ -985,6 +1005,7 @@ const Taskbar = struct {
         for (entries) |e| {
             h = (h ^ @as(u64, @bitCast(@as(i64, e.id)))) *% 1099511628211;
             for (e.label) |b| h = (h ^ b) *% 1099511628211;
+            for (e.target) |b| h = (h ^ b) *% 1099511628211;
             if (e.active) h = (h ^ 1) *% 1099511628211;
             if (e.occupied) h = (h ^ 2) *% 1099511628211;
             for (e.app_keys) |k| {
@@ -996,16 +1017,15 @@ const Taskbar = struct {
         return h;
     }
 
-    /// Refetch the Hyprland snapshot, throttled unless forced. Answers
+    /// Refetch the compositor snapshot, throttled unless forced. Answers
     /// whether the drawn cells changed.
     fn reloadWorkspaces(self: *Taskbar, force: bool) bool {
         const now = nowMs();
         if (!force and self.ws_snap != null and now - self.ws_fetched_ms < 5000) return false;
         var env = self.hyprEnv();
         defer env.deinit();
-        if (env.get("HYPRLAND_INSTANCE_SIGNATURE") == null) return false;
         const gpa = self.app.gpa;
-        var snap = ov_ws.fetch(gpa, self.app.io, &env) orelse return false;
+        var snap = ov_ws.fetchAuto(gpa, self.app.io, &env) orelse return false;
         errdefer snap.deinit();
         ov_ws.applyMaxSlots(gpa, &snap, self.wsMaxSlots()) catch {
             snap.deinit();
@@ -1026,23 +1046,12 @@ const Taskbar = struct {
         return false;
     }
 
-    /// Fire-and-forget compositor command; `true` when the reply starts `ok`.
-    fn hyprSend(self: *Taskbar, cmd: []const u8) bool {
+    /// Focus a workspace by its compositor target (a Hyprland numeric id or a
+    /// Zoolander name). Hyprland creates a missing numeric workspace on demand.
+    fn wsJump(self: *Taskbar, target: []const u8) void {
         var env = self.hyprEnv();
         defer env.deinit();
-        const reply = ov_ws.send(self.app.gpa, self.app.io, &env, cmd) orelse return false;
-        defer self.app.gpa.free(reply);
-        return ov_ws.repliedOk(reply);
-    }
-
-    /// Focus a workspace by id; Hyprland creates a missing one on demand.
-    fn wsJump(self: *Taskbar, id: i32) void {
-        var buf: [64]u8 = undefined;
-        const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{workspace = {d}}})", .{id}) catch return;
-        if (!self.hyprSend(cmd)) {
-            const plain = std.fmt.bufPrint(&buf, "dispatch workspace {d}", .{id}) catch return;
-            _ = self.hyprSend(plain);
-        }
+        _ = ov_ws.jumpWorkspace(self.app.gpa, self.app.io, &env, target);
     }
 
     /// Jump to the workspace cell under the pointer — the C++
@@ -1056,8 +1065,7 @@ const Taskbar = struct {
         if (pick < 0 or pick >= self.ws_entries.len) return;
         var buf: [12]u8 = undefined;
         const target = ws_paint.activateTarget(&self.ws_entries[@intCast(pick)], &buf) orelse return;
-        const id = std.fmt.parseInt(i32, target, 10) catch return;
-        self.wsJump(id);
+        self.wsJump(target);
     }
 
     /// Window title for a running slot's chosen serial, or "".

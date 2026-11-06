@@ -15,8 +15,8 @@ const Field = rows_mod.Field;
 // not in `Settings`; `ui_content.Content` routes the `monitor_*` Field
 // variants through `fieldInt` / `setFieldInt` and friends below.
 
-pub const max_cards: usize = 8;
-pub const max_rows: usize = 32;
+pub const max_cards: usize = 12;
+pub const max_rows: usize = 48;
 /// Bump arena for combo option strings + the slices that point at them.
 pub const max_opts: usize = 128;
 pub const opt_cap: usize = 24;
@@ -39,8 +39,12 @@ pub const tf_labels = [_][]const u8{ "0° normal", "90°", "180°", "270°", "Fl
 pub const tri_labels = [_][]const u8{ "Auto", "Force on", "Force off" };
 pub const eotf_labels = [_][]const u8{ "Follow", "sRGB", "Gamma 2.2" };
 pub const bitdepth_labels = [_][]const u8{ "Default", "10-bit" };
+pub const transfer_labels = [_][]const u8{ "sRGB", "Gamma 2.2", "Gamma 2.4", "PQ", "HLG", "Linear" };
 const vrr_labels_short = [_][]const u8{ "Off", "On" };
 const vrr_labels_full = [_][]const u8{ "Off", "On", "On-demand" };
+const vrr_labels_zoolander = [_][]const u8{ "Off", "Always", "Fullscreen", "Fullscreen game" };
+const hdr_labels = [_][]const u8{ "Off", "Auto", "Always" };
+const color_profile_labels = [_][]const u8{ "sRGB", "EDID" };
 
 pub const Page = struct {
     cards: [max_cards]rows_mod.Card = undefined,
@@ -104,6 +108,36 @@ pub const Page = struct {
         self.pushRow(.{ .canvas = .{} });
         self.pushPills(s);
         self.pushCard("", "", r);
+
+        // Global presentation (`set_presentation`). These used to live on the
+        // Zoolander Displays page; the Monitors tab is the single display
+        // surface now. They write init.lua and share the keep/revert window.
+        r = self.rows_len;
+        self.pushRow(.{ .toggle = .{ .label = "Allow tearing", .desc = "Allow clients to request tearing", .field = .zool_presentation_allow_tearing } });
+        self.pushRow(.{ .toggle = .{ .label = "Immediate fullscreen", .desc = "Scan out fullscreen windows without a copy", .field = .zool_presentation_immediate_fullscreen } });
+        self.pushRow(.{ .toggle = .{ .label = "Direct scanout", .desc = "Let fullscreen surfaces bypass the render pass", .field = .zool_presentation_direct_scanout } });
+        self.pushRow(.{ .toggle = .{ .label = "Partial repaints", .desc = "Damage only the regions that changed", .field = .zool_presentation_partial_damage } });
+        self.pushRow(.{ .combo = .{
+            .label = "Variable refresh rate",
+            .desc = "When outputs may change refresh rate",
+            .field = .zool_presentation_vrr,
+            .options = &vrr_labels_zoolander,
+            .labels = &vrr_labels_zoolander,
+        } });
+        self.pushRow(.{ .combo = .{
+            .label = "HDR policy",
+            .desc = "Global HDR output policy",
+            .field = .zool_presentation_hdr,
+            .options = &hdr_labels,
+            .labels = &hdr_labels,
+        } });
+        self.pushRow(.{ .slider = .{ .label = "SDR brightness", .field = .zool_presentation_sdr_brightness, .min = 10, .max = 400, .unit = "×" } });
+        self.pushRow(.{ .slider = .{ .label = "SDR saturation", .field = .zool_presentation_sdr_saturation, .min = 0, .max = 200, .unit = "×" } });
+        self.pushRow(.{ .slider = .{ .label = "SDR black level", .field = .zool_presentation_sdr_min_luminance, .min = 0, .max = 10000, .unit = "nits" } });
+        self.pushRow(.{ .slider = .{ .label = "SDR white level", .field = .zool_presentation_sdr_max_luminance, .min = 40, .max = 1000, .unit = "nits" } });
+        self.pushRow(.{ .combo = .{ .label = "SDR transfer", .field = .zool_presentation_sdr_eotf, .options = &.{ "srgb", "gamma22", "gamma24" }, .labels = &.{ "sRGB", "Gamma 2.2", "Gamma 2.4" } } });
+        self.pushCard("Global presentation", "Tearing, scanout, HDR and SDR mastering for every output.", r);
+
         const sel: usize = @min(s.selected, s.outputs_len -| 1);
         if (s.outputs_len == 0) {
             // No outputs (unsupported compositor, no hyprctl, empty config):
@@ -128,7 +162,8 @@ pub const Page = struct {
 
         // Display: resolution, refresh rate, VRR.
         const show_vrr = s.kind == .hyprland or s.kind == .mango or
-            (s.kind == .niri and caps != null and caps.?.vrr_capable);
+            (s.kind == .niri and caps != null and caps.?.vrr_capable) or
+            (s.kind == .zoolander and caps != null and caps.?.vrr_capable);
         r = self.rows_len;
         {
             var res_opts = self.reserveOpts(mon.max_res);
@@ -180,7 +215,12 @@ pub const Page = struct {
                 .labels = hz_labs[0..hz_n],
             } });
             if (show_vrr) {
-                const opts: []const []const u8 = if (s.kind == .mango) &vrr_labels_short else &vrr_labels_full;
+                const opts: []const []const u8 = if (s.kind == .mango)
+                    &vrr_labels_short
+                else if (s.kind == .zoolander)
+                    &vrr_labels_zoolander
+                else
+                    &vrr_labels_full;
                 self.pushRow(.{ .combo = .{
                     .label = "VRR",
                     .desc = "Variable refresh rate range for the output.",
@@ -295,6 +335,155 @@ pub const Page = struct {
             self.pushCard("Color", "Wide gamut and the SDR transfer function.", r);
         }
 
+        // Zoolander capabilities: EDID identity, physical size, focus/primary,
+        // tearing, bit depth, max bpc, ten-bit, and the render pipeline state.
+        // These rows are gated on the output's zoolander capability flags so the
+        // form stays clean on compositors that don't advertise them.
+        const show_zool = s.kind == .zoolander;
+        if (show_zool) {
+            r = self.rows_len;
+            // Identity (read-only labels carried as single-option combos).
+            if (!row.make.empty() or !row.model.empty() or !row.serial.empty()) {
+                var b: [128]u8 = undefined;
+                if (!row.make.empty()) {
+                    self.pushRow(.{ .info = self.pushStr(std.fmt.bufPrint(&b, "Make: {s}", .{row.make.slice()}) catch "") });
+                }
+                if (!row.model.empty()) {
+                    self.pushRow(.{ .info = self.pushStr(std.fmt.bufPrint(&b, "Model: {s}", .{row.model.slice()}) catch "") });
+                }
+                if (!row.serial.empty()) {
+                    self.pushRow(.{ .info = self.pushStr(std.fmt.bufPrint(&b, "Serial: {s}", .{row.serial.slice()}) catch "") });
+                }
+            }
+            // Physical size.
+            if (row.physical_w > 0 and row.physical_h > 0) {
+                var b: [32]u8 = undefined;
+                const phys = std.fmt.bufPrint(&b, "{d}×{d} mm", .{ row.physical_w, row.physical_h }) catch "";
+                self.pushRow(.{ .info = self.pushStr(std.fmt.bufPrint(&b, "Physical size: {s} (EDID)", .{phys}) catch "") });
+            }
+            // Focused / primary toggles.
+            self.pushRow(.{ .toggle = .{
+                .label = "Focused",
+                .desc = "Whether this output has keyboard focus.",
+                .field = .monitor_focused,
+            } });
+            self.pushRow(.{ .toggle = .{
+                .label = "Primary",
+                .desc = "Whether this output is the primary output.",
+                .field = .monitor_primary,
+            } });
+            // Tearing toggle.
+            if (row.tearing_capable) {
+                self.pushRow(.{ .toggle = .{
+                    .label = "Allow tearing",
+                    .desc = "Let clients request tearing on this output.",
+                    .field = .monitor_tearing_toggle,
+                } });
+            }
+            // Per-output HDR policy, only where the output advertises HDR.
+            if (row.hdr_capable) {
+                self.pushRow(.{ .combo = .{
+                    .label = "HDR",
+                    .desc = "Per-output HDR policy written as output_rule.hdr.",
+                    .field = .monitor_hdr_idx,
+                    .options = &hdr_labels,
+                } });
+            }
+            self.pushRow(.{ .combo = .{
+                .label = "Colour profile",
+                .desc = "sRGB conversion or the panel's EDID profile.",
+                .field = .monitor_color_profile_idx,
+                .options = &color_profile_labels,
+            } });
+            self.pushCard("Zoolander capabilities", "Output identity, HDR policy, colour profile, focus and tearing.", r);
+
+            // Bit depth / max bpc / ten bit / render pipeline.
+            r = self.rows_len;
+            if (row.bit_depth_min < row.bit_depth_max) {
+                const bpc_n = @as(usize, @intCast(row.bit_depth_max - row.bit_depth_min + 1));
+                const bpc_opts = self.reserveOpts(bpc_n);
+                var bpc_i: usize = 0;
+                while (bpc_i < bpc_n and bpc_i < bpc_opts.len) : (bpc_i += 1) {
+                    var bb: [16]u8 = undefined;
+                    bpc_opts[bpc_i] = self.pushStr(std.fmt.bufPrint(&bb, "{d}-bit", .{row.bit_depth_min + @as(u8, @intCast(bpc_i))}) catch "");
+                }
+                self.pushRow(.{ .combo = .{
+                    .label = "Bit depth",
+                    .desc = "Panel bit depth advertised by the output.",
+                    .field = .monitor_bit_depth_idx,
+                    .options = bpc_opts[0..bpc_i],
+                } });
+            }
+            if (row.max_bpc_min < row.max_bpc) {
+                const mbp_n = @as(usize, @intCast(row.max_bpc - row.max_bpc_min + 1));
+                const mbp_opts = self.reserveOpts(mbp_n);
+                var mbp_i: usize = 0;
+                while (mbp_i < mbp_n and mbp_i < mbp_opts.len) : (mbp_i += 1) {
+                    var bb: [16]u8 = undefined;
+                    mbp_opts[mbp_i] = self.pushStr(std.fmt.bufPrint(&bb, "{d} bpc", .{row.max_bpc_min + @as(i32, @intCast(mbp_i))}) catch "");
+                }
+                self.pushRow(.{ .combo = .{
+                    .label = "Max BPC",
+                    .desc = "Connector max bits-per-channel range.",
+                    .field = .monitor_max_bpc_idx,
+                    .options = mbp_opts[0..mbp_i],
+                } });
+            }
+            if (row.ten_bit_capable) {
+                self.pushRow(.{ .toggle = .{
+                    .label = "10-bit capable",
+                    .desc = "Whether bitdepth = 10 is allowed on this output.",
+                    .field = .monitor_ten_bit_toggle,
+                } });
+            }
+            // Render pipeline sliders (only when the output advertises them).
+            if (!row.render_transfer.empty() or !row.render_sdr_brightness.empty() or
+                !row.render_sdr_saturation.empty())
+            {
+                self.pushRow(.{ .combo = .{
+                    .label = "Render transfer",
+                    .desc = "Transfer function used by the render pipeline.",
+                    .field = .monitor_render_transfer_idx,
+                    .options = &transfer_labels,
+                } });
+                self.pushRow(.{ .slider = .{
+                    .label = "SDR brightness",
+                    .field = .monitor_render_sdr_brightness,
+                    .min = 10,
+                    .max = 200,
+                    .fmt = .div100,
+                } });
+                self.pushRow(.{ .slider = .{
+                    .label = "SDR saturation",
+                    .field = .monitor_render_sdr_saturation,
+                    .min = 0,
+                    .max = 200,
+                    .fmt = .div100,
+                } });
+                self.pushRow(.{ .slider = .{
+                    .label = "SDR min luminance",
+                    .field = .monitor_render_sdr_min_lum,
+                    .min = 0,
+                    .max = 100,
+                    .fmt = .div10000,
+                } });
+                self.pushRow(.{ .slider = .{
+                    .label = "SDR max luminance",
+                    .field = .monitor_render_sdr_max_lum,
+                    .min = 80,
+                    .max = 400,
+                    .fmt = .nits,
+                } });
+                self.pushRow(.{ .combo = .{
+                    .label = "SDR EOTF",
+                    .desc = "Transfer function for SDR content on the render pipeline.",
+                    .field = .monitor_render_sdr_eotf_idx,
+                    .options = &eotf_labels,
+                } });
+            }
+            self.pushCard("Render pipeline", "Colour and luminance the compositor renders with.", r);
+        }
+
         // Status line (drawn under the form).
         r = self.rows_len;
         self.pushRow(.{ .info = statusLine(s) });
@@ -332,7 +521,7 @@ fn statusLine(s: *mon.State) []const u8 {
 pub fn hdrPanelVisible(s: *mon.State, row: *const mon.MonitorRow, caps: ?*const mon.OutputCaps) bool {
     if (!s.supportsColorHdrUi()) return false;
     if (row.disabled) return false;
-    if (caps) |c| if (c.hdr_hint) return true;
+    if (caps) |c| if (c.hdr_capable or c.hdr_hint) return true;
     if (row.cm.eql("hdr") or row.cm.eql("hdredid")) return true;
     return row.supports_hdr.eql("1");
 }
@@ -406,6 +595,46 @@ pub fn sdrEotfSel(s: anytype) usize {
     return @intCast(std.math.clamp(parseIntD(s.slice(), 0), 0, 2));
 }
 
+/// Bit-depth selector: index 0 = min, then min+1, … up to max.
+pub fn bitDepthSel(row: *const mon.MonitorRow) usize {
+    if (row.bit_depth_max <= row.bit_depth_min) return 0;
+    const mn = @as(i32, @intCast(row.bit_depth_min));
+    const mx = @as(i32, @intCast(row.bit_depth_max));
+    const cur = parseIntD(row.bitdepth.slice(), mn);
+    return @as(usize, @intCast(std.math.clamp(cur, mn, mx) - mn));
+}
+
+/// Set bit depth from the selected index.
+pub fn setBitDepth(row: *mon.MonitorRow, v: i32) void {
+    if (row.bit_depth_max <= row.bit_depth_min) return;
+    const val = row.bit_depth_min + @as(u8, @intCast(std.math.clamp(v, 0, @as(i32, row.bit_depth_max) - @as(i32, row.bit_depth_min))));
+    var b: [8]u8 = undefined;
+    row.bitdepth.set(std.fmt.bufPrint(&b, "{d}", .{val}) catch "");
+}
+
+/// Max BPC selector: index 0 = min, then min+1, … up to max.
+pub fn maxBpcSel(row: *const mon.MonitorRow) usize {
+    if (row.max_bpc <= row.max_bpc_min) return 0;
+    return @as(usize, @intCast(std.math.clamp(row.max_bpc - row.max_bpc_min, 0, row.max_bpc - row.max_bpc_min)));
+}
+
+/// Set max BPC from the selected index.
+pub fn setMaxBpc(row: *mon.MonitorRow, v: i32) void {
+    if (row.max_bpc <= row.max_bpc_min) return;
+    row.max_bpc = row.max_bpc_min + @as(i32, @intCast(std.math.clamp(v, 0, row.max_bpc - row.max_bpc_min)));
+}
+
+/// Render transfer selector index.
+pub fn renderTransferSel(s: []const u8) usize {
+    if (std.mem.eql(u8, s, "srgb")) return 0;
+    if (std.mem.eql(u8, s, "gamma22")) return 1;
+    if (std.mem.eql(u8, s, "gamma24")) return 2;
+    if (std.mem.eql(u8, s, "pq")) return 3;
+    if (std.mem.eql(u8, s, "hlg")) return 4;
+    if (std.mem.eql(u8, s, "linear")) return 5;
+    return 0;
+}
+
 fn selectedRow(s: *mon.State) ?*mon.MonitorRow {
     if (s.outputs_len == 0) return null;
     return &s.outputs[@min(s.selected, s.outputs_len - 1)];
@@ -432,6 +661,20 @@ pub fn isMonitorField(f: Field) bool {
         .monitor_hdr_min_lum,
         .monitor_hdr_max_lum,
         .monitor_hdr_avg_lum,
+        .monitor_focused,
+        .monitor_primary,
+        .monitor_tearing_toggle,
+        .monitor_hdr_idx,
+        .monitor_color_profile_idx,
+        .monitor_bit_depth_idx,
+        .monitor_max_bpc_idx,
+        .monitor_ten_bit_toggle,
+        .monitor_render_transfer_idx,
+        .monitor_render_sdr_brightness,
+        .monitor_render_sdr_saturation,
+        .monitor_render_sdr_min_lum,
+        .monitor_render_sdr_max_lum,
+        .monitor_render_sdr_eotf_idx,
         => true,
         else => false,
     };
@@ -441,6 +684,10 @@ pub fn fieldBool(s: *mon.State, f: Field) bool {
     const row = selectedRow(s) orelse return false;
     return switch (f) {
         .monitor_enabled => !row.disabled,
+        .monitor_focused => row.focused,
+        .monitor_primary => row.primary,
+        .monitor_tearing_toggle => std.mem.eql(u8, row.tearing.slice(), "1"),
+        .monitor_ten_bit_toggle => row.ten_bit_capable,
         else => false,
     };
 }
@@ -450,6 +697,22 @@ pub fn setFieldBool(s: *mon.State, f: Field, v: bool) void {
     switch (f) {
         .monitor_enabled => {
             row.disabled = !v;
+            s.dirty = true;
+        },
+        .monitor_focused => {
+            row.focused = v;
+            s.dirty = true;
+        },
+        .monitor_primary => {
+            row.primary = v;
+            s.dirty = true;
+        },
+        .monitor_tearing_toggle => {
+            row.tearing.set(if (v) "1" else "0");
+            s.dirty = true;
+        },
+        .monitor_ten_bit_toggle => {
+            row.ten_bit_capable = v;
             s.dirty = true;
         },
         else => {},
@@ -478,6 +741,16 @@ pub fn fieldInt(s: *mon.State, f: Field) i32 {
         .monitor_hdr_min_lum => @intFromFloat(@round(std.math.clamp(parseFloatD(row.min_luminance.slice(), 0.0), 0.0, 0.01) * 10000.0)),
         .monitor_hdr_max_lum => std.math.clamp(parseIntD(row.max_luminance.slice(), 600), 0, 2000),
         .monitor_hdr_avg_lum => std.math.clamp(parseIntD(row.max_avg_luminance.slice(), 400), 0, 2000),
+        .monitor_hdr_idx => @intCast(std.math.clamp(parseIntD(row.hdr_policy.slice(), 0), 0, 2)),
+        .monitor_color_profile_idx => @intFromBool(row.color_profile.eql("edid")),
+        .monitor_bit_depth_idx => @as(i32, @intCast(bitDepthSel(row))),
+        .monitor_max_bpc_idx => @as(i32, @intCast(maxBpcSel(row))),
+        .monitor_render_transfer_idx => @as(i32, @intCast(renderTransferSel(row.render_transfer.slice()))),
+        .monitor_render_sdr_brightness => @intFromFloat(@round(std.math.clamp(parseFloatD(row.render_sdr_brightness.slice(), 1.0), 0.1, 2.0) * 100.0)),
+        .monitor_render_sdr_saturation => @intFromFloat(@round(std.math.clamp(parseFloatD(row.render_sdr_saturation.slice(), 1.0), 0.0, 2.0) * 100.0)),
+        .monitor_render_sdr_min_lum => @intFromFloat(@round(std.math.clamp(parseFloatD(row.render_sdr_min_lum.slice(), 0.0), 0.0, 0.01) * 10000.0)),
+        .monitor_render_sdr_max_lum => std.math.clamp(parseIntD(row.render_sdr_max_lum.slice(), 200), 80, 400),
+        .monitor_render_sdr_eotf_idx => @intCast(sdrEotfSel(row.render_sdr_eotf)),
         else => 0,
     };
 }
@@ -509,13 +782,36 @@ pub fn setFieldInt(s: *mon.State, f: Field, v: i32) void {
         .monitor_hdr_min_lum => setG(&row.min_luminance, @as(f64, @floatFromInt(std.math.clamp(v, 0, 100))) / 10000.0),
         .monitor_hdr_max_lum => setI(&row.max_luminance, std.math.clamp(v, 0, 2000)),
         .monitor_hdr_avg_lum => setI(&row.max_avg_luminance, std.math.clamp(v, 0, 2000)),
+        .monitor_hdr_idx => setI(&row.hdr_policy, std.math.clamp(v, 0, 2)),
+        .monitor_color_profile_idx => row.color_profile.set(if (v != 0) "edid" else "srgb"),
+        .monitor_bit_depth_idx => setBitDepth(row, v),
+        .monitor_max_bpc_idx => setMaxBpc(row, v),
+        .monitor_render_transfer_idx => row.render_transfer.set(switch (std.math.clamp(v, 0, 5)) {
+            0 => "srgb",
+            1 => "gamma22",
+            2 => "gamma24",
+            3 => "pq",
+            4 => "hlg",
+            else => "linear",
+        }),
+        .monitor_render_sdr_brightness => setG(&row.render_sdr_brightness, @as(f64, @floatFromInt(std.math.clamp(v, 10, 200))) / 100.0),
+        .monitor_render_sdr_saturation => setG(&row.render_sdr_saturation, @as(f64, @floatFromInt(std.math.clamp(v, 0, 200))) / 100.0),
+        .monitor_render_sdr_min_lum => setG(&row.render_sdr_min_lum, @as(f64, @floatFromInt(std.math.clamp(v, 0, 100))) / 10000.0),
+        .monitor_render_sdr_max_lum => setI(&row.render_sdr_max_lum, std.math.clamp(v, 80, 400)),
+        .monitor_render_sdr_eotf_idx => row.render_sdr_eotf.set(switch (std.math.clamp(v, 0, 2)) {
+            0 => "",
+            1 => "1",
+            else => "2",
+        }),
         else => return,
     }
     s.dirty = true;
 }
 
 fn vrrMax(s: *mon.State) i32 {
-    return if (s.kind == .mango) 1 else 2;
+    if (s.kind == .mango) return 1;
+    if (s.kind == .zoolander) return 3;
+    return 2;
 }
 
 fn resIx(s: *mon.State, row: *const mon.MonitorRow) usize {
@@ -584,7 +880,13 @@ pub fn setFieldComboIndex(s: *mon.State, f: Field, options: []const []const u8, 
         .monitor_eotf_idx,
         .monitor_hdr_support_idx,
         .monitor_wide_idx,
-        => setFieldInt(s, f, @intCast(ix)),
+        .monitor_hdr_idx,
+        .monitor_color_profile_idx,
+        .monitor_bit_depth_idx,
+        .monitor_max_bpc_idx,
+        .monitor_render_transfer_idx,
+        .monitor_render_sdr_eotf_idx,
+        => setFieldInt(s, f, @as(i32, @intCast(ix))),
         .monitor_cm_idx => {
             row.cm.set(options[ix]);
             s.dirty = true;
@@ -619,21 +921,23 @@ test "settings-monitors-page: builds cards from the state" {
     var page = Page{};
     page.build(&s);
     const cards = page.cardsSlice();
-    // Toolbar/canvas/pills, header, Display, Scale & transform, status.
-    try t.expectEqual(@as(usize, 5), cards.len);
+    // Toolbar/canvas/pills, Global presentation, header, Display, Scale &
+    // transform, status.
+    try t.expectEqual(@as(usize, 6), cards.len);
     // Untitled card: rows plus the 16px embedded-widget pad.
     try t.expectEqual(
         rows_mod.toolbar_h + rows_mod.info_row_h + rows_mod.canvas_h + rows_mod.pills_h + 16,
         rows_mod.cardHeight(cards[0]),
     );
-    try t.expectEqualStrings("DP-1", cards[1].title);
-    try t.expectEqual(@as(usize, 1), cards[1].rows.len);
-    try t.expect(cards[1].rows[0] == .toggle);
-    try t.expectEqualStrings("Display", cards[2].title);
+    try t.expectEqualStrings("Global presentation", cards[1].title);
+    try t.expectEqualStrings("DP-1", cards[2].title);
+    try t.expectEqual(@as(usize, 1), cards[2].rows.len);
+    try t.expect(cards[2].rows[0] == .toggle);
+    try t.expectEqualStrings("Display", cards[3].title);
     // No caps and no VRR (unknown compositor) -> resolution + refresh only.
-    try t.expectEqual(@as(usize, 2), cards[2].rows.len);
     try t.expectEqual(@as(usize, 2), cards[3].rows.len);
-    try t.expectEqualStrings("Scale & transform", cards[3].title);
+    try t.expectEqual(@as(usize, 2), cards[4].rows.len);
+    try t.expectEqualStrings("Scale & transform", cards[4].title);
     // Scroll height matches the shared card walk.
     try t.expectEqual(rows_mod.contentHeightOf(cards, 0), pageHeight(&page));
     try t.expect(pageHeight(&page) > rows_mod.canvas_h);
@@ -657,10 +961,11 @@ test "settings-monitors-page: no outputs falls back to a status card" {
     var page = Page{};
     page.build(&s);
     const cards = page.cardsSlice();
-    try t.expectEqual(@as(usize, 2), cards.len);
-    try t.expectEqualStrings("Monitors", cards[1].title);
-    try t.expectEqual(@as(usize, 1), cards[1].rows.len);
-    try t.expectEqualStrings("Compositor not supported", cards[1].rows[0].info);
+    try t.expectEqual(@as(usize, 3), cards.len);
+    try t.expectEqualStrings("Global presentation", cards[1].title);
+    try t.expectEqualStrings("Monitors", cards[2].title);
+    try t.expectEqual(@as(usize, 1), cards[2].rows.len);
+    try t.expectEqualStrings("Compositor not supported", cards[2].rows[0].info);
 }
 
 test "settings-monitors-page: pills carry the output names" {
@@ -779,7 +1084,7 @@ test "settings-monitors-page: resolution pick snaps the refresh rate" {
     var page = Page{};
     page.build(&s);
     // 2 resolutions, descending by pixel area.
-    const res = page.cardsSlice()[2].rows[0].combo;
+    const res = page.cardsSlice()[3].rows[0].combo;
     try t.expectEqual(@as(usize, 2), res.options.len);
     try t.expectEqualStrings("2560x1440", res.options[0]);
 
@@ -790,7 +1095,7 @@ test "settings-monitors-page: resolution pick snaps the refresh rate" {
     try t.expect(s.dirty);
 
     page.build(&s);
-    const hz = page.cardsSlice()[2].rows[1].combo;
+    const hz = page.cardsSlice()[3].rows[1].combo;
     try t.expectEqual(@as(usize, 2), hz.options.len);
     try t.expectEqualStrings("240 Hz", hz.labels[0]);
     try t.expectEqual(@as(usize, 0), fieldComboIndex(&s, .monitor_refresh_idx, hz.options));
@@ -811,7 +1116,7 @@ test "settings-monitors-page: HDR panels follow the specified visibility rules" 
     var page = Page{};
     page.build(&s);
     try t.expect(!hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
-    try t.expectEqual(@as(usize, 5), page.cardsSlice().len);
+    try t.expectEqual(@as(usize, 6), page.cardsSlice().len);
 
     // Hyprland + a caps table that hints HDR → the full form.
     s.kind = .hyprland;
@@ -820,16 +1125,16 @@ test "settings-monitors-page: HDR panels follow the specified visibility rules" 
     page.build(&s);
     // Toolbar, header, Display (now with VRR), Scale, Color, HDR, Luminance,
     // status — the full Hyprland form.
-    try t.expectEqual(@as(usize, 8), page.cardsSlice().len);
-    try t.expectEqualStrings("HDR", page.cardsSlice()[5].title);
-    try t.expectEqualStrings("Luminance", page.cardsSlice()[6].title);
-    try t.expectEqual(@as(usize, 5), page.cardsSlice()[6].rows.len);
+    try t.expectEqual(@as(usize, 9), page.cardsSlice().len);
+    try t.expectEqualStrings("HDR", page.cardsSlice()[6].title);
+    try t.expectEqualStrings("Luminance", page.cardsSlice()[7].title);
+    try t.expectEqual(@as(usize, 5), page.cardsSlice()[7].rows.len);
 
     // A disabled output hides the HDR panel entirely.
     s.outputs[0].disabled = true;
     try t.expect(!hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     page.build(&s);
-    try t.expectEqual(@as(usize, 6), page.cardsSlice().len);
+    try t.expectEqual(@as(usize, 7), page.cardsSlice().len);
 
     // cm=srgb with no HDR hint falls back to the wide/EOTF strip.
     s.outputs[0].disabled = false;
@@ -839,6 +1144,6 @@ test "settings-monitors-page: HDR panels follow the specified visibility rules" 
     try t.expect(!hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     try t.expect(wideEotfStripVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     page.build(&s);
-    try t.expectEqual(@as(usize, 7), page.cardsSlice().len);
-    try t.expectEqual(@as(usize, 2), page.cardsSlice()[5].rows.len);
+    try t.expectEqual(@as(usize, 8), page.cardsSlice().len);
+    try t.expectEqual(@as(usize, 2), page.cardsSlice()[6].rows.len);
 }

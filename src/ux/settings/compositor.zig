@@ -10,7 +10,7 @@ const std = @import("std");
 // Mango and the Hyprland category (id 33) only on Hyprland — settings_app.cpp
 // `kSidebarDefs` filtering (`def.id == 16/33` continue-lines).
 
-pub const Kind = enum { unknown, niri, hyprland, sway, mango, labwc };
+pub const Kind = enum { unknown, niri, hyprland, sway, mango, labwc, zoolander };
 
 var cached: ?Kind = null;
 
@@ -28,6 +28,10 @@ const env_probes = [_]EnvProbe{
     .{ .var_name = "SWAYSOCK", .k = .sway },
     .{ .var_name = "LABWC_PID", .k = .labwc },
     .{ .var_name = "MANGO_INSTANCE_SIGNATURE", .k = .mango },
+    .{ .var_name = "ZOOLANDER_INSTANCE_SIGNATURE", .k = .zoolander },
+    .{ .var_name = "ZOOLANDER_SOCKET", .k = .zoolander },
+    .{ .var_name = "ZOOLANDER_RUNTIME_DIR", .k = .zoolander },
+    .{ .var_name = "ZOOLANDER_CONFIG", .k = .zoolander },
 };
 
 const HintProbe = struct { needle: []const u8, k: Kind };
@@ -38,6 +42,7 @@ const hint_probes = [_]HintProbe{
     .{ .needle = "sway", .k = .sway },
     .{ .needle = "mango", .k = .mango },
     .{ .needle = "labwc", .k = .labwc },
+    .{ .needle = "zoolander", .k = .zoolander },
 };
 
 fn envSet(name: []const u8) bool {
@@ -87,13 +92,23 @@ fn containsFolded(haystack: []const u8, needle: []const u8) bool {
 }
 
 fn detect() Kind {
+    // Zoolander sets HYPRLAND_INSTANCE_SIGNATURE for compatibility, so an
+    // explicit Zoolander hint/env must win over the Hyprland socket marker.
     for (env_probes) |p| {
-        if (envSet(p.var_name)) return p.k;
+        if (p.k == .zoolander and envSet(p.var_name)) return .zoolander;
     }
     const hint = desktopHint();
+    if (hint.len > 0) {
+        for (hint_probes) |p| {
+            if (p.k == .zoolander and containsFolded(hint, p.needle)) return .zoolander;
+        }
+    }
+    for (env_probes) |p| {
+        if (p.k != .zoolander and envSet(p.var_name)) return p.k;
+    }
     if (hint.len == 0) return .unknown;
     for (hint_probes) |p| {
-        if (containsFolded(hint, p.needle)) return p.k;
+        if (p.k != .zoolander and containsFolded(hint, p.needle)) return p.k;
     }
     if (containsFolded(hint, "dwl")) return .mango;
     return .unknown;
@@ -120,7 +135,7 @@ test "settings-compositor: hyprland env wins over XDG hints" {
     // This process runs under a compositor; whichever it is, detection must
     // land on a concrete kind when any probe var or hint is present.
     const k = kind();
-    try t.expect(k == .unknown or k == .niri or k == .hyprland or k == .sway or k == .mango or k == .labwc);
+    try t.expect(k == .unknown or k == .niri or k == .hyprland or k == .sway or k == .mango or k == .labwc or k == .zoolander);
     // Detection is cached: repeat calls are identical.
     try t.expectEqual(k, kind());
 }

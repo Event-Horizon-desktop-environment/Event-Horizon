@@ -387,7 +387,7 @@ test "workspaces: initialize walks the backend chain and selects nothing when no
     // No Hyprland runtime is attached, ext is unbound, and mango/sway have no
     // managers — so every compositor kind ends at the same empty answer, after
     // passing through every check.
-    const kinds = [_]bk.Kind{ .hyprland, .niri, .mango, .sway, .labwc, .unknown };
+    const kinds = [_]bk.Kind{ .hyprland, .niri, .mango, .sway, .labwc, .zoolander, .unknown };
     for (kinds) |kind| {
         ww.initialize(kind);
         try t.expect(ww.workspaceBackend() == null);

@@ -194,3 +194,4 @@ pub const desktop_open_with = @import("desktop_shell/desktop/open_with.zig");
 pub const desktop_spawn = @import("desktop_shell/desktop/spawn.zig");
 pub const desktop_app_state = @import("desktop_shell/desktop/app.zig");
 pub const desktop_paint = @import("desktop_shell/desktop/desktop_paint.zig");
+pub const zoolander_monitors = @import("wl/zoolander_monitors.zig");

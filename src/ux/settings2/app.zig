@@ -1,5 +1,6 @@
 const std = @import("std");
 const hyprland_page = @import("hyprland_page.zig");
+const zoolander_page = @import("zoolander_page.zig");
 const overlay = @import("../../config/overlay.zig");
 
 // Full Settings state model — all persisted fields plus the `App` window/sidebar geometry.
@@ -191,6 +192,19 @@ pub const hyprland_subs = blk: {
     break :blk subs;
 };
 
+/// Zoolander's rail rows: one page per group of Lua setters. The category
+/// itself is hidden unless Zoolander is running (`compositor.visibleCategory`
+/// on `zoolander_category_id`).
+pub const zoolander_category_id: i32 = 100;
+
+pub const zoolander_subs = blk: {
+    var subs: [zoolander_page.sections.len]SidebarSub = undefined;
+    for (zoolander_page.sections, 0..) |sec, i| {
+        subs[i] = .{ .label = sec.label, .glyph = sec.glyph, .tab_id = sec.tab_id };
+    }
+    break :blk subs;
+};
+
 /// Rail categories, sorted A-Z by label. A category with no subs is a
 /// single-page entry: its id is the page tab, per `pageTab`, so the rail
 /// button opens that page directly.
@@ -214,6 +228,7 @@ pub const sidebar_categories = [_]SidebarCategory{
     .{ .id = 51, .label = "Updates", .glyph = "system_update", .subs = &.{} },
     .{ .id = 15, .label = "Wallpaper Settings", .glyph = "wallpaper", .subs = &wallpaper_subs },
     .{ .id = 17, .label = "Wi-Fi", .glyph = "wifi", .subs = &.{} },
+    .{ .id = zoolander_category_id, .label = "Zoolander", .glyph = "layers", .subs = &zoolander_subs },
 };
 
 /// Persisted settings — one field per Settings struct member in
@@ -560,7 +575,7 @@ pub fn isMangoTab(tab_id: i32) bool {
 
 test "settings-app: tab registry mirrors the sidebar sections" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 15), sidebar_categories.len);
+    try t.expectEqual(@as(usize, 16), sidebar_categories.len);
     // The rail is sorted A-Z by label.
     var prev: []const u8 = "";
     for (sidebar_categories) |cat| {
@@ -629,6 +644,12 @@ test "settings-app: tab registry mirrors the sidebar sections" {
     try t.expectEqualStrings("Decoration", tabTitle(20).?);
     try t.expect(isMangoTab(24));
     try t.expect(!isMangoTab(33));
+    // Zoolander is its own rail category with one page per setter group.
+    try t.expectEqual(zoolander_category_id, sidebar_categories[sidebar_categories.len - 1].id);
+    try t.expectEqualStrings("Keyboard", tabTitle(86).?);
+    try t.expectEqualStrings("Workspaces & Layouts", tabTitle(92).?);
+    try t.expectEqualStrings("XWayland", tabTitle(93).?);
+    try t.expect(tabTitle(zoolander_category_id) == null);
     const app = AppState{};
     try t.expectEqual(@as(i32, 292), AppState.contentX());
     try t.expectEqual(@as(i32, 900 - 292 - 16), app.contentW());

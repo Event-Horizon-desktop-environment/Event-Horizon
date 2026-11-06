@@ -43,6 +43,9 @@ const default_apps_data = @import("default_apps_data.zig");
 const display_picker = @import("display_picker.zig");
 const dw_data = @import("desktop_widgets_data.zig");
 const hyprland_data = @import("hyprland_data.zig");
+const zoolander_data = @import("zoolander_data.zig");
+const display_confirm = @import("display_confirm.zig");
+const zoolander_page = @import("zoolander_page.zig");
 const hyprland_tab = @import("hyprland_tab.zig");
 const hyprland_anim_popup = @import("hyprland_anim_popup.zig");
 const hyprland_bezier = @import("hyprland_bezier.zig");
@@ -56,6 +59,7 @@ const wl_loop = @import("../../loop.zig");
 const wl_pump = @import("../../wl/pump.zig");
 const wl_seat = @import("../../wl/seat.zig");
 const xdg = @import("../../wl/surface/xdg.zig");
+const layer_mod = @import("../../wl/surface/layer.zig");
 const shm_mod = @import("../../wl/buffer/shm.zig");
 const cairo = shm_mod.cairo;
 const linux = std.os.linux;
@@ -157,6 +161,17 @@ pub const Win = struct {
     loop: wl_loop.Loop = undefined,
     surface: xdg.Toplevel = .{},
     shm: shm_mod.ShmBuffer = undefined,
+    /// The display-confirmation dialog is its own floating window: an
+    /// unanchored overlay layer surface the compositor centres, exactly like
+    /// the polkit auth card. It exists only while a confirmation is pending.
+    confirm_layer: layer_mod.Surface = .{},
+    confirm_shm: shm_mod.ShmPair = undefined,
+    confirm_live: bool = false,
+    confirm_w: i32 = 0,
+    confirm_h: i32 = 0,
+    /// A press that landed on the dialog must not let its release fall
+    /// through to the settings page once the dialog has disappeared.
+    confirm_swallow_release: bool = false,
     settings: app_mod.Settings = .{},
     /// Live monitors state — the one tab whose values live outside
     /// `Settings` (one string per output, plus the compositor caps table).
@@ -266,6 +281,10 @@ pub const Win = struct {
         self.monitors.io = self.io;
         self.monitors.env = init.environ_map;
         self.content.mon = &self.monitors;
+        // Roll back display changes that were applied but never kept before
+        // the previous settings process ended.
+        self.monitors.recoverAtLaunch();
+        zoolander_data.recoverAtLaunch(self.io);
         // Wallpaper page: needs the arena for its gallery paths and the
         // loop for the thumbnail worker's wake eventfd (both set below).
         self.wall.init(self.gpa, self.io);
@@ -323,6 +342,7 @@ pub const Win = struct {
         self.palette_ref = refresh.Refresher.init(self.gpa, self.io);
         self.palette_inited = true;
         self.shm = shm_mod.ShmBuffer.init(self.gpa);
+        self.confirm_shm = shm_mod.ShmPair.init(self.gpa);
 
         self.conn = wl_conn.Connection.init(self.gpa);
         if (!self.conn.connect(null)) return false;
@@ -477,6 +497,11 @@ pub const Win = struct {
             self.palette_ref.deinit();
             self.palette_inited = false;
         }
+        // Closing without a keep counts as not confirming the display change.
+        if (zoolander_data.confirmPending()) zoolander_data.revert(self.io);
+        if (self.monitors.confirm_pending) self.monitors.revertConfirm();
+        if (self.confirm_live) self.hideConfirmPopup();
+        self.confirm_shm.deinit();
         self.monitors.deinit();
         self.surface.destroy();
         self.shm.deinit();
@@ -1635,6 +1660,16 @@ pub const Win = struct {
             self.icons.resetSession();
         }
         self.picker = null;
+        // Leaving a page commits a focused inline text band, like Enter.
+        const prev = self.content.active_tab;
+        if (self.content.textEditing()) {
+            _ = self.content.commitText();
+            if (self.content.takeTextCommit() and
+                (zoolander_page.ownsTab(prev) or prev == app_mod.TabId.monitors))
+            {
+                if (zoolander_data.isDirty()) zoolander_data.commit(self.gpa, self.io);
+            }
+        }
         self.sidebar.active_tab = t;
         self.content.active_tab = t;
         self.content.open_combo = null;
@@ -1663,6 +1698,13 @@ pub const Win = struct {
             hyprland_data.ensureLoaded(self.io);
             self.content.relayout();
         }
+        // Entering a Zoolander page (re)reads its Lua config, unless an edit
+        // is still pending. The Monitors tab also carries the global
+        // `set_presentation` rows, so it loads the same config.
+        if ((zoolander_page.ownsTab(t) or t == app_mod.TabId.monitors) and self.content.drag == null) {
+            zoolander_data.ensureLoaded(self.io);
+            self.content.relayout();
+        }
         // Entering the Bluetooth tab starts its slow repaint tick (500 ms —
         // drives the throttled BlueZ refresh + busy spinner); leaving lets
         // the one-shot timer lapse, so the loop stops on its own.
@@ -1674,8 +1716,12 @@ pub const Win = struct {
         switch (ix) {
             mon_page.tool_refresh => self.monitors.refresh(),
             mon_page.tool_portals => self.monitors.restartPortals(),
-            mon_page.tool_apply => _ = self.monitors.saveAndReload(),
-            mon_page.tool_revert => self.monitors.revertEdits(),
+            mon_page.tool_apply => {
+                if (self.monitors.confirm_pending) self.monitors.keepConfirm() else _ = self.monitors.saveAndReload();
+            },
+            mon_page.tool_revert => {
+                if (self.monitors.confirm_pending) self.monitors.revertConfirm() else self.monitors.revertEdits();
+            },
             else => return,
         }
         self.content.relayout();
@@ -1775,6 +1821,159 @@ pub const Win = struct {
         self.ensureBufferAndPaint();
     }
 
+    /// The confirmation dialog spans both display flows, and they can never be
+    /// pending at once (a display commit resolves the other). Monitors win if
+    /// they somehow overlap so the older edit is still recoverable.
+    pub const PendingConfirm = struct {
+        kind: display_confirm.Kind,
+        seconds: u32,
+    };
+
+    pub fn pendingConfirm(self: *Win) ?PendingConfirm {
+        if (self.monitors.confirm_pending) {
+            return .{ .kind = .monitors, .seconds = self.monitors.confirmRemaining() };
+        }
+        if (zoolander_data.confirmPending()) {
+            return .{ .kind = .presentation, .seconds = zoolander_data.confirmRemaining() };
+        }
+        return null;
+    }
+
+    /// Create or drop the floating confirmation window to match the pending
+    /// state. Mirrors the polkit agent: an unanchored overlay layer surface
+    /// with an explicit size, which the compositor centres over the focused
+    /// output, so the dialog is a real window rather than a veil on the page.
+    fn syncConfirmPopup(self: *Win) void {
+        if (self.pendingConfirm() != null) {
+            if (!self.confirm_live) self.showConfirmPopup();
+            self.paintConfirmPopup();
+        } else if (self.confirm_live) {
+            self.hideConfirmPopup();
+        }
+    }
+
+    fn showConfirmPopup(self: *Win) void {
+        if (self.bound.compositor == null or self.bound.layer_shell == null) return;
+        if (!self.confirm_layer.create(
+            self.bound.compositor,
+            self.bound.layer_shell,
+            null,
+            .overlay,
+            "event-horizon-display-confirm",
+        )) return;
+        self.confirm_layer.on_configure = onConfirmConfigure;
+        self.confirm_layer.on_closed = onConfirmClosed;
+        self.confirm_layer.on_scale = onConfirmScale;
+        self.confirm_layer.ctx = self;
+        // No anchor + explicit size: the compositor places a tight floating
+        // card and centres it, exactly like the polkit auth prompt. Keyboard
+        // stays with the settings window; the dialog only needs the pointer.
+        self.confirm_layer.setAnchor(0);
+        self.confirm_layer.setExclusiveZone(0);
+        self.confirm_layer.setKeyboardInteractivity(0);
+        self.confirm_layer.setSize(display_confirm.panel_w, display_confirm.panel_h);
+        self.confirm_w = display_confirm.panel_w;
+        self.confirm_h = display_confirm.panel_h;
+        self.confirm_live = true;
+        self.content.relayout();
+        self.confirm_layer.commit();
+        _ = self.conn.flush();
+    }
+
+    fn hideConfirmPopup(self: *Win) void {
+        self.confirm_layer.destroy();
+        self.confirm_shm.deinit();
+        self.confirm_shm = shm_mod.ShmPair.init(self.gpa);
+        self.confirm_live = false;
+        self.confirm_w = 0;
+        self.confirm_h = 0;
+        self.confirm_swallow_release = false;
+        self.content.relayout();
+        _ = self.conn.flush();
+    }
+
+    fn paintConfirmPopup(self: *Win) void {
+        if (!self.confirm_live or !self.confirm_layer.configured) return;
+        if (self.confirm_w <= 0 or self.confirm_h <= 0) return;
+        const pending = self.pendingConfirm() orelse return;
+        const scale: i32 = @max(1, self.confirm_layer.scale);
+        if (!self.confirm_shm.ensure(
+            self.bound.shm,
+            "display-confirm",
+            self.confirm_w * scale,
+            self.confirm_h * scale,
+        )) return;
+        const buf = self.confirm_shm.acquire() orelse return;
+        const cr = buf.cr orelse return;
+        cairo.cairo_identity_matrix(cr);
+        cairo.cairo_scale(cr, @floatFromInt(scale), @floatFromInt(scale));
+        cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_SOURCE);
+        cairo.cairo_set_source_rgba(cr, 0, 0, 0, 0);
+        cairo.cairo_paint(cr);
+        cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
+        display_confirm.paint(
+            cr,
+            self.confirm_w,
+            self.confirm_h,
+            pending.kind,
+            pending.seconds,
+            self.ptr_x,
+            self.ptr_y,
+            false,
+        );
+        self.confirm_layer.setBufferScale(scale);
+        self.confirm_layer.attach(buf.wlBuffer(), 0, 0);
+        self.confirm_layer.damage(0, 0, self.confirm_w, self.confirm_h);
+        buf.markBusy();
+        self.confirm_layer.commit();
+        _ = self.conn.flush();
+    }
+
+    fn onConfirmConfigure(ctx: *anyopaque, w: u32, h: u32) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        if (w > 0) self.confirm_w = @intCast(w);
+        if (h > 0) self.confirm_h = @intCast(h);
+        self.paintConfirmPopup();
+    }
+
+    fn onConfirmClosed(ctx: *anyopaque) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        // Compositor dismissed the dialog: treat it like a revert, so a
+        // display change is never silently kept.
+        if (self.pendingConfirm() != null) self.resolveConfirm(.revert);
+    }
+
+    fn onConfirmScale(ctx: *anyopaque, scale: i32) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        _ = scale;
+        self.paintConfirmPopup();
+    }
+
+    /// True when the pointer is over the confirmation window rather than the
+    /// settings page. The seat tracks the entered surface for every event.
+    fn pointerOnConfirm(self: *Win) bool {
+        if (!self.confirm_live) return false;
+        const seat = self.bound.seat_obj orelse return false;
+        return seat.focus_surface != null and seat.focus_surface == self.confirm_layer.wl_surface;
+    }
+
+    fn resolveConfirm(self: *Win, action: display_confirm.Action) void {
+        if (self.monitors.confirm_pending) {
+            switch (action) {
+                .keep => self.monitors.keepConfirm(),
+                .revert => self.monitors.revertConfirm(),
+            }
+        } else {
+            switch (action) {
+                .keep => zoolander_data.keep(self.io),
+                .revert => zoolander_data.revert(self.io),
+            }
+        }
+        self.hideConfirmPopup();
+        self.content.relayout();
+        self.repaint();
+    }
+
     /// Full frame: bg, sidebar, divider, content, popup, close affordance.
     pub fn repaint(self: *Win) void {
         if (!self.buf_ready) return;
@@ -1784,6 +1983,11 @@ pub const Win = struct {
             self.pending_redraw = true;
             return;
         }
+        // Expire the "keep these display settings?" windows even while idle.
+        if (self.monitors.tickConfirm()) self.content.relayout();
+        if (zoolander_data.tick(self.io)) self.content.relayout();
+        // Show/hide/repaint the floating dialog to match the pending state.
+        self.syncConfirmPopup();
 
         // Content bounds feed the scroll controller before the frame draws.
         // Both custom pages read `snap`, so hand them this frame's values
@@ -1915,7 +2119,10 @@ pub const Win = struct {
         // only happened on pointer input, so a wallpaper added while the window
         // sat idle stayed a black tile.
         const wall_live = self.content.active_tab == wallpaper_tab.tab_id;
-        if (!animating and !bt_live and !snd_live and !tm_live and !acc_live and !net_live and !wall_live) return;
+        // A pending display-settings confirmation must tick down to its revert.
+        const mon_live = self.monitors.confirm_pending;
+        const zool_live = zoolander_data.confirmPending();
+        if (!animating and !bt_live and !snd_live and !tm_live and !acc_live and !net_live and !wall_live and !mon_live and !zool_live) return;
         if (self.timer_fd < 0) {
             const rc: isize = @bitCast(linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true }));
             if (rc < 0) return;
@@ -2078,6 +2285,13 @@ pub const Win = struct {
         const BTN_LEFT: u32 = 0x110;
         if (button != BTN_LEFT) return;
         if (state == 0) {
+            // A press that resolved the floating dialog must not let its
+            // release land on whatever page control sat underneath.
+            if (self.confirm_swallow_release) {
+                self.confirm_swallow_release = false;
+                self.repaint();
+                return;
+            }
             // Sound slider release: land the final volume write and let the
             // live snapshot resume.
             if (self.snd.endDrag()) {
@@ -2146,6 +2360,19 @@ pub const Win = struct {
                     self.repaint();
                 }
             }
+            // Zoolander pages batch slider drags the same way: the release
+            // writes pending Lua edits and asks Zoolander to reload. The
+            // Monitors tab carries the global `set_presentation` rows, so it
+            // commits through the same path.
+            if (zoolander_page.ownsTab(self.content.active_tab) or
+                self.content.active_tab == app_mod.TabId.monitors)
+            {
+                if (zoolander_data.isDirty()) {
+                    zoolander_data.commit(self.gpa, self.io);
+                    self.content.relayout();
+                    self.repaint();
+                }
+            }
             // Widget-board release: commit the drop (reorder / cross-zone
             // move) and persist, or silently disarm a bare grip click.
             if (self.content.takeWidgetDragCommit()) |mc| {
@@ -2165,6 +2392,27 @@ pub const Win = struct {
         self.content.setPointer(self.ptr_x, self.ptr_y);
         const x = self.ptr_x;
         const y = self.ptr_y;
+        // The floating confirmation is modal in effect: while it is up, a
+        // click on the settings page is ignored, and a click on the dialog
+        // (its own surface, so pointer coordinates are already dialog-local)
+        // resolves it.
+        if (self.confirm_live) {
+            if (self.pointerOnConfirm()) {
+                self.confirm_swallow_release = true;
+                if (display_confirm.hit(
+                    self.confirm_w,
+                    self.confirm_h,
+                    @intFromFloat(x),
+                    @intFromFloat(y),
+                )) |action| self.resolveConfirm(action);
+                self.repaint();
+                return;
+            }
+            if (self.pendingConfirm() != null) {
+                self.repaint();
+                return;
+            }
+        }
         // 0a. Hyprland bezier editor: modal over a section page while open.
         if (hyprland_tab.isSectionTab(self.content.active_tab) and hyprland_tab.bezier_open) {
             var do_commit = false;
@@ -2256,6 +2504,17 @@ pub const Win = struct {
             if (self.snd.modalDown(self.win_w, self.win_h, x, y)) {
                 self.repaint();
                 return;
+            }
+        }
+        // 1f. A press anywhere commits a focused inline text band first; a
+        // press on the same band re-seeds from the committed value below.
+        if (self.content.textEditing()) {
+            _ = self.content.commitText();
+            if (self.content.takeTextCommit() and
+                (zoolander_page.ownsTab(self.content.active_tab) or
+                    self.content.active_tab == app_mod.TabId.monitors))
+            {
+                if (zoolander_data.isDirty()) zoolander_data.commit(self.gpa, self.io);
             }
         }
         // 2. popup rows first — they float above everything.
@@ -2484,6 +2743,18 @@ pub const Win = struct {
             // daemon; every other button falls through to the generic
             // apply + persist path below.
             .button => |label| {
+                if (std.mem.eql(u8, label, "Keep display settings")) {
+                    zoolander_data.keep(self.io);
+                    self.content.relayout();
+                    self.repaint();
+                    return;
+                }
+                if (std.mem.eql(u8, label, "Revert display settings")) {
+                    zoolander_data.revert(self.io);
+                    self.content.relayout();
+                    self.repaint();
+                    return;
+                }
                 if (std.mem.eql(u8, label, "Test notification")) {
                     if (!notifications_persist.sendTestNotification(self.gpa)) {
                         logz.log("settings: test notification failed (daemon down?)", .{});
@@ -2761,6 +3032,22 @@ pub const Win = struct {
             hyprland_tab.anim_edit_idx >= 0)
         {
             self.hyprSpeedKey(ev);
+            self.repaint();
+            return;
+        }
+        // Inline text bands (Zoolander XKB / colour / font keys) own keys
+        // while focused. Enter commits the value into the Lua store and
+        // reloads, using the same path as a slider drag release.
+        if (self.content.textKey(ev.sym, ev.utf8[0..ev.utf8_len])) {
+            if (self.content.takeTextCommit() and
+                (zoolander_page.ownsTab(self.content.active_tab) or
+                    self.content.active_tab == app_mod.TabId.monitors))
+            {
+                if (zoolander_data.isDirty()) {
+                    zoolander_data.commit(self.gpa, self.io);
+                    self.content.relayout();
+                }
+            }
             self.repaint();
             return;
         }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const app_mod = @import("app.zig");
 const hyprland_data = @import("hyprland_data.zig");
+const zoolander_data = @import("zoolander_data.zig");
 
 // Field bindings between the declarative row list (rows.zig) and the
 // persisted `Settings` struct, where every control in a
@@ -184,6 +185,20 @@ pub const Field = enum {
     monitor_hdr_min_lum,
     monitor_hdr_max_lum,
     monitor_hdr_avg_lum,
+    monitor_focused,
+    monitor_primary,
+    monitor_tearing_toggle,
+    monitor_hdr_idx,
+    monitor_color_profile_idx,
+    monitor_bit_depth_idx,
+    monitor_max_bpc_idx,
+    monitor_ten_bit_toggle,
+    monitor_render_transfer_idx,
+    monitor_render_sdr_brightness,
+    monitor_render_sdr_saturation,
+    monitor_render_sdr_min_lum,
+    monitor_render_sdr_max_lum,
+    monitor_render_sdr_eotf_idx,
     power_perf_pref,
 
     // -- strings --
@@ -404,6 +419,134 @@ pub const Field = enum {
     hypr_xwayland_enabled, // xwayland.enabled
     hypr_general_layout, // general.layout
 
+    // -- Zoolander config bindings (`zoolander_data`) --
+    // Same shape as the Hyprland block: contiguous, value = UI slot in
+    // `zoolander_data.k_meta`, declared before the template toggles so
+    // `zoolSlot` has a fixed upper bound.
+    zool_presentation_allow_tearing, // set_presentation.allow_tearing
+    zool_presentation_immediate_fullscreen, // set_presentation.immediate_fullscreen
+    zool_presentation_direct_scanout, // set_presentation.direct_scanout
+    zool_presentation_partial_damage, // set_presentation.partial_damage
+    zool_presentation_vrr, // set_presentation.vrr
+    zool_presentation_hdr, // set_presentation.hdr
+    zool_presentation_sdr_brightness, // set_presentation.sdr_brightness
+    zool_presentation_sdr_saturation, // set_presentation.sdr_saturation
+    zool_presentation_sdr_min_luminance, // set_presentation.sdr_min_luminance
+    zool_presentation_sdr_max_luminance, // set_presentation.sdr_max_luminance
+    zool_presentation_sdr_eotf, // set_presentation.sdr_eotf
+    zool_keyboard_repeat_rate, // set_keyboard.repeat_rate
+    zool_keyboard_repeat_delay, // set_keyboard.repeat_delay
+    zool_keyboard_numlock, // set_keyboard.numlock
+    zool_pointer_left_handed, // set_pointer.left_handed
+    zool_pointer_accel_profile, // set_pointer.accel_profile
+    zool_pointer_sensitivity, // set_pointer.sensitivity
+    zool_pointer_follow_mouse, // set_pointer.follow_mouse
+    zool_floating_raise_on_hover, // set_floating.raise_on_hover
+    zool_floating_raise_delay, // set_floating.raise_delay
+    zool_window_style_gaps_in, // set_window_style.gaps_in
+    zool_window_style_gaps_out, // set_window_style.gaps_out
+    zool_window_style_border_size, // set_window_style.border_size
+    zool_window_style_rounding, // set_window_style.rounding
+    zool_window_style_rounding_power, // set_window_style.rounding_power
+    zool_window_style_active_opacity, // set_window_style.active_opacity
+    zool_window_style_inactive_opacity, // set_window_style.inactive_opacity
+    zool_window_style_fullscreen_opacity, // set_window_style.fullscreen_opacity
+    zool_ssd_enabled, // set_ssd.enabled
+    zool_ssd_floating_workspaces_only, // set_ssd.floating_workspaces_only
+    zool_ssd_include_floating_windows, // set_ssd.include_floating_windows
+    zool_ssd_follow_theme, // set_ssd.follow_theme
+    zool_ssd_show_title, // set_ssd.show_title
+    zool_ssd_border, // set_ssd.border
+    zool_ssd_titlebar, // set_ssd.titlebar
+    zool_ssd_title_font_size, // set_ssd.title_font_size
+    zool_ssd_title_align, // set_ssd.title_align
+    zool_blur_enabled, // set_blur.enabled
+    zool_blur_ignore_opacity, // set_blur.ignore_opacity
+    zool_blur_popups, // set_blur.popups
+    zool_blur_popups_ignorealpha, // set_blur.popups_ignorealpha
+    zool_blur_input_methods, // set_blur.input_methods
+    zool_blur_input_methods_ignorealpha, // set_blur.input_methods_ignorealpha
+    zool_blur_size, // set_blur.size
+    zool_blur_passes, // set_blur.passes
+    zool_blur_resolution, // set_blur.resolution
+    zool_blur_noise, // set_blur.noise
+    zool_blur_contrast, // set_blur.contrast
+    zool_blur_brightness, // set_blur.brightness
+    zool_blur_vibrancy, // set_blur.vibrancy
+    zool_blur_vibrancy_darkness, // set_blur.vibrancy_darkness
+    zool_dim_inactive, // set_dim.inactive
+    zool_dim_strength, // set_dim.strength
+    zool_dim_special, // set_dim.special
+    zool_dim_around, // set_dim.around
+    zool_tab_bar_enabled, // set_tab_bar.enabled
+    zool_tab_bar_height, // set_tab_bar.height
+    zool_tab_bar_radius, // set_tab_bar.radius
+    zool_tab_bar_gap, // set_tab_bar.gap
+    zool_tab_bar_padding_x, // set_tab_bar.padding_x
+    zool_tab_bar_size, // set_tab_bar.size
+    zool_tab_bar_monocle_all, // set_tab_bar.monocle_all
+    zool_animations_enabled, // set_animations.enabled
+    zool_animations_duration, // set_animations.duration
+    zool_animations_easing, // set_animations.easing
+    zool_layout_default, // set_layout(layout)
+    zool_dwindle_preserve_split, // set_dwindle.preserve_split
+    zool_dwindle_smart_split, // set_dwindle.smart_split
+    zool_dwindle_smart_resizing, // set_dwindle.smart_resizing
+    zool_dwindle_force_split, // set_dwindle.force_split
+    zool_dwindle_split_width_multiplier, // set_dwindle.split_width_multiplier
+    zool_spatial_fallback_width, // set_spatial.fallback_width
+    zool_spatial_fallback_height, // set_spatial.fallback_height
+    zool_spatial_width_cap, // set_spatial.width_cap
+    zool_spatial_shelf_width, // set_spatial.shelf_width
+    zool_spatial_shelf_mode, // set_spatial.shelf_mode
+    zool_spatial_snap, // set_spatial.snap
+    zool_spatial_reveal_margin, // set_spatial.reveal_margin
+    zool_spatial_pan_fingers, // set_spatial.pan_fingers
+    zool_overview_axis, // set_overview.axis
+    zool_overview_rail, // set_overview.rail
+    zool_overview_scale, // set_overview.scale
+    zool_xwayland_enabled, // set_xwayland.enabled
+    zool_xwayland_force_zero_scaling, // set_xwayland.force_zero_scaling
+    zool_keyboard_layout, // set_keyboard.layout
+    zool_keyboard_variant, // set_keyboard.variant
+    zool_keyboard_options, // set_keyboard.options
+    zool_keyboard_model, // set_keyboard.model
+    zool_keyboard_rules, // set_keyboard.rules
+    zool_window_style_active_border, // set_window_style.active_border
+    zool_window_style_active_border_end, // set_window_style.active_border_end
+    zool_window_style_active_border_angle, // set_window_style.active_border_angle
+    zool_window_style_inactive_border, // set_window_style.inactive_border
+    zool_window_style_inactive_border_end, // set_window_style.inactive_border_end
+    zool_window_style_inactive_border_angle, // set_window_style.inactive_border_angle
+    zool_ssd_active_border, // set_ssd.active_border
+    zool_ssd_active_border_end, // set_ssd.active_border_end
+    zool_ssd_active_border_angle, // set_ssd.active_border_angle
+    zool_ssd_inactive_border, // set_ssd.inactive_border
+    zool_ssd_inactive_border_end, // set_ssd.inactive_border_end
+    zool_ssd_inactive_border_angle, // set_ssd.inactive_border_angle
+    zool_ssd_active_titlebar, // set_ssd.active_titlebar
+    zool_ssd_inactive_titlebar, // set_ssd.inactive_titlebar
+    zool_ssd_title_color, // set_ssd.title_color
+    zool_ssd_inactive_title_color, // set_ssd.inactive_title_color
+    zool_ssd_title_font, // set_ssd.title_font
+    zool_tab_bar_font, // set_tab_bar.font
+    zool_tab_bar_bg, // set_tab_bar.bg
+    zool_tab_bar_fg, // set_tab_bar.fg
+    zool_tab_bar_focus_bg, // set_tab_bar.focus_bg
+    zool_tab_bar_focus_fg, // set_tab_bar.focus_fg
+    zool_animations_all_enabled, // set_animations_enabled(enabled)
+    zool_reduced_motion, // set_reduced_motion(enabled)
+    zool_window_style_shadow_enabled, // set_window_style.shadow.enabled
+    zool_window_style_shadow_range, // set_window_style.shadow.range
+    zool_window_style_shadow_sharp, // set_window_style.shadow.sharp
+    zool_window_style_shadow_render_power, // set_window_style.shadow.render_power
+    zool_window_style_shadow_offset_x, // set_window_style.shadow.offset_x
+    zool_window_style_shadow_offset_y, // set_window_style.shadow.offset_y
+    zool_window_style_shadow_scale, // set_window_style.shadow.scale
+    zool_window_style_shadow_color, // set_window_style.shadow.color
+    zool_window_style_shadow_color_inactive, // set_window_style.shadow.color_inactive
+    zool_scrolling_width_presets, // set_scrolling.width_presets
+
     // -- matugen external-template toggles (`settings_tab_appearance`) --
     // One variant per entry of `Settings.matugen_templates` (a [37]bool
     // array, so nothing reflects off a same-named Settings member); the
@@ -466,6 +609,20 @@ pub const Field = enum {
             @intFromEnum(self) <= @intFromEnum(Field.hypr_general_layout);
     }
 
+    /// The `zoolander_data` UI slot a Zoolander field drives, or null.
+    pub fn zoolSlot(self: Field) ?u16 {
+        const n: u16 = @intFromEnum(self);
+        const first: u16 = @intFromEnum(Field.zool_presentation_allow_tearing);
+        const last: u16 = @intFromEnum(Field.zool_scrolling_width_presets);
+        if (n < first or n > last) return null;
+        return n - first;
+    }
+
+    pub fn isZool(self: Field) bool {
+        return @intFromEnum(self) >= @intFromEnum(Field.zool_presentation_allow_tearing) and
+            @intFromEnum(self) <= @intFromEnum(Field.zool_scrolling_width_presets);
+    }
+
     /// Index into `Settings.matugen_templates` for the template toggles, or
     /// null for every other field (they have no settings member of their own
     /// to reflect off).
@@ -481,11 +638,15 @@ pub const Field = enum {
         // The reflective `inline else` walk expands one arm per enum member
         // (500-plus, including the 37 template toggles), each doing comptime
         // index work — past the default backwards-branch budget on its own.
-        @setEvalBranchQuota(20_000);
+        @setEvalBranchQuota(40_000);
         return switch (self) {
             // Monitor fields are routed through Content -> monitors_state, so
             // they cannot be reflected off `Settings`; list them explicitly.
             .monitor_enabled => .bool,
+            .monitor_focused => .bool,
+            .monitor_primary => .bool,
+            .monitor_tearing_toggle => .bool,
+            .monitor_ten_bit_toggle => .bool,
             .monitor_sel,
             .monitor_mode_idx,
             .monitor_refresh_idx,
@@ -504,6 +665,16 @@ pub const Field = enum {
             .monitor_hdr_min_lum,
             .monitor_hdr_max_lum,
             .monitor_hdr_avg_lum,
+            .monitor_hdr_idx,
+            .monitor_color_profile_idx,
+            .monitor_bit_depth_idx,
+            .monitor_max_bpc_idx,
+            .monitor_render_transfer_idx,
+            .monitor_render_sdr_brightness,
+            .monitor_render_sdr_saturation,
+            .monitor_render_sdr_min_lum,
+            .monitor_render_sdr_max_lum,
+            .monitor_render_sdr_eotf_idx,
             => .int,
             // Notifications extras bypass the reflective walk below: the
             // enum sits exactly at the compiler's branch budget, and five
@@ -526,6 +697,13 @@ pub const Field = enum {
                 if (comptime f.isHypr()) {
                     break :blk switch (hyprland_data.kindOf(f.hyprSlot().?)) {
                         .boolean => .bool,
+                        else => .int,
+                    };
+                }
+                if (comptime f.isZool()) {
+                    break :blk switch (zoolander_data.kindOf(f.zoolSlot().?)) {
+                        .boolean => .bool,
+                        .text => .str,
                         else => .int,
                     };
                 }

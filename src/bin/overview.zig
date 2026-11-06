@@ -3,7 +3,7 @@
 //! key binding) spawns it; toggling kills the running copy.
 //!
 //! Everything the surface needs is fetched up front: config for theme and
-//! wallpaper, Hyprland workspaces plus clients for the cards, the icon
+//! wallpaper, workspace and client state for the cards, the icon
 //! theme path for tiles and grid. Nothing here talks to the dock.
 
 const std = @import("std");
@@ -39,6 +39,7 @@ const ov_tiles = @import("../desktop_shell/overview/tiles.zig");
 const ov_ws = @import("../desktop_shell/overview/ws.zig");
 const ov_capture = @import("../desktop_shell/overview/capture.zig");
 const hypr_ipc = @import("../backends/hyprland_ipc.zig");
+const compositor = @import("../backends/compositor.zig");
 const ov_reveal = @import("../desktop_shell/overview/reveal.zig");
 const ov_shots = @import("../desktop_shell/overview/shots.zig");
 const ov_launch = @import("../desktop_shell/overview/launch.zig");
@@ -444,8 +445,19 @@ const Ov = struct {
 
     fn hyprEnv(self: *Self) std.process.Environ.Map {
         var env = std.process.Environ.Map.init(self.gpa);
-        if (getenvStr("HYPRLAND_INSTANCE_SIGNATURE")) |v| env.put("HYPRLAND_INSTANCE_SIGNATURE", v) catch {};
-        if (getenvStr("XDG_RUNTIME_DIR")) |v| env.put("XDG_RUNTIME_DIR", v) catch {};
+        const keys = [_][:0]const u8{
+            "HYPRLAND_INSTANCE_SIGNATURE",  "XDG_RUNTIME_DIR",
+            "NIRI_SOCKET",                  "SWAYSOCK",
+            "LABWC_PID",                    "MANGO_INSTANCE_SIGNATURE",
+            "ZOOLANDER_INSTANCE_SIGNATURE", "ZOOLANDER_SOCKET",
+            "ZOOLANDER_RUNTIME_DIR",        "ZOOLANDER_CONFIG",
+            "WAYLAND_DISPLAY",              "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",          "DESKTOP_SESSION",
+            "XDG_CONFIG_HOME",              "HOME",
+        };
+        for (keys) |k| {
+            if (getenvStr(k)) |v| env.put(k, v) catch {};
+        }
         return env;
     }
 
@@ -464,8 +476,7 @@ const Ov = struct {
     fn reloadOverview(self: *Self, cfg: *const config.ShellConfig) void {
         var env = self.hyprEnv();
         defer env.deinit();
-        if (env.get("HYPRLAND_INSTANCE_SIGNATURE") == null) return;
-        var snap = ov_ws.fetch(self.gpa, self.io, &env) orelse return;
+        var snap = ov_ws.fetchAuto(self.gpa, self.io, &env) orelse return;
         errdefer snap.deinit();
         ov_ws.applyMaxSlots(self.gpa, &snap, self.maxSlots(cfg)) catch {
             snap.deinit();
@@ -531,6 +542,7 @@ const Ov = struct {
                 cards.append(gpa, .{
                     .id = w.id,
                     .label = w.label,
+                    .target = w.target,
                     .monitor = if (w.monitor.len > 0) w.monitor else fb_monitor,
                     .active = w.active,
                     .wins = owned,
@@ -556,13 +568,27 @@ const Ov = struct {
         return ov_ws.repliedOk(reply);
     }
 
-    fn wsJump(self: *Self, id: i32) void {
-        var buf: [64]u8 = undefined;
-        const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{workspace = {d}}})", .{id}) catch return;
-        if (!self.hyprSend(cmd)) {
-            const plain = std.fmt.bufPrint(&buf, "dispatch workspace {d}", .{id}) catch return;
-            _ = self.hyprSend(plain);
+    fn wsJump(self: *Self, target: []const u8) void {
+        var env = self.hyprEnv();
+        defer env.deinit();
+        _ = ov_ws.jumpWorkspace(self.gpa, self.io, &env, target);
+    }
+
+    fn isZoolander(self: *Self) bool {
+        var env = self.hyprEnv();
+        defer env.deinit();
+        return compositor.Kind.detectWithMap(&env) == .zoolander;
+    }
+
+    /// The activation target for a card id: its recorded compositor name
+    /// (Zoolander) or the decimal id (Hyprland).
+    fn wsTargetForId(self: *Self, id: i32, buf: []u8) []const u8 {
+        for (self.host.cards) |card| {
+            if (card.id != id) continue;
+            if (card.target.len > 0) return card.target;
+            break;
         }
+        return std.fmt.bufPrint(buf, "{d}", .{id}) catch "";
     }
 
     /// Unmap the layer surface and push that request out before any teardown.
@@ -587,6 +613,14 @@ const Ov = struct {
             .focus => |flat| {
                 if (self.host.flatLoc(flat)) |loc| {
                     const win = self.host.cards[loc[0]].wins[loc[1]];
+                    // Zoolander has no focus-by-address action: get as close
+                    // as the workspace the window lives on.
+                    if (self.isZoolander()) {
+                        var tbuf: [64]u8 = undefined;
+                        self.wsJump(self.wsTargetForId(self.host.cards[loc[0]].id, &tbuf));
+                        self.quit();
+                        return;
+                    }
                     if (win.addr.len > 0) {
                         var buf: [128]u8 = undefined;
                         const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{window = \"address:{s}\"}})", .{win.addr}) catch null;
@@ -620,13 +654,16 @@ const Ov = struct {
                 logz.log("overview: close needs a window address", .{});
             },
             .select_ws => |id| {
-                self.wsJump(id);
+                var buf: [64]u8 = undefined;
+                self.wsJump(self.wsTargetForId(id, &buf));
                 self.quit();
             },
             .add_ws => {
                 var top: i32 = 0;
                 for (self.host.cards) |card| top = @max(top, card.id);
-                self.wsJump(top + 1);
+                var buf: [32]u8 = undefined;
+                const target = std.fmt.bufPrint(&buf, "{d}", .{top + 1}) catch return;
+                self.wsJump(target);
                 self.quit();
             },
             .apps => {

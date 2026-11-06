@@ -3,6 +3,7 @@ const fields = @import("fields.zig");
 const sound_tab = @import("sound_tab.zig");
 const templates_tab = @import("templates_tab.zig");
 const time_tab = @import("time_tab.zig");
+const rows_zoolander = @import("rows_zoolander.zig");
 
 // Declarative content rows — one table per tab describing its cards and rows. Each
 // tab describes its cards/rows once, here; the generic renderer in
@@ -47,6 +48,18 @@ pub const SliderFmt = enum {
     nits,
     /// `"%g×"` — the monitors scale slider.
     scale,
+};
+
+/// Free-text band: a label/desc line and an editable field on the right.
+/// Zoolander uses it for XKB names, colour literals and font families, none
+/// of which fit a slider or a fixed option list.
+pub const TextRow = struct {
+    label: []const u8,
+    desc: []const u8 = "",
+    field: Field,
+    placeholder: []const u8 = "",
+    /// Longest accepted value, in bytes (`Content.edit_buf` size is fixed).
+    max_len: usize = 128,
 };
 
 pub const ComboRow = struct {
@@ -116,6 +129,8 @@ pub const Row = union(enum) {
     toggle: ToggleRow,
     slider: SliderRow,
     combo: ComboRow,
+    /// Editable single-line text (Zoolander XKB / colour / font keys).
+    text: TextRow,
     /// Appearance-grid slider tile (Dock/Panel/Taskbar Appearance child tab).
     tile_slider: SliderRow,
     /// Appearance-grid toggle tile.
@@ -235,6 +250,17 @@ pub fn cardsFor(tab: i32, sub: i32) []const Card {
         24 => &rows_compositor.mango_layout,
         25 => &rows_compositor.mango_input,
         26 => &rows_compositor.mango_misc,
+        // Zoolander pages — one rail sub page each (Keyboard … XWayland).
+        // Displays is gone on purpose: the live Monitors tab owns outputs and
+        // the global presentation settings.
+        86 => &rows_zoolander.keyboard,
+        87 => &rows_zoolander.pointer,
+        88 => &rows_zoolander.windows,
+        89 => &rows_zoolander.effects,
+        90 => &rows_zoolander.animations,
+        91 => &rows_zoolander.decorations,
+        92 => &rows_zoolander.layouts,
+        93 => &rows_zoolander.xwayland,
         else => &.{},
     };
 }
@@ -324,6 +350,7 @@ pub fn rowHeightFor(r: Row, board_max: usize) i32 {
         .toggle => toggle_row_h,
         .slider => slider_row_h,
         .combo => combo_row_h,
+        .text => toggle_row_h,
         .tile_slider, .tile_toggle => tile_h,
         .info => info_row_h,
         .button => button_row_h,

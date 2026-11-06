@@ -1972,7 +1972,8 @@ pub const Win = struct {
     }
 
     /// Hand the finished frame to the compositor.
-    fn commitFrame(self: *Win) void {        self.shm.markBusy();
+    fn commitFrame(self: *Win) void {
+        self.shm.markBusy();
         self.surface.attach(self.shm.wlBuffer(), 0, 0);
         self.surface.setBufferScale(self.surface.scale);
         self.surface.commit();
@@ -2422,2087 +2423,2088 @@ pub const Win = struct {
         wl_loop.Loop.requestStop();
     }
 
-// ── card sub-rects ──────────────────────────────────────────────────────────
-//
-// All in screen coordinates, derived from one card rect so paint and hit
-// tests can never disagree.
+    // ── card sub-rects ──────────────────────────────────────────────────────────
+    //
+    // All in screen coordinates, derived from one card rect so paint and hit
+    // tests can never disagree.
 
-/// The rail page button for page index `i` — paint and hit tests share it.
-fn railBtnRect(i: usize) common.Rect {
-    return .{
-        .x = rail_btn_x,
-        .y = rail_base_y + @as(i32, @intCast(i)) * rail_pitch,
-        .w = rail_btn_w,
-        .h = rail_btn_h,
-    };
-}
-
-fn closeBtnRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + r.w - card_pad - close_sz, .y = r.y + 16, .w = close_sz, .h = close_sz };
-}
-
-/// Stream rows: the move combo sits left of the terminate button.
-fn moveComboRect(r: common.Rect) common.Rect {
-    return .{
-        .x = r.x + r.w - card_pad - close_sz - 8 - combo_w,
-        .y = r.y + 15,
-        .w = combo_w,
-        .h = combo_h,
-    };
-}
-
-fn defaultBtnRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + r.w - card_pad - def_w, .y = r.y + 15, .w = def_w, .h = combo_h };
-}
-
-/// Device rows: the port combo sits left of the "Default" button.
-fn portComboRect(r: common.Rect) common.Rect {
-    return .{
-        .x = r.x + r.w - card_pad - def_w - 10 - combo_w,
-        .y = r.y + 15,
-        .w = combo_w,
-        .h = combo_h,
-    };
-}
-
-/// Configuration rows: one wide profile combo on the right.
-fn profileComboRect(r: common.Rect) common.Rect {
-    const w: i32 = @min(420, r.w - icon_sz_config - 32 - 160);
-    return .{ .x = r.x + r.w - card_pad - w, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = w, .h = combo_h };
-}
-
-fn muteBtnRect(r: common.Rect) common.Rect {
-    // Centred on the volume track; the icon above it keeps its own row, so
-    // the two never read as one glyph.
-    return .{ .x = r.x + card_pad, .y = r.y + track_off_y + @divTrunc(track_h - mute_sz, 2), .w = mute_sz, .h = mute_sz };
-}
-
-fn trackRect(r: common.Rect) common.Rect {
-    return .{
-        .x = r.x + track_off_x,
-        .y = r.y + track_off_y,
-        .w = r.w - track_off_x - track_w_pad,
-        .h = track_h,
-    };
-}
-
-fn iconRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + card_pad, .y = r.y + icon_off_y, .w = icon_sz, .h = icon_sz };
-}
-
-/// Volume-mixer icon candidates tag their kind in the second slot: "t" is a
-/// tray/status icon, anything else a themed app icon.
-fn kindOf(cand: [2][]const u8) icon_cache.Kind {
-    return if (std.mem.eql(u8, cand[1], "t")) .tray else .app;
-}
-
-/// Names that start the icon worker before any stream exists, so the theme
-/// index is being built (cold start: ~130ms of directory walking, on the
-/// worker) while the first rows are still arriving.
-const icon_seeds = [_][]const u8{ "audio-headphones", "audio-card", "audio-speakers", "multimedia-player" };
-
-fn rowHover(px: f64, py: f64, r: common.Rect) bool {
-    return common.pointInRect(px, py, r);
-}
-
-fn blitIcon(c: *cairo.cairo_t, icon: *const icon_cache.Owned, x: f64, y: f64, size: f64) void {    if (icon.pixels.len == 0 or icon.w <= 0 or icon.h <= 0) return;
-    const sf = size / @as(f64, @floatFromInt(@max(1, @max(icon.w, icon.h))));
-    const tw: i32 = @max(1, @as(i32, @intFromFloat(@ceil(@as(f64, @floatFromInt(icon.w)) * sf))));
-    const th: i32 = @max(1, @as(i32, @intFromFloat(@ceil(@as(f64, @floatFromInt(icon.h)) * sf))));
-    const tmp = cairo.cairo_image_surface_create_for_data(
-        @constCast(icon.pixels.ptr),
-        cairo.CAIRO_FORMAT_ARGB32,
-        icon.w,
-        icon.h,
-        icon.w * 4,
-    );
-    defer cairo.cairo_surface_destroy(tmp);
-    if (cairo.cairo_surface_status(tmp) != cairo.CAIRO_STATUS_SUCCESS) return;
-    cairo.cairo_save(c);
-    cairo.cairo_translate(
-        c,
-        x + (size - @as(f64, @floatFromInt(tw))) * 0.5,
-        y + (size - @as(f64, @floatFromInt(th))) * 0.5,
-    );
-    cairo.cairo_scale(c, sf, sf);
-    cairo.cairo_set_source_surface(c, tmp, 0, 0);
-    cairo.cairo_paint(c);
-    cairo.cairo_restore(c);
-}
-
-// ── paint ───────────────────────────────────────────────────────────────────
-
-fn paintRail(self: *Win, c: *cairo.cairo_t) void {
-    const cx = @as(f64, @floatFromInt(rail_btn_x + @divTrunc(rail_btn_w, 2)));
-    // Flush column, darker than the page like the settings rail.
-    cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.20);
-    cairo.cairo_rectangle(c, 0, 0, @floatFromInt(rail_w), @floatFromInt(self.win_h));
-    cairo.cairo_fill(c);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.08);
-    cairo.cairo_set_line_width(c, 1.0);
-    cairo.cairo_move_to(c, @as(f64, @floatFromInt(rail_w)) + 0.5, 0);
-    cairo.cairo_line_to(c, @as(f64, @floatFromInt(rail_w)) + 0.5, @floatFromInt(self.win_h));
-    cairo.cairo_stroke(c);
-
-    for (pages, 0..) |p, i| {
-        const r = railBtnRect(i);
-        const selected = self.page == p;
-        if (selected) {
-            ui_paint.glassBox(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 14, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.20);
-        } else if (rowHover(self.ptr_x, self.ptr_y, r)) {
-            ui_paint.glassBox(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 14, Theme.text_r, Theme.text_g, Theme.text_b, 0.07);
-        }
-        const tint_a: f64 = if (selected) 1.0 else 0.62;
-        const tr: f64 = if (selected) Theme.acc_r else Theme.text_r;
-        const tg: f64 = if (selected) Theme.acc_g else Theme.text_g;
-        const tb: f64 = if (selected) Theme.acc_b else Theme.text_b;
-        ui_paint.glyph(c, cx, @as(f64, @floatFromInt(r.y)) + 22, 22, p.glyph(), tr, tg, tb, tint_a);
-        const lbl = p.railLabel();
-        const lw: f64 = @floatFromInt(ui_paint.textWidthPx(c, lbl, 11, 400));
-        ui_paint.showText(c, cx - lw / 2.0, @as(f64, @floatFromInt(r.y)) + 48, lbl, 11, 400, tr, tg, tb, if (selected) 1.0 else 0.55);
-    }
-}
-
-/// One header toggle: label + switch, right-aligned. Returns the rect the
-/// click test uses (so paint and hit test can never disagree about layout).
-fn paintHeaderToggle(c: *cairo.cairo_t, right_x: i32, label: []const u8, on: bool) common.Rect {
-    const sw: i32 = 44;
-    const sh: i32 = 24;
-    const gap: i32 = 8;
-    const pill_y: i32 = 62;
-    const ts = ui_paint.textSizePx(c, label, 12, 500);
-    const lw: i32 = ts.w;
-    const total = lw + gap + sw;
-    const x0 = right_x - total;
-    // Center the label on the switch, the way paintBtn centers a button
-    // label: showText pins the layout top at (y - ph + 2), so the ink sits
-    // mid-pill only when y is derived from the measured layout height.
-    // Hardcoding y parked the text ~6px above the pill.
-    const th_f: f64 = @floatFromInt(ts.h);
-    const ltop = @as(f64, @floatFromInt(pill_y)) + (@as(f64, @floatFromInt(sh)) - th_f) / 2.0;
-    ui_paint.showText(
-        c,
-        @floatFromInt(x0),
-        ltop + th_f - 2.0,
-        label,
-        12,
-        500,
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        0.80,
-    );
-    ui_paint.paintSwitch(c, x0 + lw + gap, pill_y, sw, sh, on);
-    return .{ .x = x0 - 6, .y = 56, .w = total + 12, .h = sh + 12 };
-}
-
-fn paintHeader(self: *Win, c: *cairo.cairo_t) void {
-    ui_paint.catLabel(c, @floatFromInt(content_x), 46, "AUDIO");
-    ui_paint.showText(
-        c,
-        @floatFromInt(content_x),
-        80,
-        self.page.title(),
-        22,
-        600,
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        0.95,
-    );
-    // Right-side options: page-specific filter, then the meters toggle. The
-    // click rects are stored on the way past so hit tests reuse exactly what
-    // the frame drew.
-    if (self.page == .engine) {
-        var cap_buf: [160]u8 = undefined;
-        const cap = self.engineHardwareCaption(&cap_buf);
-        const right = self.win_w - content_pad_r - 250;
-        const width = ui_paint.measureTextWidth(cap, 11, 500);
-        const x = @max(content_x + 280, right - width);
-        if (right > x) {
-            ui_paint.showTextW(
-                c,
-                @floatFromInt(x),
-                58,
-                cap,
-                11,
-                500,
-                @floatFromInt(right - x),
-                Theme.text_r,
-                Theme.text_g,
-                Theme.text_b,
-                0.45,
-            );
-        }
-    }
-    const mx = self.win_w - content_pad_r - 10;
-    self.hit_engine_refresh = null;
-    if (self.page == .engine) {
-        // No meters on this page: offer the manual re-read the settings app
-        // has instead of a toggle that does nothing.
-        self.hit_meters = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-        const bw: i32 = 104;
-        const bh: i32 = 32;
-        const bx = mx - bw;
-        ui_paint.paintBtn(c, bx, 58, bw, bh, "Refresh", false);
-        self.hit_engine_refresh = .{ .x = bx, .y = 58, .w = bw, .h = bh };
-    } else {
-        self.hit_meters = paintHeaderToggle(c, mx, "Meters", self.show_meters);
-    }
-    self.hit_page_toggle = null;
-    switch (self.page) {
-        .recording => self.hit_page_toggle = paintHeaderToggle(c, self.hit_meters.x - 20, "All streams", self.all_streams),
-        .output, .input => self.hit_page_toggle = paintHeaderToggle(c, self.hit_meters.x - 20, "Hardware only", self.hw_only),
-        else => {},
-    }
-}
-
-fn paintCards(self: *Win, c: *cairo.cairo_t) void {
-    const band_y0: f64 = @floatFromInt(header_h - 6);
-    const band_y1: f64 = @floatFromInt(self.win_h - band_pad_b + 8);
-    cairo.cairo_save(c);
-    cairo.cairo_rectangle(
-        c,
-        @floatFromInt(rail_w),
-        band_y0,
-        @floatFromInt(self.win_w - rail_w),
-        band_y1 - band_y0,
-    );
-    cairo.cairo_clip(c);
-
-    const n = self.rowCount();
-    if (n == 0) {
-        const msg = switch (self.page) {
-            .playback => "No applications are playing audio",
-            .recording => "No applications are recording audio",
-            .output => "No output devices",
-            .input => "No input devices",
-            .configuration => "No audio cards",
-            .engine => "Engine settings",
+    /// The rail page button for page index `i` — paint and hit tests share it.
+    fn railBtnRect(i: usize) common.Rect {
+        return .{
+            .x = rail_btn_x,
+            .y = rail_base_y + @as(i32, @intCast(i)) * rail_pitch,
+            .w = rail_btn_w,
+            .h = rail_btn_h,
         };
-        ui_paint.showText(c, @floatFromInt(content_x + 4), 160, msg, 14, 400, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
     }
 
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const r = self.cardRect(i);
-        if (r.y + r.h < header_h - 6 or r.y > self.win_h - band_pad_b + 8) continue;
-        switch (self.page) {
-            .configuration => {
-                const dev = self.deviceAt(i) orelse continue;
-                self.paintConfigCard(c, r, dev);
-            },
-            .engine => self.paintEngineCard(c, r, i),
-            else => {
-                const node = self.nodeAt(i) orelse continue;
-                if (self.page == .output or self.page == .input) {
-                    self.paintDeviceCard(c, r, node);
-                } else {
-                    self.paintStreamCard(c, r, node);
-                }
-            },
+    fn closeBtnRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + r.w - card_pad - close_sz, .y = r.y + 16, .w = close_sz, .h = close_sz };
+    }
+
+    /// Stream rows: the move combo sits left of the terminate button.
+    fn moveComboRect(r: common.Rect) common.Rect {
+        return .{
+            .x = r.x + r.w - card_pad - close_sz - 8 - combo_w,
+            .y = r.y + 15,
+            .w = combo_w,
+            .h = combo_h,
+        };
+    }
+
+    fn defaultBtnRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + r.w - card_pad - def_w, .y = r.y + 15, .w = def_w, .h = combo_h };
+    }
+
+    /// Device rows: the port combo sits left of the "Default" button.
+    fn portComboRect(r: common.Rect) common.Rect {
+        return .{
+            .x = r.x + r.w - card_pad - def_w - 10 - combo_w,
+            .y = r.y + 15,
+            .w = combo_w,
+            .h = combo_h,
+        };
+    }
+
+    /// Configuration rows: one wide profile combo on the right.
+    fn profileComboRect(r: common.Rect) common.Rect {
+        const w: i32 = @min(420, r.w - icon_sz_config - 32 - 160);
+        return .{ .x = r.x + r.w - card_pad - w, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = w, .h = combo_h };
+    }
+
+    fn muteBtnRect(r: common.Rect) common.Rect {
+        // Centred on the volume track; the icon above it keeps its own row, so
+        // the two never read as one glyph.
+        return .{ .x = r.x + card_pad, .y = r.y + track_off_y + @divTrunc(track_h - mute_sz, 2), .w = mute_sz, .h = mute_sz };
+    }
+
+    fn trackRect(r: common.Rect) common.Rect {
+        return .{
+            .x = r.x + track_off_x,
+            .y = r.y + track_off_y,
+            .w = r.w - track_off_x - track_w_pad,
+            .h = track_h,
+        };
+    }
+
+    fn iconRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + card_pad, .y = r.y + icon_off_y, .w = icon_sz, .h = icon_sz };
+    }
+
+    /// Volume-mixer icon candidates tag their kind in the second slot: "t" is a
+    /// tray/status icon, anything else a themed app icon.
+    fn kindOf(cand: [2][]const u8) icon_cache.Kind {
+        return if (std.mem.eql(u8, cand[1], "t")) .tray else .app;
+    }
+
+    /// Names that start the icon worker before any stream exists, so the theme
+    /// index is being built (cold start: ~130ms of directory walking, on the
+    /// worker) while the first rows are still arriving.
+    const icon_seeds = [_][]const u8{ "audio-headphones", "audio-card", "audio-speakers", "multimedia-player" };
+
+    fn rowHover(px: f64, py: f64, r: common.Rect) bool {
+        return common.pointInRect(px, py, r);
+    }
+
+    fn blitIcon(c: *cairo.cairo_t, icon: *const icon_cache.Owned, x: f64, y: f64, size: f64) void {
+        if (icon.pixels.len == 0 or icon.w <= 0 or icon.h <= 0) return;
+        const sf = size / @as(f64, @floatFromInt(@max(1, @max(icon.w, icon.h))));
+        const tw: i32 = @max(1, @as(i32, @intFromFloat(@ceil(@as(f64, @floatFromInt(icon.w)) * sf))));
+        const th: i32 = @max(1, @as(i32, @intFromFloat(@ceil(@as(f64, @floatFromInt(icon.h)) * sf))));
+        const tmp = cairo.cairo_image_surface_create_for_data(
+            @constCast(icon.pixels.ptr),
+            cairo.CAIRO_FORMAT_ARGB32,
+            icon.w,
+            icon.h,
+            icon.w * 4,
+        );
+        defer cairo.cairo_surface_destroy(tmp);
+        if (cairo.cairo_surface_status(tmp) != cairo.CAIRO_STATUS_SUCCESS) return;
+        cairo.cairo_save(c);
+        cairo.cairo_translate(
+            c,
+            x + (size - @as(f64, @floatFromInt(tw))) * 0.5,
+            y + (size - @as(f64, @floatFromInt(th))) * 0.5,
+        );
+        cairo.cairo_scale(c, sf, sf);
+        cairo.cairo_set_source_surface(c, tmp, 0, 0);
+        cairo.cairo_paint(c);
+        cairo.cairo_restore(c);
+    }
+
+    // ── paint ───────────────────────────────────────────────────────────────────
+
+    fn paintRail(self: *Win, c: *cairo.cairo_t) void {
+        const cx = @as(f64, @floatFromInt(rail_btn_x + @divTrunc(rail_btn_w, 2)));
+        // Flush column, darker than the page like the settings rail.
+        cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.20);
+        cairo.cairo_rectangle(c, 0, 0, @floatFromInt(rail_w), @floatFromInt(self.win_h));
+        cairo.cairo_fill(c);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.08);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_move_to(c, @as(f64, @floatFromInt(rail_w)) + 0.5, 0);
+        cairo.cairo_line_to(c, @as(f64, @floatFromInt(rail_w)) + 0.5, @floatFromInt(self.win_h));
+        cairo.cairo_stroke(c);
+
+        for (pages, 0..) |p, i| {
+            const r = railBtnRect(i);
+            const selected = self.page == p;
+            if (selected) {
+                ui_paint.glassBox(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 14, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.20);
+            } else if (rowHover(self.ptr_x, self.ptr_y, r)) {
+                ui_paint.glassBox(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 14, Theme.text_r, Theme.text_g, Theme.text_b, 0.07);
+            }
+            const tint_a: f64 = if (selected) 1.0 else 0.62;
+            const tr: f64 = if (selected) Theme.acc_r else Theme.text_r;
+            const tg: f64 = if (selected) Theme.acc_g else Theme.text_g;
+            const tb: f64 = if (selected) Theme.acc_b else Theme.text_b;
+            ui_paint.glyph(c, cx, @as(f64, @floatFromInt(r.y)) + 22, 22, p.glyph(), tr, tg, tb, tint_a);
+            const lbl = p.railLabel();
+            const lw: f64 = @floatFromInt(ui_paint.textWidthPx(c, lbl, 11, 400));
+            ui_paint.showText(c, cx - lw / 2.0, @as(f64, @floatFromInt(r.y)) + 48, lbl, 11, 400, tr, tg, tb, if (selected) 1.0 else 0.55);
         }
     }
-    cairo.cairo_restore(c);
-}
 
-fn streamComboLabel(self: *Win, node: *const Node) []const u8 {
-    if (self.page == .playback) {
-        if (self.graph.sinkForStream(node.id)) |sid| {
-            if (self.graph.findNode(sid)) |sink| return sink.displayName();
-        }
-    } else {
-        if (self.graph.sourceForStream(node.id)) |sid| {
-            if (self.graph.findNode(sid)) |src| return src.displayName();
-        }
-    }
-    return "—";
-}
-
-fn streamSubLine(self: *Win, node: *const Node) []const u8 {
-    const sub = node.streamSubtitle();
-    if (sub.len > 0) return sub;
-    return self.streamComboLabel(node);
-}
-
-fn paintStreamCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const Node) void {
-    var t = liveNowNs();
-    self.paintCardBg(c, r);
-    self.card_prof.bg += liveNowNs() - t;
-    t = liveNowNs();
-    const ir = iconRect(r);
-    if (self.iconForNode(node)) |icon| {
-        blitIcon(c, icon, @floatFromInt(ir.x), @floatFromInt(ir.y), @floatFromInt(icon_sz));
-    } else {
-        ui_paint.glyph(c, @floatFromInt(ir.x + @divTrunc(ir.w, 2)), @floatFromInt(ir.y + @divTrunc(ir.h, 2)), 24, "music_note", Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
-    }
-    const title = node.streamTitle();
-    ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 34), title, 15, 500, @floatFromInt(r.w - 72 - 300), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 54), self.streamSubLine(node), 11, 400, @floatFromInt(r.w - 72 - 300), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
-    self.card_prof.text += liveNowNs() - t;
-
-    t = liveNowNs();
-    // Move combo + terminate.
-    const cr_ = moveComboRect(r);
-    const open = self.dd.open and self.dd_state.kind == .move and self.dd_state.id == node.id;
-    paintCombo(c, r, cr_, self.streamComboLabel(node), open);
-    const xr = closeBtnRect(r);
-    const xhov = rowHover(self.ptr_x, self.ptr_y, xr);
-    ui_paint.roundRect(c, @floatFromInt(xr.x), @floatFromInt(xr.y), @floatFromInt(xr.w), @floatFromInt(xr.h), 8);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (xhov) 0.14 else 0.06);
-    cairo.cairo_fill(c);
-    ui_paint.glyph(c, @floatFromInt(xr.x + @divTrunc(xr.w, 2)), @floatFromInt(xr.y + @divTrunc(xr.h, 2)), 15, "close", Theme.text_r, Theme.text_g, Theme.text_b, if (xhov) 0.95 else 0.60);
-    self.card_prof.ctrl += liveNowNs() - t;
-
-    t = liveNowNs();
-    self.paintVolumeRow(c, r, node, false);
-    self.card_prof.vol += liveNowNs() - t;
-}
-
-fn isDefaultNode(self: *Win, node: *const Node) bool {
-    if (node.role == .sink) {
-        const want = self.graph.default_sink.get();
-        return want.len > 0 and std.mem.eql(u8, want, node.node_name.get());
-    }
-    const want = self.graph.default_source.get();
-    return want.len > 0 and std.mem.eql(u8, want, node.node_name.get());
-}
-
-/// The visible port routes for a hardware row, in graph order (the same
-/// filter pipewire-pulse applies before showing a sink's ports).
-fn portRouteAt(self: *Win, node: *const Node, dir: u32, i: usize) ?*const Route {
-    const dev = self.deviceFor(node) orelse return null;
-    var n: usize = 0;
-    for (dev.routes.items) |*route| {
-        if (!route.visibleFor(dir, dev.active_profile, node.card_profile_device)) continue;
-        if (n == i) return route;
-        n += 1;
-    }
-    return null;
-}
-
-fn portCount(self: *Win, node: *const Node, dir: u32) usize {
-    var n: usize = 0;
-    while (self.portRouteAt(node, dir, n) != null) n += 1;
-    return n;
-}
-
-fn portLabel(self: *Win, node: *const Node, dir: u32) []const u8 {
-    const dev = self.deviceFor(node) orelse return "";
-    const active = dev.activeRouteFor(dir);
-    if (active.index < 0) return "";
-    if (dev.findRoute(active.index, dir)) |route| return route.label();
-    return "";
-}
-
-/// Freedesktop device-icon names → the Material glyphs this app ships, for
-/// themes that do not carry the ALSA/BlueZ names (`pavucontrol` leans on the
-/// GTK theme here; this keeps a real icon on screen when the theme is thin).
-fn glyphForDevice(icon_name: []const u8, desc: []const u8, role: graph_mod.Role) []const u8 {
-    const table = [_]struct { needle: []const u8, glyph: []const u8 }{
-        .{ .needle = "microphone", .glyph = "mic" },
-        .{ .needle = "headset", .glyph = "headset_mic" },
-        .{ .needle = "headphone", .glyph = "headset_mic" },
-        .{ .needle = "speaker", .glyph = "speaker" },
-        .{ .needle = "bluetooth", .glyph = "bluetooth" },
-        .{ .needle = "hdmi", .glyph = "monitor" },
-        .{ .needle = "display", .glyph = "monitor" },
-        .{ .needle = "gamepad", .glyph = "gamepad" },
-        .{ .needle = "phone", .glyph = "smartphone" },
-    };
-    for (table) |e| {
-        if (std.mem.indexOf(u8, icon_name, e.needle) != null) return e.glyph;
-    }
-    // ALSA cards ship no icon name for their HDMI outputs: the description is
-    // the only telling signal, and a display glyph reads truer than a speaker
-    // box for "…Digital Stereo (HDMI) [MAG 272Q X24]".
-    if (role == .sink and desc.len > 0) {
-        if (std.ascii.findIgnoreCase(desc, "hdmi") != null) return "monitor";
-        if (std.ascii.findIgnoreCase(desc, "displayport") != null) return "monitor";
-    }
-    return if (role == .sink) "speaker" else "mic";
-}
-
-fn paintDeviceCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const Node) void {
-    var t = liveNowNs();
-    self.paintCardBg(c, r);
-    self.card_prof.bg += liveNowNs() - t;
-    t = liveNowNs();
-    const ir = iconRect(r);
-    // Device rows wear the app's own glyph family, never the icon theme's
-    // art: themes ship these entries as macOS-style filled app tiles (a white
-    // rounded plate) or photorealistic renders, which read as stickers next
-    // to the monochrome grid. The glyph is picked from the device's
-    // Freedesktop icon name, so a headset still reads as a headset.
-    const dev = self.deviceFor(node);
-    const icon_name: []const u8 = blk: {
-        if (dev) |d| {
-            if (d.icon.get().len > 0) break :blk d.icon.get();
-        }
-        if (node.device_icon.get().len > 0) break :blk node.device_icon.get();
-        break :blk "";
-    };
-    const desc: []const u8 = if (dev) |d| d.desc.get() else "";
-    ui_paint.glyph(c, @floatFromInt(ir.x + @divTrunc(ir.w, 2)), @floatFromInt(ir.y + @divTrunc(ir.h, 2)), 26, glyphForDevice(icon_name, desc, node.role), Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-    self.card_prof.icon += liveNowNs() - t;
-
-    t = liveNowNs();
-    ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 34), node.displayName(), 15, 500, @floatFromInt(r.w - 72 - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 54), node.node_name.get(), 11, 400, @floatFromInt(r.w - 72 - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
-    self.card_prof.text += liveNowNs() - t;
-
-    t = liveNowNs();
-    const dir: u32 = if (node.role == .sink) 1 else 0;
-    if (self.portCount(node, dir) > 0) {
-        const pr = portComboRect(r);
-        const open = self.dd.open and self.dd_state.kind == .port and self.dd_state.id == node.id;
-        paintCombo(c, r, pr, self.portLabel(node, dir), open);
-    }
-    // Set as default.
-    const br = defaultBtnRect(r);
-    const is_def = self.isDefaultNode(node);
-    const bhov = rowHover(self.ptr_x, self.ptr_y, br);
-    ui_paint.paintBtn(c, br.x, br.y, br.w, br.h, if (is_def) "Default" else "Set default", bhov and !is_def);
-    if (is_def) {
-        ui_paint.glyph(c, @floatFromInt(br.x + 16), @floatFromInt(br.y + @divTrunc(br.h, 2)), 14, "check", Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
-    }
-    self.card_prof.ctrl += liveNowNs() - t;
-
-    t = liveNowNs();
-    self.paintVolumeRow(c, r, node, false);
-    self.card_prof.vol += liveNowNs() - t;
-}
-
-// ── engine page ─────────────────────────────────────────────────────────────
-
-fn engineRow(row: usize) EngineRow {
-    return @enumFromInt(@as(u32, @intCast(row)));
-}
-
-fn engineRowValueCount(self: *Win, row: u32) usize {
-    if (row >= engine_row_count) return 0;
-    return switch (engineRow(@intCast(row))) {
-        .clock_rate => blk: {
-            var buf: [24]i32 = undefined;
-            break :blk 1 + self.engineMenuRatesFor(&buf).len;
-        },
-        .force_rate => blk: {
-            var buf: [24]i32 = undefined;
-            break :blk 2 + self.engineMenuRatesFor(&buf).len;
-        },
-        .allowed_rates => 4,
-        .pcm => 4,
-        .latency_node => self.latencyNodeCount(),
-        .quantum, .force_quantum => blk: {
-            var buf: [24]i32 = undefined;
-            break :blk 2 + self.engineMenuQuantumsFor(&buf).len;
-        },
-        else => 0,
-    };
-}
-
-fn engineAppendSorted(out: *[24]i32, n: *usize, v: i32) void {
-    if (v <= 0 or n.* >= out.len) return;
-    var i: usize = 0;
-    while (i < n.*) : (i += 1) {
-        if (out[i] == v) return;
-        if (out[i] > v) break;
-    }
-    var j = n.*;
-    while (j > i) : (j -= 1) out[j] = out[j - 1];
-    out[i] = v;
-    n.* += 1;
-}
-
-/// Rates offered by the two rate combos: the live allowed list plus the
-/// common set, trimmed to the selected sink's advertised range when known.
-fn engineMenuRates(out: *[24]i32) []const i32 {
-    var n: usize = 0;
-    for (engine_rates) |hz| engineAppendSorted(out, &n, hz);
-    return out[0..n];
-}
-
-fn engineMenuRatesFor(self: *Win, out: *[24]i32) []const i32 {
-    const lo: i32 = if (self.caps.available and self.caps.rate_min > 0) self.caps.rate_min else 1;
-    const hi: i32 = if (self.caps.available and self.caps.rate_max > 0) self.caps.rate_max else std.math.maxInt(i32);
-    var n: usize = 0;
-    for (engine_rates) |hz| {
-        if (hz >= lo and hz <= hi) engineAppendSorted(out, &n, hz);
-    }
-    for (self.es.allowed_rates_hz) |hz| engineAppendSorted(out, &n, hz);
-    engineAppendSorted(out, &n, self.es.clock_rate_hz);
-    engineAppendSorted(out, &n, self.es.clock_force_rate_hz);
-    engineAppendSorted(out, &n, self.caps.rate_min);
-    engineAppendSorted(out, &n, self.caps.rate_max);
-    engineAppendSorted(out, &n, self.caps.rate_default);
-    if (n == 0) {
-        for (engine_rates) |hz| engineAppendSorted(out, &n, hz);
-    }
-    return out[0..n];
-}
-
-fn engineMenuQuantums(out: *[24]i32) []const i32 {
-    var n: usize = 0;
-    for (engine_quantums) |q| engineAppendSorted(out, &n, q);
-    return out[0..n];
-}
-
-fn engineMenuQuantumsFor(self: *Win, out: *[24]i32) []const i32 {
-    const limit: i32 = if (self.caps.available) self.caps.quantum_limit else 0;
-    var n: usize = 0;
-    for (engine_quantums) |q| {
-        if (limit <= 0 or q <= limit) engineAppendSorted(out, &n, q);
-    }
-    if (limit <= 0 or self.es.clock_quantum <= limit) engineAppendSorted(out, &n, self.es.clock_quantum);
-    if (limit <= 0 or self.es.clock_force_quantum <= limit) engineAppendSorted(out, &n, self.es.clock_force_quantum);
-    if (n == 0) {
-        for (engine_quantums) |q| engineAppendSorted(out, &n, q);
-    }
-    return out[0..n];
-}
-
-fn engineRateIndex(self: *Win, hz: i32) i32 {
-    var buf: [24]i32 = undefined;
-    const rates = self.engineMenuRatesFor(&buf);
-    for (rates, 0..) |v, k| {
-        if (v == hz) return @intCast(k);
-    }
-    return -1;
-}
-
-fn engineQuantumIndex(self: *Win, q: i32) i32 {
-    var buf: [24]i32 = undefined;
-    const qs = self.engineMenuQuantumsFor(&buf);
-    for (qs, 0..) |v, k| {
-        if (v == q) return @intCast(k);
-    }
-    return -1;
-}
-
-fn enginePresetRates(i: usize) ?[]const i32 {
-    return switch (i) {
-        0 => &engine_preset_hifi,
-        1 => &engine_preset_consumer,
-        2 => &engine_preset_pro,
-        else => null,
-    };
-}
-
-fn enginePresetSel(es: *const live_audio.EngineSettings) i32 {
-    var buf: [24]i32 = undefined;
-    const n = @min(es.allowed_rates_hz.len, buf.len);
-    @memcpy(buf[0..n], es.allowed_rates_hz[0..n]);
-    std.mem.sort(i32, buf[0..n], {}, std.sort.asc(i32));
-    const norm = buf[0..n];
-    if (std.mem.eql(i32, norm, &engine_preset_hifi)) return 0;
-    if (std.mem.eql(i32, norm, &engine_preset_consumer)) return 1;
-    if (std.mem.eql(i32, norm, &engine_preset_pro)) return 2;
-    if (norm.len == 1 and norm[0] == es.clock_rate_hz) return 3;
-    return -1;
-}
-
-fn enginePresetLabel(sel: i32) []const u8 {
-    return switch (sel) {
-        0 => "Hi-Fi (44.1-192 kHz)",
-        1 => "Consumer (44.1 / 48 kHz)",
-        2 => "Pro (48 / 96 / 192 kHz)",
-        3 => "Single (default rate only)",
-        else => "Custom",
-    };
-}
-
-fn enginePcmLabel(choice: i32) []const u8 {
-    if (choice < 0 or choice >= engine_pcm_labels.len) return "(unknown)";
-    return engine_pcm_labels[@intCast(choice)];
-}
-
-fn engineHzDisplay(buf: []u8, hz: i32) []const u8 {
-    if (hz <= 0) return std.fmt.bufPrint(buf, "{d}", .{hz}) catch "?";
-    const k = @divTrunc(hz, 1000);
-    const frac = @rem(hz, 1000);
-    if (frac == 0) return std.fmt.bufPrint(buf, "{d} kHz", .{k}) catch "?";
-    return std.fmt.bufPrint(buf, "{d}.{d} kHz", .{ k, @divTrunc(frac, 100) }) catch "?";
-}
-
-fn engineSame(a: *const live_audio.EngineSettings, b: *const live_audio.EngineSettings) bool {
-    if (a.available != b.available) return false;
-    if (a.clock_rate_hz != b.clock_rate_hz) return false;
-    if (a.clock_force_rate_hz != b.clock_force_rate_hz) return false;
-    if (a.clock_quantum != b.clock_quantum) return false;
-    if (a.clock_force_quantum != b.clock_force_quantum) return false;
-    return std.mem.eql(i32, a.allowed_rates_hz, b.allowed_rates_hz);
-}
-
-fn engineRowTitle(row: usize) []const u8 {
-    return switch (engineRow(row)) {
-        .clock_rate => "Default clock rate",
-        .force_rate => "Force graph rate",
-        .allowed_rates => "Allowed rates",
-        .pcm => "Default PCM format",
-        .quantum => "Default quantum",
-        .force_quantum => "Force quantum",
-        .status => "Live engine",
-        .latency_node => "Latency offset node",
-        .latency_offset => "Latency offset",
-        .restart_wp => "Restart WirePlumber",
-        .restart_pw => "Restart PipeWire",
-    };
-}
-
-fn engineRowHint(row: usize) []const u8 {
-    return switch (engineRow(row)) {
-        .clock_rate => "The graph rate PipeWire settles on",
-        .force_rate => "Pin the graph instead of following streams",
-        .allowed_rates => "Rates the graph may switch between",
-        .pcm => "Pin the default sink's sample format",
-        .quantum => "Buffer size in frames (lower = less latency)",
-        .force_quantum => "Pin the buffer size instead of adapting",
-        .status => "Latency, xruns (click to reset) and DSP load",
-        .latency_node => "Output or input that accepts a processing offset",
-        .latency_offset => "Stored on the node as an offset",
-        .restart_wp => "Reload device and session policy",
-        .restart_pw => "Restarts the graph; every client reconnects",
-    };
-}
-
-fn engineRowItemLabel(self: *Win, row: usize, i: usize) []const u8 {
-    switch (engineRow(row)) {
-        .clock_rate => {
-            var buf: [24]i32 = undefined;
-            const rates = self.engineMenuRatesFor(&buf);
-            if (i == rates.len) return "Custom rate…";
-            if (i > rates.len) return "";
-            return engineHzDisplay(&self.engine_label_buf, rates[i]);
-        },
-        .force_rate => {
-            if (i == 0) return "Auto";
-            var buf: [24]i32 = undefined;
-            const rates = self.engineMenuRatesFor(&buf);
-            if (i - 1 == rates.len) return "Custom rate…";
-            if (i - 1 > rates.len) return "";
-            return engineHzDisplay(&self.engine_label_buf, rates[i - 1]);
-        },
-        .allowed_rates => return enginePresetLabel(@intCast(i)),
-        .pcm => return enginePcmLabel(@intCast(i)),
-        .quantum, .force_quantum => {
-            if (i == 0) return if (engineRow(row) == .quantum) "Auto (default)" else "Auto";
-            var buf: [24]i32 = undefined;
-            const qs = self.engineMenuQuantumsFor(&buf);
-            if (i - 1 == qs.len) return "Custom quantum…";
-            if (i - 1 > qs.len) return "";
-            return std.fmt.bufPrint(&self.engine_label_buf, "{d} frames", .{qs[i - 1]}) catch "?";
-        },
-        .latency_node => {
-            const node = self.latencyNodeAt(i) orelse return "";
-            return node.displayName();
-        },
-        else => return "",
-    }
-}
-
-fn engineRowValue(self: *Win, row: usize, buf: []u8) []const u8 {
-    return switch (engineRow(row)) {
-        .clock_rate => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else engineHzDisplay(buf, self.es.clock_rate_hz),
-        .force_rate => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_force_rate_hz == 0) "Auto" else engineHzDisplay(buf, self.es.clock_force_rate_hz),
-        .allowed_rates => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else enginePresetLabel(enginePresetSel(&self.es)),
-        .pcm => if (!self.have_pcm) "Reading…" else if (self.pcm_choice < 0) "(unknown)" else enginePcmLabel(self.pcm_choice),
-        .quantum => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_quantum == 0) "Auto (default)" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_quantum}) catch "?",
-        .force_quantum => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_force_quantum == 0) "Auto" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_force_quantum}) catch "?",
-        .latency_node => self.latencyNodeLabel(),
-        else => "",
-    };
-}
-
-fn engineRowSel(self: *Win, row: usize) i32 {
-    if (row >= engine_row_count) return -1;
-    return switch (engineRow(row)) {
-        .clock_rate => if (!self.es.available) -1 else self.engineRateIndex(self.es.clock_rate_hz),
-        .force_rate => if (!self.es.available) -1 else if (self.es.clock_force_rate_hz == 0) 0 else blk: {
-            const k = self.engineRateIndex(self.es.clock_force_rate_hz);
-            break :blk if (k < 0) -1 else k + 1;
-        },
-        .allowed_rates => if (!self.es.available) -1 else enginePresetSel(&self.es),
-        .pcm => self.pcm_choice,
-        .quantum => if (!self.es.available) -1 else if (self.es.clock_quantum == 0) 0 else blk: {
-            const k = self.engineQuantumIndex(self.es.clock_quantum);
-            break :blk if (k < 0) -1 else k + 1;
-        },
-        .force_quantum => if (!self.es.available) -1 else if (self.es.clock_force_quantum == 0) 0 else blk: {
-            const k = self.engineQuantumIndex(self.es.clock_force_quantum);
-            break :blk if (k < 0) -1 else k + 1;
-        },
-        .latency_node => self.lat_node,
-        else => -1,
-    };
-}
-
-fn applyEngineRow(self: *Win, row: usize, i: usize) void {
-    if (row >= engine_row_count) return;
-    var rb: [24]i32 = undefined;
-    var qb: [24]i32 = undefined;
-    var ok = false;
-    switch (engineRow(row)) {
-        .clock_rate => {
-            const rates = self.engineMenuRatesFor(&rb);
-            if (i < rates.len) {
-                ok = live_audio.applyEngineClockRateHz(self.io, rates[i]);
-            } else if (i == rates.len) {
-                self.openEngineModal(.rate, false);
-                return;
-            }
-        },
-        .force_rate => {
-            if (i == 0) {
-                ok = live_audio.applyEngineForceRateHz(self.io, 0);
-            } else {
-                const rates = self.engineMenuRatesFor(&rb);
-                if (i - 1 < rates.len) {
-                    ok = live_audio.applyEngineForceRateHz(self.io, rates[i - 1]);
-                } else if (i - 1 == rates.len) {
-                    self.openEngineModal(.rate, true);
-                    return;
-                }
-            }
-        },
-        .allowed_rates => {
-            if (i == 3) {
-                ok = live_audio.applyEngineAllowedRatesHz(self.io, &.{self.es.clock_rate_hz});
-            } else if (enginePresetRates(i)) |rates| {
-                ok = live_audio.applyEngineAllowedRatesHz(self.io, rates);
-            }
-        },
-        .pcm => {
-            if (i < engine_pcm_labels.len) {
-                ok = live_audio.applyCompatPcm(self.gpa, self.io, @intCast(i));
-                if (ok) {
-                    self.pcm_choice = @intCast(i);
-                    self.have_pcm = true;
-                }
-            }
-        },
-        .quantum => {
-            if (i == 0) {
-                ok = live_audio.applyEngineQuantum(self.io, 0);
-            } else {
-                const qs = self.engineMenuQuantumsFor(&qb);
-                if (i - 1 < qs.len) {
-                    ok = live_audio.applyEngineQuantum(self.io, qs[i - 1]);
-                } else if (i - 1 == qs.len) {
-                    self.openEngineModal(.quantum, false);
-                    return;
-                }
-            }
-        },
-        .force_quantum => {
-            if (i == 0) {
-                ok = live_audio.applyEngineForceQuantum(self.io, 0);
-            } else {
-                const qs = self.engineMenuQuantumsFor(&qb);
-                if (i - 1 < qs.len) {
-                    ok = live_audio.applyEngineForceQuantum(self.io, qs[i - 1]);
-                } else if (i - 1 == qs.len) {
-                    self.openEngineModal(.quantum, true);
-                    return;
-                }
-            }
-        },
-        .latency_node => {
-            if (i < self.latencyNodeCount()) {
-                self.lat_node = @intCast(i);
-                self.loadLatencyField();
-                self.needs_repaint = true;
-            }
-            return;
-        },
-        else => {},
-    }
-    if (!ok) logz.err("engine: write failed row={d} item={d}", .{ row, i });
-    if (ok) {
-        self.refreshEngine(true);
-        self.damageAll();
-        self.needs_repaint = true;
-    }
-}
-
-// Engine row geometry. The list rows all use `card_h_config`.
-
-fn engineModalRect(win_w: i32, win_h: i32) common.Rect {
-    var w: i32 = win_w - 80;
-    if (w > 440) w = 440;
-    if (w < 320) w = 320;
-    const h: i32 = 208;
-    return .{ .x = @divTrunc(win_w - w, 2), .y = @divTrunc(win_h - h, 2), .w = w, .h = h };
-}
-
-fn engineModalFieldRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + 20, .y = r.y + 76, .w = r.w - 40, .h = combo_h };
-}
-
-fn engineModalCancelRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + r.w - 20 - 100 - 8 - 100, .y = r.y + r.h - 20 - combo_h, .w = 100, .h = combo_h };
-}
-
-fn engineModalSubmitRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + r.w - 20 - 100, .y = r.y + r.h - 20 - combo_h, .w = 100, .h = combo_h };
-}
-
-fn engineStatusColW(r: common.Rect) i32 {
-    return @divTrunc(r.w - 56 - card_pad, 3);
-}
-
-fn engineXrunResetRect(r: common.Rect) common.Rect {
-    const cw = engineStatusColW(r);
-    return .{ .x = r.x + 56 + cw + cw - 30, .y = r.y + 16, .w = 20, .h = 20 };
-}
-
-fn engineXrunHitRect(r: common.Rect) common.Rect {
-    const cw = engineStatusColW(r);
-    return .{ .x = r.x + 56 + cw, .y = r.y, .w = cw, .h = r.h };
-}
-
-fn engineLatFieldRect(r: common.Rect) common.Rect {
-    const w: i32 = 84;
-    const h: i32 = combo_h;
-    const y = r.y + @divTrunc(r.h - h, 2);
-    const x = engineLatResetRect(r).x - 8 - 118 - 8 - 104 - 8 - w;
-    return .{ .x = x, .y = y, .w = w, .h = h };
-}
-
-fn engineLatUnitRect(r: common.Rect) common.Rect {
-    const f = engineLatFieldRect(r);
-    return .{ .x = f.x + f.w + 8, .y = f.y, .w = 104, .h = f.h };
-}
-
-fn engineLatApplyRect(r: common.Rect) common.Rect {
-    const u = engineLatUnitRect(r);
-    return .{ .x = u.x + u.w + 8, .y = u.y, .w = 118, .h = u.h };
-}
-
-fn engineLatResetRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + r.w - card_pad - 128, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = 128, .h = combo_h };
-}
-
-fn engineRestartBtnRect(r: common.Rect) common.Rect {
-    return .{ .x = r.x + r.w - card_pad - 120, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = 120, .h = combo_h };
-}
-
-fn paintEngineTextField(c: *cairo.cairo_t, r: common.Rect, value: []const u8, focused: bool, placeholder: []const u8) void {
-    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (focused) 0.10 else 0.06);
-    cairo.cairo_fill_preserve(c);
-    cairo.cairo_set_line_width(c, 1.0);
-    if (focused) {
-        cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.9);
-    } else {
-        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
-    }
-    cairo.cairo_stroke(c);
-    const shown = if (value.len > 0) value else placeholder;
-    ui_paint.showTextW(
-        c,
-        @floatFromInt(r.x + 10),
-        @floatFromInt(r.y + 19),
-        shown,
-        12,
-        500,
-        @floatFromInt(@max(0, r.w - 18)),
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        if (value.len > 0) 0.92 else 0.38,
-    );
-}
-
-/// Width of the "frames" segment in the latency unit toggle. The control is a
-/// fixed 104 px; the split follows the measured label so both words keep the
-/// same breathing room instead of an equal 50/50 split cramming "frames".
-fn paintEngineUnitToggle(self: *Win, c: *cairo.cairo_t, r: common.Rect, use_ns: bool) void {
-    // Size each segment to its label plus padding, then share the leftover
-    // width equally. Measuring keeps the padding symmetric whatever the font
-    // renders "frames" as.
-    const pad: i32 = 12;
-    const lw = ui_paint.measureTextWidth("frames", 11, 600);
-    const nw = ui_paint.measureTextWidth("ns", 11, 600);
-    var split = lw + 2 * pad + @divTrunc(@max(0, r.w - (lw + nw + 4 * pad)), 2);
-    if (split < 8 or split > r.w - 8) split = @divTrunc(r.w, 2);
-    self.engine_unit_split = split;
-    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.06);
-    cairo.cairo_fill_preserve(c);
-    cairo.cairo_set_line_width(c, 1.0);
-    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
-    cairo.cairo_stroke(c);
-
-    const ax = if (use_ns) r.x + split else r.x;
-    const aw = if (use_ns) r.w - split else split;
-    ui_paint.roundRect(c, @floatFromInt(ax + 2), @floatFromInt(r.y + 2), @floatFromInt(aw - 4), @floatFromInt(r.h - 4), 6);
-    cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.20);
-    cairo.cairo_fill(c);
-
-    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.28);
-    cairo.cairo_set_line_width(c, 1.0);
-    cairo.cairo_move_to(c, @floatFromInt(r.x + split), @floatFromInt(r.y + 6));
-    cairo.cairo_line_to(c, @floatFromInt(r.x + split), @floatFromInt(r.y + r.h - 6));
-    cairo.cairo_stroke(c);
-
-    const labels = [_][]const u8{ "frames", "ns" };
-    for (labels, 0..) |lab, i| {
-        const active = (i == 1) == use_ns;
-        const center = if (i == 0)
-            r.x + @divTrunc(split, 2)
-        else
-            r.x + split + @divTrunc(r.w - split, 2);
+    /// One header toggle: label + switch, right-aligned. Returns the rect the
+    /// click test uses (so paint and hit test can never disagree about layout).
+    fn paintHeaderToggle(c: *cairo.cairo_t, right_x: i32, label: []const u8, on: bool) common.Rect {
+        const sw: i32 = 44;
+        const sh: i32 = 24;
+        const gap: i32 = 8;
+        const pill_y: i32 = 62;
+        const ts = ui_paint.textSizePx(c, label, 12, 500);
+        const lw: i32 = ts.w;
+        const total = lw + gap + sw;
+        const x0 = right_x - total;
+        // Center the label on the switch, the way paintBtn centers a button
+        // label: showText pins the layout top at (y - ph + 2), so the ink sits
+        // mid-pill only when y is derived from the measured layout height.
+        // Hardcoding y parked the text ~6px above the pill.
+        const th_f: f64 = @floatFromInt(ts.h);
+        const ltop = @as(f64, @floatFromInt(pill_y)) + (@as(f64, @floatFromInt(sh)) - th_f) / 2.0;
         ui_paint.showText(
             c,
-            @floatFromInt(center - @divTrunc(ui_paint.measureTextWidth(lab, 11, 600), 2)),
-            @floatFromInt(r.y + 19),
-            lab,
-            11,
-            600,
-            if (active) Theme.acc_r else Theme.text_r,
-            if (active) Theme.acc_g else Theme.text_g,
-            if (active) Theme.acc_b else Theme.text_b,
-            if (active) 1.0 else 0.62,
-        );
-    }
-}
-
-fn paintEngineStatus(self: *Win, c: *cairo.cairo_t, r: common.Rect) void {
-    const cw = engineStatusColW(r);
-    const x0 = r.x + 56;
-    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "timer", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-
-    // Column separators.
-    var k: i32 = 1;
-    while (k < 3) : (k += 1) {
-        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.22);
-        cairo.cairo_set_line_width(c, 1.0);
-        cairo.cairo_move_to(c, @floatFromInt(x0 + k * cw), @floatFromInt(r.y + 12));
-        cairo.cairo_line_to(c, @floatFromInt(x0 + k * cw), @floatFromInt(r.y + r.h - 12));
-        cairo.cairo_stroke(c);
-    }
-
-    var lat_buf: [32]u8 = undefined;
-    const lat = self.engineLatencyDisplay(&lat_buf);
-    ui_paint.showText(c, @floatFromInt(x0 + 14), @floatFromInt(r.y + 24), "LATENCY", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
-    ui_paint.showText(c, @floatFromInt(x0 + 14), @floatFromInt(r.y + 48), lat, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-
-    const xr: i64 = @max(@as(i64, 0), self.top.xruns_total - self.xrun_base);
-    var xr_buf: [24]u8 = undefined;
-    const xr_s = if (!self.top.available) "—" else std.fmt.bufPrint(&xr_buf, "{d}", .{xr}) catch "0";
-    ui_paint.showText(c, @floatFromInt(x0 + cw + 14), @floatFromInt(r.y + 24), "XRUNS", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
-    ui_paint.showText(c, @floatFromInt(x0 + cw + 14), @floatFromInt(r.y + 48), xr_s, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    if (self.top.available) {
-        const rr = engineXrunResetRect(r);
-        ui_paint.roundRect(c, @floatFromInt(rr.x), @floatFromInt(rr.y), @floatFromInt(rr.w), @floatFromInt(rr.h), 6);
-        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.06);
-        cairo.cairo_fill(c);
-        ui_paint.glyph(c, @floatFromInt(rr.x + @divTrunc(rr.w, 2)), @floatFromInt(rr.y + @divTrunc(rr.h, 2)), 12, "restart_alt", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-    }
-
-    var dsp_buf: [24]u8 = undefined;
-    const dsp_s = if (!self.top.available)
-        "—"
-    else blk: {
-        const pct = @max(0, @min(100, self.top.dsp_load_pct));
-        // DSP load is often well under 1% for a desktop graph. Scale the
-        // precision so the number actually moves instead of reading "0%".
-        break :blk if (pct < 1)
-            std.fmt.bufPrint(&dsp_buf, "{d:.2}%", .{pct}) catch "0%"
-        else if (pct < 10)
-            std.fmt.bufPrint(&dsp_buf, "{d:.1}%", .{pct}) catch "0%"
-        else
-            std.fmt.bufPrint(&dsp_buf, "{d:.0}%", .{pct}) catch "0%";
-    };
-    const dx = x0 + 2 * cw + 14;
-    ui_paint.showText(c, @floatFromInt(dx), @floatFromInt(r.y + 24), "DSP LOAD", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
-    ui_paint.showText(c, @floatFromInt(dx), @floatFromInt(r.y + 48), dsp_s, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    const my = r.y + r.h - 16;
-    const mw = cw - 28;
-    ui_paint.roundRect(c, @floatFromInt(dx), @floatFromInt(my), @floatFromInt(mw), 4, 2);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.10);
-    cairo.cairo_fill(c);
-    if (self.top.available and self.top.dsp_load_pct > 0) {
-        const pct: f64 = @max(0, @min(100, self.top.dsp_load_pct));
-        const fw: f64 = @as(f64, @floatFromInt(mw)) * pct / 100.0;
-        ui_paint.roundRect(c, @floatFromInt(dx), @floatFromInt(my), fw, 4, 2);
-        cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
-        cairo.cairo_fill(c);
-    }
-}
-
-/// Expected graph latency from the resolved quantum and rate.
-fn engineLatencyDisplay(self: *Win, buf: []u8) []const u8 {
-    // Prefer the sink's live pw-top row: it is the cycle the graph is actually
-    // running, while `clock.quantum` is only the ceiling clients may ask for.
-    const qn: i32 = if (self.top.focus_quantum > 0)
-        self.top.focus_quantum
-    else if (self.es.clock_force_quantum > 0)
-        self.es.clock_force_quantum
-    else if (self.es.clock_quantum > 0)
-        self.es.clock_quantum
-    else
-        self.top.reference_quantum;
-    const rate: i32 = if (self.top.focus_rate_hz > 0)
-        self.top.focus_rate_hz
-    else if (self.es.clock_force_rate_hz > 0)
-        self.es.clock_force_rate_hz
-    else if (self.es.clock_rate_hz > 0)
-        self.es.clock_rate_hz
-    else
-        self.top.reference_rate_hz;
-    if (qn <= 0 or rate <= 0) return "—";
-    const ms = @as(f64, @floatFromInt(qn)) / @as(f64, @floatFromInt(rate)) * 1000.0;
-    return std.fmt.bufPrint(buf, "{d:.2} ms", .{ms}) catch "—";
-}
-
-fn paintEngineLatencyRow(self: *Win, c: *cairo.cairo_t, r: common.Rect) void {
-    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "timer", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(8), 15, 500, @floatFromInt(r.w - 500), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(8), 11, 400, @floatFromInt(r.w - 500), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
-
-    const has_node = self.latencyNode() != null;
-    paintEngineTextField(c, engineLatFieldRect(r), self.lat_field[0..self.lat_len], self.lat_focus, "0");
-    paintEngineUnitToggle(self, c, engineLatUnitRect(r), self.lat_ns);
-    const ar = engineLatApplyRect(r);
-    if (has_node) {
-        ui_paint.paintBtn(c, ar.x, ar.y, ar.w, ar.h, "Apply", false);
-    } else {
-        ui_paint.paintBtnDisabled(c, ar.x, ar.y, ar.w, ar.h, "Apply");
-    }
-    const rr = engineLatResetRect(r);
-    if (self.latencyNodeCount() > 0) {
-        ui_paint.paintBtn(c, rr.x, rr.y, rr.w, rr.h, "Reset all", false);
-    } else {
-        ui_paint.paintBtnDisabled(c, rr.x, rr.y, rr.w, rr.h, "Reset all");
-    }
-}
-
-fn paintEngineRestartRow(self: *Win, c: *cairo.cairo_t, r: common.Rect, row: usize) void {
-    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "restart_alt", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(row), 15, 500, @floatFromInt(r.w - 260), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(row), 11, 400, @floatFromInt(r.w - 260), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
-
-    const now = liveNowNs();
-    const is_wp = engineRow(row) == .restart_wp;
-    const arm_ns = if (is_wp) self.restart_wp_arm_ns else self.restart_pw_arm_ns;
-    const done_ns = if (is_wp) self.restart_wp_done_ns else self.restart_pw_done_ns;
-    const armed = arm_ns != 0 and now - arm_ns <= engine_restart_arm_ns;
-    const done = done_ns != 0 and now - done_ns <= engine_restart_done_ns;
-    const br = engineRestartBtnRect(r);
-    const label = if (done) "Restarted" else if (armed) "Confirm" else "Restart";
-    ui_paint.paintBtn(c, br.x, br.y, br.w, br.h, label, false);
-    if (done) {
-        ui_paint.glyph(c, @floatFromInt(br.x + 22), @floatFromInt(br.y + @divTrunc(br.h, 2)), 15, "check", Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
-    }
-}
-
-fn paintEngineModal(self: *Win, c: *cairo.cairo_t) void {
-    if (self.emodal == .none) return;
-    // Dim the page so the dialog reads as modal.
-    cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.55);
-    cairo.cairo_paint(c);
-
-    const r = engineModalRect(self.win_w, self.win_h);
-    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 16);
-    cairo.cairo_set_source_rgba(c, Theme.bg_r * 0.55, Theme.bg_g * 0.55, Theme.bg_b * 0.55, 0.99);
-    cairo.cairo_fill_preserve(c);
-    cairo.cairo_set_line_width(c, 1.0);
-    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
-    cairo.cairo_stroke(c);
-
-    const title = switch (self.emodal) {
-        .rate => "Custom sample rate",
-        .quantum => "Custom quantum",
-        .none => "",
-    };
-    const hint = switch (self.emodal) {
-        .rate => "Written to the graph through pw-metadata.",
-        .quantum => "Frames per graph cycle; lower means less latency.",
-        .none => "",
-    };
-    ui_paint.showText(c, @floatFromInt(r.x + 20), @floatFromInt(r.y + 34), title, 17, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 20), @floatFromInt(r.y + 56), hint, 11, 400, @floatFromInt(r.w - 40), Theme.text_r, Theme.text_g, Theme.text_b, 0.55);
-
-    const placeholder = switch (self.emodal) {
-        .rate => "e.g. 48000",
-        .quantum => "e.g. 1024",
-        .none => "",
-    };
-    paintEngineTextField(c, engineModalFieldRect(r), self.emodal_buf[0..self.emodal_len], true, placeholder);
-    const cr = engineModalCancelRect(r);
-    ui_paint.paintBtn(c, cr.x, cr.y, cr.w, cr.h, "Cancel", false);
-    const sr = engineModalSubmitRect(r);
-    ui_paint.paintBtn(c, sr.x, sr.y, sr.w, sr.h, "Apply", false);
-}
-
-fn paintEngineCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, i: usize) void {
-    self.paintCardBg(c, r);
-    switch (engineRow(i)) {
-        .status => return paintEngineStatus(self, c, r),
-        .latency_offset => return paintEngineLatencyRow(self, c, r),
-        .restart_wp, .restart_pw => return paintEngineRestartRow(self, c, r, i),
-        else => {},
-    }
-    const row = engineRow(i);
-    const glyph_name: []const u8 = switch (row) {
-        .latency_node => "timer",
-        .pcm => "tune",
-        else => "tune",
-    };
-    ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, glyph_name, Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(i), 15, 500, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(i), 11, 400, @floatFromInt(r.w - 420), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
-    var buf: [64]u8 = undefined;
-    const cr = profileComboRect(r);
-    const open = self.dd.open and self.dd_state.kind == .engine and self.dd_state.id == @as(u32, @intCast(i));
-    paintCombo(c, r, cr, self.engineRowValue(i, &buf), open);
-}
-
-/// "What this output can actually do" line: sink, rate span, formats,
-/// channels and quantum limit from its `EnumFormat`.
-fn engineHardwareCaption(self: *Win, buf: []u8) []const u8 {
-    const caps = &self.caps;
-    if (!caps.available) {
-        return if (self.defaultSinkNodeId() != 0) "Hardware limits unavailable" else "No output device";
-    }
-    var n: usize = 0;
-    const append = struct {
-        fn add(b: []u8, at: *usize, part: []const u8) void {
-            if (part.len == 0) return;
-            const sep = if (at.* == 0) "" else " · ";
-            if (at.* + sep.len + part.len > b.len) return;
-            @memcpy(b[at.*..][0..sep.len], sep);
-            at.* += sep.len;
-            @memcpy(b[at.*..][0..part.len], part);
-            at.* += part.len;
-        }
-    }.add;
-
-    var rate_b: [40]u8 = undefined;
-    if (caps.rate_min > 0 and caps.rate_max >= caps.rate_min) {
-        var lo_b: [12]u8 = undefined;
-        var hi_b: [12]u8 = undefined;
-        const lo = engineShortRate(&lo_b, caps.rate_min);
-        const hi = engineShortRate(&hi_b, caps.rate_max);
-        if (caps.rate_min == caps.rate_max) {
-            append(buf, &n, std.fmt.bufPrint(&rate_b, "{s} kHz", .{lo}) catch "");
-        } else {
-            append(buf, &n, std.fmt.bufPrint(&rate_b, "{s}-{s} kHz", .{ lo, hi }) catch "");
-        }
-    } else if (caps.rate_count > 0) {
-        var lo_b: [12]u8 = undefined;
-        var hi_b: [12]u8 = undefined;
-        const lo = engineShortRate(&lo_b, caps.rates[0]);
-        const hi = engineShortRate(&hi_b, caps.rates[caps.rate_count - 1]);
-        append(buf, &n, std.fmt.bufPrint(&rate_b, "{s}-{s} kHz", .{ lo, hi }) catch "");
-    }
-
-    var fmt_b: [32]u8 = undefined;
-    const fmt_s = engineCapsFormats(caps.formats, &fmt_b);
-    append(buf, &n, fmt_s);
-
-    var ch_b: [24]u8 = undefined;
-    if (caps.channels > 0) append(buf, &n, std.fmt.bufPrint(&ch_b, "{d} ch", .{caps.channels}) catch "");
-
-    var q_b: [32]u8 = undefined;
-    if (caps.quantum_limit > 0) append(buf, &n, std.fmt.bufPrint(&q_b, "quantum <={d}", .{caps.quantum_limit}) catch "");
-
-    return buf[0..n];
-}
-
-fn engineShortRate(buf: []u8, hz: i32) []const u8 {
-    if (hz <= 0) return "?";
-    if (@mod(hz, 1000) == 0) return std.fmt.bufPrint(buf, "{d}", .{@divTrunc(hz, 1000)}) catch "?";
-    return std.fmt.bufPrint(buf, "{d}.{d}", .{
-        @divTrunc(hz, 1000),
-        @divTrunc(@mod(hz, 1000), 100),
-    }) catch "?";
-}
-
-fn engineCapsFormats(bits: u16, buf: []u8) []const u8 {
-    const names = [_]struct { bit: u16, name: []const u8 }{
-        .{ .bit = live_audio.fmt_s16, .name = "S16LE" },
-        .{ .bit = live_audio.fmt_s24, .name = "S24LE" },
-        .{ .bit = live_audio.fmt_s32, .name = "S32LE" },
-        .{ .bit = live_audio.fmt_f32, .name = "F32LE" },
-        .{ .bit = live_audio.fmt_f64, .name = "F64LE" },
-    };
-    var n: usize = 0;
-    for (names) |entry| {
-        if (bits & entry.bit == 0) continue;
-        const need: usize = entry.name.len + (if (n == 0) @as(usize, 0) else 3);
-        if (n + need > buf.len) break;
-        if (n > 0) {
-            @memcpy(buf[n..][0..3], " / ");
-            n += 3;
-        }
-        @memcpy(buf[n..][0..entry.name.len], entry.name);
-        n += entry.name.len;
-    }
-    return buf[0..n];
-}
-
-fn paintConfigCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, dev: *const Device) void {
-    var t = liveNowNs();
-    self.paintCardBg(c, r);
-    self.card_prof.bg += liveNowNs() - t;
-    t = liveNowNs();
-    const ir = iconRect(r);
-    _ = ir;
-    const ix = r.x + card_pad + 18;
-    const iy = r.y + @divTrunc(r.h, 2);
-    ui_paint.glyph(c, @floatFromInt(ix), @floatFromInt(iy), 24, "tune", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
-    self.card_prof.icon += liveNowNs() - t;
-
-    t = liveNowNs();
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 34), dev.displayName(), 15, 500, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-    ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 54), dev.device_name.get(), 11, 400, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
-    self.card_prof.text += liveNowNs() - t;
-
-    t = liveNowNs();
-    const pr = profileComboRect(r);
-    const open = self.dd.open and self.dd_state.kind == .profile and self.dd_state.id == dev.id;
-    const cur = if (dev.active_profile >= 0) blk: {
-        if (dev.findProfile(dev.active_profile)) |p| break :blk p.label();
-        break :blk "(unknown)";
-    } else "(unset)";
-    paintCombo(c, r, pr, cur, open);
-    self.card_prof.ctrl += liveNowNs() - t;
-}
-
-/// The shared combo look: rounded body, current value, chevron. `open`
-/// lifts the fill and stroke so the trigger reads as pressed.
-fn paintCombo(c: *cairo.cairo_t, card_rect: common.Rect, r: common.Rect, value: []const u8, open: bool) void {
-    _ = card_rect;
-    ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (open) 0.10 else 0.06);
-    cairo.cairo_fill_preserve(c);
-    cairo.cairo_set_line_width(c, 1.0);
-    cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, if (open) 0.9 else 0.45);
-    cairo.cairo_stroke(c);
-    ui_paint.showTextW(
-        c,
-        @floatFromInt(r.x + 10),
-        @floatFromInt(comboLabelTop(r, ui_paint.textSizePx(c, value, 12, 500).h)),
-        value,
-        12,
-        500,
-        @floatFromInt(@max(0, r.w - 10 - 28)),
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        0.92,
-    );
-    ui_paint.glyph(
-        c,
-        @floatFromInt(r.x + r.w - 13),
-        @floatFromInt(r.y + @divTrunc(r.h, 2)),
-        13,
-        "expand_more",
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        0.55,
-    );
-}
-
-/// Mute button, track, percentage and L/R meter bars for one row.
-fn paintVolumeRow(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const Node, monitor: bool) void {
-    const target = self.graph.volumeTarget(node, monitor);
-    const muted = target.mute or node.mute and target.n_volumes == 0;
-    var pct: i32 = blk: {
-        if (target.n_volumes == 0) break :blk 100;
-        const ratio = graph_mod.amplitudeRatio(target.volumes[0]);
-        break :blk common.clampInt(@intFromFloat(@round(ratio * 100.0)), 0, slider_max_pct);
-    };
-    if (self.drag) |d| {
-        if (d.id == node.id and d.monitor == monitor) pct = d.pct;
-    }
-
-    // Mute button.
-    const mr = muteBtnRect(r);
-    const mhov = rowHover(self.ptr_x, self.ptr_y, mr);
-    ui_paint.roundRect(c, @floatFromInt(mr.x), @floatFromInt(mr.y), @floatFromInt(mr.w), @floatFromInt(mr.h), 10);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (mhov) 0.13 else 0.06);
-    cairo.cairo_fill(c);
-    const on_glyph = if (monitor) "mic" else "volume_up";
-    const off_glyph = if (monitor) "mic_off" else "volume_off";
-    ui_paint.glyph(
-        c,
-        @floatFromInt(mr.x + @divTrunc(mr.w, 2)),
-        @floatFromInt(mr.y + @divTrunc(mr.h, 2)),
-        18,
-        if (muted) off_glyph else on_glyph,
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        if (muted) 0.45 else 0.92,
-    );
-
-    // Track, fill, knob.
-    const tr = trackRect(r);
-    const yf: f64 = @floatFromInt(tr.y);
-    const hf: f64 = @floatFromInt(tr.h);
-    ui_paint.roundRect(c, @floatFromInt(tr.x), yf, @floatFromInt(tr.w), hf, hf / 2.0);
-    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.10);
-    cairo.cairo_fill(c);
-    const pct_frac = @as(f64, @floatFromInt(pct)) / @as(f64, @floatFromInt(slider_max_pct));
-    if (pct > 0) {
-        const fw = @max(hf, @as(f64, @floatFromInt(tr.w)) * pct_frac);
-        ui_paint.roundRect(c, @floatFromInt(tr.x), yf, fw, hf, hf / 2.0);
-        if (muted) {
-            cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.30);
-        } else {
-            cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
-        }
-        cairo.cairo_fill(c);
-    }
-    const kx = @as(f64, @floatFromInt(tr.x)) + @as(f64, @floatFromInt(tr.w)) * pct_frac;
-    ui_paint.glassBox(c, kx - 7, yf + hf / 2.0 - 7, 14, 14, 7, 1, 1, 1, 0.96);
-
-    var vbuf: [16]u8 = undefined;
-    const vs = std.fmt.bufPrint(&vbuf, "{d}%", .{pct}) catch "0%";
-    ui_paint.showText(
-        c,
-        @floatFromInt(tr.x + tr.w + 12),
-        yf + hf / 2.0 + 5,
-        vs,
-        12,
-        600,
-        Theme.text_r,
-        Theme.text_g,
-        Theme.text_b,
-        0.85,
-    );
-
-    self.noteMeterBand(node.id, tr, muted);
-}
-
-/// The L/R bars of one row, from the meter manager's latest levels.
-fn paintMeterBars(self: *Win, c: *cairo.cairo_t, id: u32, tr: common.Rect, muted: bool) void {
-    const lv = self.meters.level(id) orelse return;
-    const y0 = tr.y + tr.h + 4;
-    for (0..2) |ch| {
-        const y = y0 + @as(i32, @intCast(ch)) * (meter_h + meter_gap);
-        ui_paint.roundRect(c, @floatFromInt(tr.x), @floatFromInt(y), @floatFromInt(tr.w), @floatFromInt(meter_h), @as(f64, @floatFromInt(meter_h)) / 2.0);
-        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.07);
-        cairo.cairo_fill(c);
-        const v: f64 = @floatCast(@min(lv[ch], 1.0));
-        if (v > 0.001) {
-            const fw = @max(2.0, @as(f64, @floatFromInt(tr.w)) * v);
-            ui_paint.roundRect(c, @floatFromInt(tr.x), @floatFromInt(y), fw, @floatFromInt(meter_h), @as(f64, @floatFromInt(meter_h)) / 2.0);
-            if (muted) {
-                cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.35);
-            } else {
-                cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.90);
-            }
-            cairo.cairo_fill(c);
-        }
-    }
-}
-
-/// The popup, painted above every card but inside the window. `popupGeom`
-/// flips it above the trigger when the list would overflow the bottom;
-/// `paintDropdown` additionally clamps x so it can never leave the frame.
-fn paintDropdown(self: *Win, c: *cairo.cairo_t) void {
-    if (!self.dd.open) return;
-    const count = self.ddCount();
-    if (count == 0) return;
-    self.dd.count = count;
-    var g = self.dd.popupGeom(self.win_h);
-    if (g.x + g.w > self.win_w - 8) g.x = self.win_w - 8 - g.w;
-    if (g.x < 8) g.x = 8;
-
-    ui_paint.glassBox(
-        c,
-        @floatFromInt(g.x),
-        @floatFromInt(g.y),
-        @floatFromInt(g.w),
-        @floatFromInt(g.h),
-        12,
-        Theme.bg_r * 0.5,
-        Theme.bg_g * 0.5,
-        Theme.bg_b * 0.5,
-        0.97,
-    );
-    cairo.cairo_save(c);
-    ui_paint.roundRect(c, @floatFromInt(g.x), @floatFromInt(g.y), @floatFromInt(g.w), @floatFromInt(g.h), 12);
-    cairo.cairo_clip(c);
-    const sel = self.dd.displayIndex();
-    for (0..count) |i| {
-        const ry = g.y + @as(i32, @intCast(i)) * self.dd.row_h;
-        const hovered = @as(i32, @intCast(i)) == self.dd.hover_row;
-        if (hovered) {
-            cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.08);
-            cairo.cairo_rectangle(c, @floatFromInt(g.x), @floatFromInt(ry), @floatFromInt(g.w), @floatFromInt(self.dd.row_h));
-            cairo.cairo_fill(c);
-        }
-        const is_sel = i == sel;
-        const label = self.ddLabel(i);
-        const lth = ui_paint.textSizePx(c, label, 12, if (is_sel) 600 else 400).h;
-        ui_paint.showTextW(
-            c,
-            @floatFromInt(g.x + 12),
-            @floatFromInt(cyTextTop(ry, self.dd.row_h, lth)),
+            @floatFromInt(x0),
+            ltop + th_f - 2.0,
             label,
             12,
-            if (is_sel) @as(c_uint, 600) else @as(c_uint, 400),
-            @floatFromInt(g.w - 24 - (if (is_sel) @as(i32, 20) else @as(i32, 0))),
+            500,
             Theme.text_r,
             Theme.text_g,
             Theme.text_b,
-            if (is_sel) 1.0 else 0.82,
+            0.80,
         );
-        if (is_sel) {
-            ui_paint.glyph(
+        ui_paint.paintSwitch(c, x0 + lw + gap, pill_y, sw, sh, on);
+        return .{ .x = x0 - 6, .y = 56, .w = total + 12, .h = sh + 12 };
+    }
+
+    fn paintHeader(self: *Win, c: *cairo.cairo_t) void {
+        ui_paint.catLabel(c, @floatFromInt(content_x), 46, "AUDIO");
+        ui_paint.showText(
+            c,
+            @floatFromInt(content_x),
+            80,
+            self.page.title(),
+            22,
+            600,
+            Theme.text_r,
+            Theme.text_g,
+            Theme.text_b,
+            0.95,
+        );
+        // Right-side options: page-specific filter, then the meters toggle. The
+        // click rects are stored on the way past so hit tests reuse exactly what
+        // the frame drew.
+        if (self.page == .engine) {
+            var cap_buf: [160]u8 = undefined;
+            const cap = self.engineHardwareCaption(&cap_buf);
+            const right = self.win_w - content_pad_r - 250;
+            const width = ui_paint.measureTextWidth(cap, 11, 500);
+            const x = @max(content_x + 280, right - width);
+            if (right > x) {
+                ui_paint.showTextW(
+                    c,
+                    @floatFromInt(x),
+                    58,
+                    cap,
+                    11,
+                    500,
+                    @floatFromInt(right - x),
+                    Theme.text_r,
+                    Theme.text_g,
+                    Theme.text_b,
+                    0.45,
+                );
+            }
+        }
+        const mx = self.win_w - content_pad_r - 10;
+        self.hit_engine_refresh = null;
+        if (self.page == .engine) {
+            // No meters on this page: offer the manual re-read the settings app
+            // has instead of a toggle that does nothing.
+            self.hit_meters = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+            const bw: i32 = 104;
+            const bh: i32 = 32;
+            const bx = mx - bw;
+            ui_paint.paintBtn(c, bx, 58, bw, bh, "Refresh", false);
+            self.hit_engine_refresh = .{ .x = bx, .y = 58, .w = bw, .h = bh };
+        } else {
+            self.hit_meters = paintHeaderToggle(c, mx, "Meters", self.show_meters);
+        }
+        self.hit_page_toggle = null;
+        switch (self.page) {
+            .recording => self.hit_page_toggle = paintHeaderToggle(c, self.hit_meters.x - 20, "All streams", self.all_streams),
+            .output, .input => self.hit_page_toggle = paintHeaderToggle(c, self.hit_meters.x - 20, "Hardware only", self.hw_only),
+            else => {},
+        }
+    }
+
+    fn paintCards(self: *Win, c: *cairo.cairo_t) void {
+        const band_y0: f64 = @floatFromInt(header_h - 6);
+        const band_y1: f64 = @floatFromInt(self.win_h - band_pad_b + 8);
+        cairo.cairo_save(c);
+        cairo.cairo_rectangle(
+            c,
+            @floatFromInt(rail_w),
+            band_y0,
+            @floatFromInt(self.win_w - rail_w),
+            band_y1 - band_y0,
+        );
+        cairo.cairo_clip(c);
+
+        const n = self.rowCount();
+        if (n == 0) {
+            const msg = switch (self.page) {
+                .playback => "No applications are playing audio",
+                .recording => "No applications are recording audio",
+                .output => "No output devices",
+                .input => "No input devices",
+                .configuration => "No audio cards",
+                .engine => "Engine settings",
+            };
+            ui_paint.showText(c, @floatFromInt(content_x + 4), 160, msg, 14, 400, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+        }
+
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const r = self.cardRect(i);
+            if (r.y + r.h < header_h - 6 or r.y > self.win_h - band_pad_b + 8) continue;
+            switch (self.page) {
+                .configuration => {
+                    const dev = self.deviceAt(i) orelse continue;
+                    self.paintConfigCard(c, r, dev);
+                },
+                .engine => self.paintEngineCard(c, r, i),
+                else => {
+                    const node = self.nodeAt(i) orelse continue;
+                    if (self.page == .output or self.page == .input) {
+                        self.paintDeviceCard(c, r, node);
+                    } else {
+                        self.paintStreamCard(c, r, node);
+                    }
+                },
+            }
+        }
+        cairo.cairo_restore(c);
+    }
+
+    fn streamComboLabel(self: *Win, node: *const Node) []const u8 {
+        if (self.page == .playback) {
+            if (self.graph.sinkForStream(node.id)) |sid| {
+                if (self.graph.findNode(sid)) |sink| return sink.displayName();
+            }
+        } else {
+            if (self.graph.sourceForStream(node.id)) |sid| {
+                if (self.graph.findNode(sid)) |src| return src.displayName();
+            }
+        }
+        return "—";
+    }
+
+    fn streamSubLine(self: *Win, node: *const Node) []const u8 {
+        const sub = node.streamSubtitle();
+        if (sub.len > 0) return sub;
+        return self.streamComboLabel(node);
+    }
+
+    fn paintStreamCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const Node) void {
+        var t = liveNowNs();
+        self.paintCardBg(c, r);
+        self.card_prof.bg += liveNowNs() - t;
+        t = liveNowNs();
+        const ir = iconRect(r);
+        if (self.iconForNode(node)) |icon| {
+            blitIcon(c, icon, @floatFromInt(ir.x), @floatFromInt(ir.y), @floatFromInt(icon_sz));
+        } else {
+            ui_paint.glyph(c, @floatFromInt(ir.x + @divTrunc(ir.w, 2)), @floatFromInt(ir.y + @divTrunc(ir.h, 2)), 24, "music_note", Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+        }
+        const title = node.streamTitle();
+        ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 34), title, 15, 500, @floatFromInt(r.w - 72 - 300), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 54), self.streamSubLine(node), 11, 400, @floatFromInt(r.w - 72 - 300), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+        self.card_prof.text += liveNowNs() - t;
+
+        t = liveNowNs();
+        // Move combo + terminate.
+        const cr_ = moveComboRect(r);
+        const open = self.dd.open and self.dd_state.kind == .move and self.dd_state.id == node.id;
+        paintCombo(c, r, cr_, self.streamComboLabel(node), open);
+        const xr = closeBtnRect(r);
+        const xhov = rowHover(self.ptr_x, self.ptr_y, xr);
+        ui_paint.roundRect(c, @floatFromInt(xr.x), @floatFromInt(xr.y), @floatFromInt(xr.w), @floatFromInt(xr.h), 8);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (xhov) 0.14 else 0.06);
+        cairo.cairo_fill(c);
+        ui_paint.glyph(c, @floatFromInt(xr.x + @divTrunc(xr.w, 2)), @floatFromInt(xr.y + @divTrunc(xr.h, 2)), 15, "close", Theme.text_r, Theme.text_g, Theme.text_b, if (xhov) 0.95 else 0.60);
+        self.card_prof.ctrl += liveNowNs() - t;
+
+        t = liveNowNs();
+        self.paintVolumeRow(c, r, node, false);
+        self.card_prof.vol += liveNowNs() - t;
+    }
+
+    fn isDefaultNode(self: *Win, node: *const Node) bool {
+        if (node.role == .sink) {
+            const want = self.graph.default_sink.get();
+            return want.len > 0 and std.mem.eql(u8, want, node.node_name.get());
+        }
+        const want = self.graph.default_source.get();
+        return want.len > 0 and std.mem.eql(u8, want, node.node_name.get());
+    }
+
+    /// The visible port routes for a hardware row, in graph order (the same
+    /// filter pipewire-pulse applies before showing a sink's ports).
+    fn portRouteAt(self: *Win, node: *const Node, dir: u32, i: usize) ?*const Route {
+        const dev = self.deviceFor(node) orelse return null;
+        var n: usize = 0;
+        for (dev.routes.items) |*route| {
+            if (!route.visibleFor(dir, dev.active_profile, node.card_profile_device)) continue;
+            if (n == i) return route;
+            n += 1;
+        }
+        return null;
+    }
+
+    fn portCount(self: *Win, node: *const Node, dir: u32) usize {
+        var n: usize = 0;
+        while (self.portRouteAt(node, dir, n) != null) n += 1;
+        return n;
+    }
+
+    fn portLabel(self: *Win, node: *const Node, dir: u32) []const u8 {
+        const dev = self.deviceFor(node) orelse return "";
+        const active = dev.activeRouteFor(dir);
+        if (active.index < 0) return "";
+        if (dev.findRoute(active.index, dir)) |route| return route.label();
+        return "";
+    }
+
+    /// Freedesktop device-icon names → the Material glyphs this app ships, for
+    /// themes that do not carry the ALSA/BlueZ names (`pavucontrol` leans on the
+    /// GTK theme here; this keeps a real icon on screen when the theme is thin).
+    fn glyphForDevice(icon_name: []const u8, desc: []const u8, role: graph_mod.Role) []const u8 {
+        const table = [_]struct { needle: []const u8, glyph: []const u8 }{
+            .{ .needle = "microphone", .glyph = "mic" },
+            .{ .needle = "headset", .glyph = "headset_mic" },
+            .{ .needle = "headphone", .glyph = "headset_mic" },
+            .{ .needle = "speaker", .glyph = "speaker" },
+            .{ .needle = "bluetooth", .glyph = "bluetooth" },
+            .{ .needle = "hdmi", .glyph = "monitor" },
+            .{ .needle = "display", .glyph = "monitor" },
+            .{ .needle = "gamepad", .glyph = "gamepad" },
+            .{ .needle = "phone", .glyph = "smartphone" },
+        };
+        for (table) |e| {
+            if (std.mem.indexOf(u8, icon_name, e.needle) != null) return e.glyph;
+        }
+        // ALSA cards ship no icon name for their HDMI outputs: the description is
+        // the only telling signal, and a display glyph reads truer than a speaker
+        // box for "…Digital Stereo (HDMI) [MAG 272Q X24]".
+        if (role == .sink and desc.len > 0) {
+            if (std.ascii.findIgnoreCase(desc, "hdmi") != null) return "monitor";
+            if (std.ascii.findIgnoreCase(desc, "displayport") != null) return "monitor";
+        }
+        return if (role == .sink) "speaker" else "mic";
+    }
+
+    fn paintDeviceCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const Node) void {
+        var t = liveNowNs();
+        self.paintCardBg(c, r);
+        self.card_prof.bg += liveNowNs() - t;
+        t = liveNowNs();
+        const ir = iconRect(r);
+        // Device rows wear the app's own glyph family, never the icon theme's
+        // art: themes ship these entries as macOS-style filled app tiles (a white
+        // rounded plate) or photorealistic renders, which read as stickers next
+        // to the monochrome grid. The glyph is picked from the device's
+        // Freedesktop icon name, so a headset still reads as a headset.
+        const dev = self.deviceFor(node);
+        const icon_name: []const u8 = blk: {
+            if (dev) |d| {
+                if (d.icon.get().len > 0) break :blk d.icon.get();
+            }
+            if (node.device_icon.get().len > 0) break :blk node.device_icon.get();
+            break :blk "";
+        };
+        const desc: []const u8 = if (dev) |d| d.desc.get() else "";
+        ui_paint.glyph(c, @floatFromInt(ir.x + @divTrunc(ir.w, 2)), @floatFromInt(ir.y + @divTrunc(ir.h, 2)), 26, glyphForDevice(icon_name, desc, node.role), Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+        self.card_prof.icon += liveNowNs() - t;
+
+        t = liveNowNs();
+        ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 34), node.displayName(), 15, 500, @floatFromInt(r.w - 72 - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 72), @floatFromInt(r.y + 54), node.node_name.get(), 11, 400, @floatFromInt(r.w - 72 - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+        self.card_prof.text += liveNowNs() - t;
+
+        t = liveNowNs();
+        const dir: u32 = if (node.role == .sink) 1 else 0;
+        if (self.portCount(node, dir) > 0) {
+            const pr = portComboRect(r);
+            const open = self.dd.open and self.dd_state.kind == .port and self.dd_state.id == node.id;
+            paintCombo(c, r, pr, self.portLabel(node, dir), open);
+        }
+        // Set as default.
+        const br = defaultBtnRect(r);
+        const is_def = self.isDefaultNode(node);
+        const bhov = rowHover(self.ptr_x, self.ptr_y, br);
+        ui_paint.paintBtn(c, br.x, br.y, br.w, br.h, if (is_def) "Default" else "Set default", bhov and !is_def);
+        if (is_def) {
+            ui_paint.glyph(c, @floatFromInt(br.x + 16), @floatFromInt(br.y + @divTrunc(br.h, 2)), 14, "check", Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
+        }
+        self.card_prof.ctrl += liveNowNs() - t;
+
+        t = liveNowNs();
+        self.paintVolumeRow(c, r, node, false);
+        self.card_prof.vol += liveNowNs() - t;
+    }
+
+    // ── engine page ─────────────────────────────────────────────────────────────
+
+    fn engineRow(row: usize) EngineRow {
+        return @enumFromInt(@as(u32, @intCast(row)));
+    }
+
+    fn engineRowValueCount(self: *Win, row: u32) usize {
+        if (row >= engine_row_count) return 0;
+        return switch (engineRow(@intCast(row))) {
+            .clock_rate => blk: {
+                var buf: [24]i32 = undefined;
+                break :blk 1 + self.engineMenuRatesFor(&buf).len;
+            },
+            .force_rate => blk: {
+                var buf: [24]i32 = undefined;
+                break :blk 2 + self.engineMenuRatesFor(&buf).len;
+            },
+            .allowed_rates => 4,
+            .pcm => 4,
+            .latency_node => self.latencyNodeCount(),
+            .quantum, .force_quantum => blk: {
+                var buf: [24]i32 = undefined;
+                break :blk 2 + self.engineMenuQuantumsFor(&buf).len;
+            },
+            else => 0,
+        };
+    }
+
+    fn engineAppendSorted(out: *[24]i32, n: *usize, v: i32) void {
+        if (v <= 0 or n.* >= out.len) return;
+        var i: usize = 0;
+        while (i < n.*) : (i += 1) {
+            if (out[i] == v) return;
+            if (out[i] > v) break;
+        }
+        var j = n.*;
+        while (j > i) : (j -= 1) out[j] = out[j - 1];
+        out[i] = v;
+        n.* += 1;
+    }
+
+    /// Rates offered by the two rate combos: the live allowed list plus the
+    /// common set, trimmed to the selected sink's advertised range when known.
+    fn engineMenuRates(out: *[24]i32) []const i32 {
+        var n: usize = 0;
+        for (engine_rates) |hz| engineAppendSorted(out, &n, hz);
+        return out[0..n];
+    }
+
+    fn engineMenuRatesFor(self: *Win, out: *[24]i32) []const i32 {
+        const lo: i32 = if (self.caps.available and self.caps.rate_min > 0) self.caps.rate_min else 1;
+        const hi: i32 = if (self.caps.available and self.caps.rate_max > 0) self.caps.rate_max else std.math.maxInt(i32);
+        var n: usize = 0;
+        for (engine_rates) |hz| {
+            if (hz >= lo and hz <= hi) engineAppendSorted(out, &n, hz);
+        }
+        for (self.es.allowed_rates_hz) |hz| engineAppendSorted(out, &n, hz);
+        engineAppendSorted(out, &n, self.es.clock_rate_hz);
+        engineAppendSorted(out, &n, self.es.clock_force_rate_hz);
+        engineAppendSorted(out, &n, self.caps.rate_min);
+        engineAppendSorted(out, &n, self.caps.rate_max);
+        engineAppendSorted(out, &n, self.caps.rate_default);
+        if (n == 0) {
+            for (engine_rates) |hz| engineAppendSorted(out, &n, hz);
+        }
+        return out[0..n];
+    }
+
+    fn engineMenuQuantums(out: *[24]i32) []const i32 {
+        var n: usize = 0;
+        for (engine_quantums) |q| engineAppendSorted(out, &n, q);
+        return out[0..n];
+    }
+
+    fn engineMenuQuantumsFor(self: *Win, out: *[24]i32) []const i32 {
+        const limit: i32 = if (self.caps.available) self.caps.quantum_limit else 0;
+        var n: usize = 0;
+        for (engine_quantums) |q| {
+            if (limit <= 0 or q <= limit) engineAppendSorted(out, &n, q);
+        }
+        if (limit <= 0 or self.es.clock_quantum <= limit) engineAppendSorted(out, &n, self.es.clock_quantum);
+        if (limit <= 0 or self.es.clock_force_quantum <= limit) engineAppendSorted(out, &n, self.es.clock_force_quantum);
+        if (n == 0) {
+            for (engine_quantums) |q| engineAppendSorted(out, &n, q);
+        }
+        return out[0..n];
+    }
+
+    fn engineRateIndex(self: *Win, hz: i32) i32 {
+        var buf: [24]i32 = undefined;
+        const rates = self.engineMenuRatesFor(&buf);
+        for (rates, 0..) |v, k| {
+            if (v == hz) return @intCast(k);
+        }
+        return -1;
+    }
+
+    fn engineQuantumIndex(self: *Win, q: i32) i32 {
+        var buf: [24]i32 = undefined;
+        const qs = self.engineMenuQuantumsFor(&buf);
+        for (qs, 0..) |v, k| {
+            if (v == q) return @intCast(k);
+        }
+        return -1;
+    }
+
+    fn enginePresetRates(i: usize) ?[]const i32 {
+        return switch (i) {
+            0 => &engine_preset_hifi,
+            1 => &engine_preset_consumer,
+            2 => &engine_preset_pro,
+            else => null,
+        };
+    }
+
+    fn enginePresetSel(es: *const live_audio.EngineSettings) i32 {
+        var buf: [24]i32 = undefined;
+        const n = @min(es.allowed_rates_hz.len, buf.len);
+        @memcpy(buf[0..n], es.allowed_rates_hz[0..n]);
+        std.mem.sort(i32, buf[0..n], {}, std.sort.asc(i32));
+        const norm = buf[0..n];
+        if (std.mem.eql(i32, norm, &engine_preset_hifi)) return 0;
+        if (std.mem.eql(i32, norm, &engine_preset_consumer)) return 1;
+        if (std.mem.eql(i32, norm, &engine_preset_pro)) return 2;
+        if (norm.len == 1 and norm[0] == es.clock_rate_hz) return 3;
+        return -1;
+    }
+
+    fn enginePresetLabel(sel: i32) []const u8 {
+        return switch (sel) {
+            0 => "Hi-Fi (44.1-192 kHz)",
+            1 => "Consumer (44.1 / 48 kHz)",
+            2 => "Pro (48 / 96 / 192 kHz)",
+            3 => "Single (default rate only)",
+            else => "Custom",
+        };
+    }
+
+    fn enginePcmLabel(choice: i32) []const u8 {
+        if (choice < 0 or choice >= engine_pcm_labels.len) return "(unknown)";
+        return engine_pcm_labels[@intCast(choice)];
+    }
+
+    fn engineHzDisplay(buf: []u8, hz: i32) []const u8 {
+        if (hz <= 0) return std.fmt.bufPrint(buf, "{d}", .{hz}) catch "?";
+        const k = @divTrunc(hz, 1000);
+        const frac = @rem(hz, 1000);
+        if (frac == 0) return std.fmt.bufPrint(buf, "{d} kHz", .{k}) catch "?";
+        return std.fmt.bufPrint(buf, "{d}.{d} kHz", .{ k, @divTrunc(frac, 100) }) catch "?";
+    }
+
+    fn engineSame(a: *const live_audio.EngineSettings, b: *const live_audio.EngineSettings) bool {
+        if (a.available != b.available) return false;
+        if (a.clock_rate_hz != b.clock_rate_hz) return false;
+        if (a.clock_force_rate_hz != b.clock_force_rate_hz) return false;
+        if (a.clock_quantum != b.clock_quantum) return false;
+        if (a.clock_force_quantum != b.clock_force_quantum) return false;
+        return std.mem.eql(i32, a.allowed_rates_hz, b.allowed_rates_hz);
+    }
+
+    fn engineRowTitle(row: usize) []const u8 {
+        return switch (engineRow(row)) {
+            .clock_rate => "Default clock rate",
+            .force_rate => "Force graph rate",
+            .allowed_rates => "Allowed rates",
+            .pcm => "Default PCM format",
+            .quantum => "Default quantum",
+            .force_quantum => "Force quantum",
+            .status => "Live engine",
+            .latency_node => "Latency offset node",
+            .latency_offset => "Latency offset",
+            .restart_wp => "Restart WirePlumber",
+            .restart_pw => "Restart PipeWire",
+        };
+    }
+
+    fn engineRowHint(row: usize) []const u8 {
+        return switch (engineRow(row)) {
+            .clock_rate => "The graph rate PipeWire settles on",
+            .force_rate => "Pin the graph instead of following streams",
+            .allowed_rates => "Rates the graph may switch between",
+            .pcm => "Pin the default sink's sample format",
+            .quantum => "Buffer size in frames (lower = less latency)",
+            .force_quantum => "Pin the buffer size instead of adapting",
+            .status => "Latency, xruns (click to reset) and DSP load",
+            .latency_node => "Output or input that accepts a processing offset",
+            .latency_offset => "Stored on the node as an offset",
+            .restart_wp => "Reload device and session policy",
+            .restart_pw => "Restarts the graph; every client reconnects",
+        };
+    }
+
+    fn engineRowItemLabel(self: *Win, row: usize, i: usize) []const u8 {
+        switch (engineRow(row)) {
+            .clock_rate => {
+                var buf: [24]i32 = undefined;
+                const rates = self.engineMenuRatesFor(&buf);
+                if (i == rates.len) return "Custom rate…";
+                if (i > rates.len) return "";
+                return engineHzDisplay(&self.engine_label_buf, rates[i]);
+            },
+            .force_rate => {
+                if (i == 0) return "Auto";
+                var buf: [24]i32 = undefined;
+                const rates = self.engineMenuRatesFor(&buf);
+                if (i - 1 == rates.len) return "Custom rate…";
+                if (i - 1 > rates.len) return "";
+                return engineHzDisplay(&self.engine_label_buf, rates[i - 1]);
+            },
+            .allowed_rates => return enginePresetLabel(@intCast(i)),
+            .pcm => return enginePcmLabel(@intCast(i)),
+            .quantum, .force_quantum => {
+                if (i == 0) return if (engineRow(row) == .quantum) "Auto (default)" else "Auto";
+                var buf: [24]i32 = undefined;
+                const qs = self.engineMenuQuantumsFor(&buf);
+                if (i - 1 == qs.len) return "Custom quantum…";
+                if (i - 1 > qs.len) return "";
+                return std.fmt.bufPrint(&self.engine_label_buf, "{d} frames", .{qs[i - 1]}) catch "?";
+            },
+            .latency_node => {
+                const node = self.latencyNodeAt(i) orelse return "";
+                return node.displayName();
+            },
+            else => return "",
+        }
+    }
+
+    fn engineRowValue(self: *Win, row: usize, buf: []u8) []const u8 {
+        return switch (engineRow(row)) {
+            .clock_rate => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else engineHzDisplay(buf, self.es.clock_rate_hz),
+            .force_rate => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_force_rate_hz == 0) "Auto" else engineHzDisplay(buf, self.es.clock_force_rate_hz),
+            .allowed_rates => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else enginePresetLabel(enginePresetSel(&self.es)),
+            .pcm => if (!self.have_pcm) "Reading…" else if (self.pcm_choice < 0) "(unknown)" else enginePcmLabel(self.pcm_choice),
+            .quantum => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_quantum == 0) "Auto (default)" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_quantum}) catch "?",
+            .force_quantum => if (!self.engine_loaded) "Reading…" else if (!self.es.available) "Unavailable" else if (self.es.clock_force_quantum == 0) "Auto" else std.fmt.bufPrint(buf, "{d} frames", .{self.es.clock_force_quantum}) catch "?",
+            .latency_node => self.latencyNodeLabel(),
+            else => "",
+        };
+    }
+
+    fn engineRowSel(self: *Win, row: usize) i32 {
+        if (row >= engine_row_count) return -1;
+        return switch (engineRow(row)) {
+            .clock_rate => if (!self.es.available) -1 else self.engineRateIndex(self.es.clock_rate_hz),
+            .force_rate => if (!self.es.available) -1 else if (self.es.clock_force_rate_hz == 0) 0 else blk: {
+                const k = self.engineRateIndex(self.es.clock_force_rate_hz);
+                break :blk if (k < 0) -1 else k + 1;
+            },
+            .allowed_rates => if (!self.es.available) -1 else enginePresetSel(&self.es),
+            .pcm => self.pcm_choice,
+            .quantum => if (!self.es.available) -1 else if (self.es.clock_quantum == 0) 0 else blk: {
+                const k = self.engineQuantumIndex(self.es.clock_quantum);
+                break :blk if (k < 0) -1 else k + 1;
+            },
+            .force_quantum => if (!self.es.available) -1 else if (self.es.clock_force_quantum == 0) 0 else blk: {
+                const k = self.engineQuantumIndex(self.es.clock_force_quantum);
+                break :blk if (k < 0) -1 else k + 1;
+            },
+            .latency_node => self.lat_node,
+            else => -1,
+        };
+    }
+
+    fn applyEngineRow(self: *Win, row: usize, i: usize) void {
+        if (row >= engine_row_count) return;
+        var rb: [24]i32 = undefined;
+        var qb: [24]i32 = undefined;
+        var ok = false;
+        switch (engineRow(row)) {
+            .clock_rate => {
+                const rates = self.engineMenuRatesFor(&rb);
+                if (i < rates.len) {
+                    ok = live_audio.applyEngineClockRateHz(self.io, rates[i]);
+                } else if (i == rates.len) {
+                    self.openEngineModal(.rate, false);
+                    return;
+                }
+            },
+            .force_rate => {
+                if (i == 0) {
+                    ok = live_audio.applyEngineForceRateHz(self.io, 0);
+                } else {
+                    const rates = self.engineMenuRatesFor(&rb);
+                    if (i - 1 < rates.len) {
+                        ok = live_audio.applyEngineForceRateHz(self.io, rates[i - 1]);
+                    } else if (i - 1 == rates.len) {
+                        self.openEngineModal(.rate, true);
+                        return;
+                    }
+                }
+            },
+            .allowed_rates => {
+                if (i == 3) {
+                    ok = live_audio.applyEngineAllowedRatesHz(self.io, &.{self.es.clock_rate_hz});
+                } else if (enginePresetRates(i)) |rates| {
+                    ok = live_audio.applyEngineAllowedRatesHz(self.io, rates);
+                }
+            },
+            .pcm => {
+                if (i < engine_pcm_labels.len) {
+                    ok = live_audio.applyCompatPcm(self.gpa, self.io, @intCast(i));
+                    if (ok) {
+                        self.pcm_choice = @intCast(i);
+                        self.have_pcm = true;
+                    }
+                }
+            },
+            .quantum => {
+                if (i == 0) {
+                    ok = live_audio.applyEngineQuantum(self.io, 0);
+                } else {
+                    const qs = self.engineMenuQuantumsFor(&qb);
+                    if (i - 1 < qs.len) {
+                        ok = live_audio.applyEngineQuantum(self.io, qs[i - 1]);
+                    } else if (i - 1 == qs.len) {
+                        self.openEngineModal(.quantum, false);
+                        return;
+                    }
+                }
+            },
+            .force_quantum => {
+                if (i == 0) {
+                    ok = live_audio.applyEngineForceQuantum(self.io, 0);
+                } else {
+                    const qs = self.engineMenuQuantumsFor(&qb);
+                    if (i - 1 < qs.len) {
+                        ok = live_audio.applyEngineForceQuantum(self.io, qs[i - 1]);
+                    } else if (i - 1 == qs.len) {
+                        self.openEngineModal(.quantum, true);
+                        return;
+                    }
+                }
+            },
+            .latency_node => {
+                if (i < self.latencyNodeCount()) {
+                    self.lat_node = @intCast(i);
+                    self.loadLatencyField();
+                    self.needs_repaint = true;
+                }
+                return;
+            },
+            else => {},
+        }
+        if (!ok) logz.err("engine: write failed row={d} item={d}", .{ row, i });
+        if (ok) {
+            self.refreshEngine(true);
+            self.damageAll();
+            self.needs_repaint = true;
+        }
+    }
+
+    // Engine row geometry. The list rows all use `card_h_config`.
+
+    fn engineModalRect(win_w: i32, win_h: i32) common.Rect {
+        var w: i32 = win_w - 80;
+        if (w > 440) w = 440;
+        if (w < 320) w = 320;
+        const h: i32 = 208;
+        return .{ .x = @divTrunc(win_w - w, 2), .y = @divTrunc(win_h - h, 2), .w = w, .h = h };
+    }
+
+    fn engineModalFieldRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + 20, .y = r.y + 76, .w = r.w - 40, .h = combo_h };
+    }
+
+    fn engineModalCancelRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + r.w - 20 - 100 - 8 - 100, .y = r.y + r.h - 20 - combo_h, .w = 100, .h = combo_h };
+    }
+
+    fn engineModalSubmitRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + r.w - 20 - 100, .y = r.y + r.h - 20 - combo_h, .w = 100, .h = combo_h };
+    }
+
+    fn engineStatusColW(r: common.Rect) i32 {
+        return @divTrunc(r.w - 56 - card_pad, 3);
+    }
+
+    fn engineXrunResetRect(r: common.Rect) common.Rect {
+        const cw = engineStatusColW(r);
+        return .{ .x = r.x + 56 + cw + cw - 30, .y = r.y + 16, .w = 20, .h = 20 };
+    }
+
+    fn engineXrunHitRect(r: common.Rect) common.Rect {
+        const cw = engineStatusColW(r);
+        return .{ .x = r.x + 56 + cw, .y = r.y, .w = cw, .h = r.h };
+    }
+
+    fn engineLatFieldRect(r: common.Rect) common.Rect {
+        const w: i32 = 84;
+        const h: i32 = combo_h;
+        const y = r.y + @divTrunc(r.h - h, 2);
+        const x = engineLatResetRect(r).x - 8 - 118 - 8 - 104 - 8 - w;
+        return .{ .x = x, .y = y, .w = w, .h = h };
+    }
+
+    fn engineLatUnitRect(r: common.Rect) common.Rect {
+        const f = engineLatFieldRect(r);
+        return .{ .x = f.x + f.w + 8, .y = f.y, .w = 104, .h = f.h };
+    }
+
+    fn engineLatApplyRect(r: common.Rect) common.Rect {
+        const u = engineLatUnitRect(r);
+        return .{ .x = u.x + u.w + 8, .y = u.y, .w = 118, .h = u.h };
+    }
+
+    fn engineLatResetRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + r.w - card_pad - 128, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = 128, .h = combo_h };
+    }
+
+    fn engineRestartBtnRect(r: common.Rect) common.Rect {
+        return .{ .x = r.x + r.w - card_pad - 120, .y = r.y + @divTrunc(r.h - combo_h, 2), .w = 120, .h = combo_h };
+    }
+
+    fn paintEngineTextField(c: *cairo.cairo_t, r: common.Rect, value: []const u8, focused: bool, placeholder: []const u8) void {
+        ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (focused) 0.10 else 0.06);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        if (focused) {
+            cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.9);
+        } else {
+            cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
+        }
+        cairo.cairo_stroke(c);
+        const shown = if (value.len > 0) value else placeholder;
+        ui_paint.showTextW(
+            c,
+            @floatFromInt(r.x + 10),
+            @floatFromInt(r.y + 19),
+            shown,
+            12,
+            500,
+            @floatFromInt(@max(0, r.w - 18)),
+            Theme.text_r,
+            Theme.text_g,
+            Theme.text_b,
+            if (value.len > 0) 0.92 else 0.38,
+        );
+    }
+
+    /// Width of the "frames" segment in the latency unit toggle. The control is a
+    /// fixed 104 px; the split follows the measured label so both words keep the
+    /// same breathing room instead of an equal 50/50 split cramming "frames".
+    fn paintEngineUnitToggle(self: *Win, c: *cairo.cairo_t, r: common.Rect, use_ns: bool) void {
+        // Size each segment to its label plus padding, then share the leftover
+        // width equally. Measuring keeps the padding symmetric whatever the font
+        // renders "frames" as.
+        const pad: i32 = 12;
+        const lw = ui_paint.measureTextWidth("frames", 11, 600);
+        const nw = ui_paint.measureTextWidth("ns", 11, 600);
+        var split = lw + 2 * pad + @divTrunc(@max(0, r.w - (lw + nw + 4 * pad)), 2);
+        if (split < 8 or split > r.w - 8) split = @divTrunc(r.w, 2);
+        self.engine_unit_split = split;
+        ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.06);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
+        cairo.cairo_stroke(c);
+
+        const ax = if (use_ns) r.x + split else r.x;
+        const aw = if (use_ns) r.w - split else split;
+        ui_paint.roundRect(c, @floatFromInt(ax + 2), @floatFromInt(r.y + 2), @floatFromInt(aw - 4), @floatFromInt(r.h - 4), 6);
+        cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.20);
+        cairo.cairo_fill(c);
+
+        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.28);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_move_to(c, @floatFromInt(r.x + split), @floatFromInt(r.y + 6));
+        cairo.cairo_line_to(c, @floatFromInt(r.x + split), @floatFromInt(r.y + r.h - 6));
+        cairo.cairo_stroke(c);
+
+        const labels = [_][]const u8{ "frames", "ns" };
+        for (labels, 0..) |lab, i| {
+            const active = (i == 1) == use_ns;
+            const center = if (i == 0)
+                r.x + @divTrunc(split, 2)
+            else
+                r.x + split + @divTrunc(r.w - split, 2);
+            ui_paint.showText(
                 c,
-                @floatFromInt(g.x + g.w - 18),
-                @floatFromInt(ry + @divTrunc(self.dd.row_h, 2)),
-                13,
-                "check",
-                Theme.acc_r,
-                Theme.acc_g,
-                Theme.acc_b,
-                0.95,
+                @floatFromInt(center - @divTrunc(ui_paint.measureTextWidth(lab, 11, 600), 2)),
+                @floatFromInt(r.y + 19),
+                lab,
+                11,
+                600,
+                if (active) Theme.acc_r else Theme.text_r,
+                if (active) Theme.acc_g else Theme.text_g,
+                if (active) Theme.acc_b else Theme.text_b,
+                if (active) 1.0 else 0.62,
             );
         }
     }
-    cairo.cairo_restore(c);
-}
 
-fn closeRect(win_w: i32) common.Rect {
-    return .{ .x = win_w - 44, .y = common.spacing_l, .w = 28, .h = 28 };
-}
+    fn paintEngineStatus(self: *Win, c: *cairo.cairo_t, r: common.Rect) void {
+        const cw = engineStatusColW(r);
+        const x0 = r.x + 56;
+        ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "timer", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
 
-fn drawClose(cr: ?*cairo.cairo_t, win_w: i32) void {
-    const c = cr orelse return;
-    const r = closeRect(win_w);
-    const cx = @as(f64, @floatFromInt(r.x)) + @as(f64, @floatFromInt(r.w)) * 0.5;
-    const cy = @as(f64, @floatFromInt(r.y)) + @as(f64, @floatFromInt(r.h)) * 0.5;
-    ui_paint.glassBox(
-        c,
-        @floatFromInt(r.x),
-        @floatFromInt(r.y),
-        @floatFromInt(r.w),
-        @floatFromInt(r.h),
-        @as(f64, @floatFromInt(r.w)) * 0.5,
-        Theme.acc_r,
-        Theme.acc_g,
-        Theme.acc_b,
-        0.35,
-    );
-    ui_paint.glyph(c, cx, cy + 0.5, 15, "close", Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
-}
+        // Column separators.
+        var k: i32 = 1;
+        while (k < 3) : (k += 1) {
+            cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.22);
+            cairo.cairo_set_line_width(c, 1.0);
+            cairo.cairo_move_to(c, @floatFromInt(x0 + k * cw), @floatFromInt(r.y + 12));
+            cairo.cairo_line_to(c, @floatFromInt(x0 + k * cw), @floatFromInt(r.y + r.h - 12));
+            cairo.cairo_stroke(c);
+        }
 
-// ── dropdown plumbing ───────────────────────────────────────────────────────
+        var lat_buf: [32]u8 = undefined;
+        const lat = self.engineLatencyDisplay(&lat_buf);
+        ui_paint.showText(c, @floatFromInt(x0 + 14), @floatFromInt(r.y + 24), "LATENCY", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+        ui_paint.showText(c, @floatFromInt(x0 + 14), @floatFromInt(r.y + 48), lat, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
 
-fn closeDropdown(self: *Win) void {
-    if (self.dd.open) {
-        // The popup's pixels go away (and its shadow spills past the rect):
-        // whatever it covered has to be repainted.
-        self.damage = rectJoin(self.damage, self.popupRect());
-    }
-    self.dd.close();
-    self.dd_state = .{};
-}
+        const xr: i64 = @max(@as(i64, 0), self.top.xruns_total - self.xrun_base);
+        var xr_buf: [24]u8 = undefined;
+        const xr_s = if (!self.top.available) "—" else std.fmt.bufPrint(&xr_buf, "{d}", .{xr}) catch "0";
+        ui_paint.showText(c, @floatFromInt(x0 + cw + 14), @floatFromInt(r.y + 24), "XRUNS", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+        ui_paint.showText(c, @floatFromInt(x0 + cw + 14), @floatFromInt(r.y + 48), xr_s, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        if (self.top.available) {
+            const rr = engineXrunResetRect(r);
+            ui_paint.roundRect(c, @floatFromInt(rr.x), @floatFromInt(rr.y), @floatFromInt(rr.w), @floatFromInt(rr.h), 6);
+            cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.06);
+            cairo.cairo_fill(c);
+            ui_paint.glyph(c, @floatFromInt(rr.x + @divTrunc(rr.w, 2)), @floatFromInt(rr.y + @divTrunc(rr.h, 2)), 12, "restart_alt", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+        }
 
-fn openDropdown(self: *Win, kind: DdKind, id: u32, dir: u32, trigger: common.Rect) void {
-    self.dd_state = .{ .kind = kind, .id = id, .dir = dir };
-    self.dd.count = self.ddCount();
-    self.dd.selected = self.ddCurrentSel();
-    self.dd.setAnchor(trigger.x, trigger.y, trigger.w, trigger.h);
-    self.dd.openPopup();
-    // The popup is new pixels; the trigger's own "open" highlight is inside
-    // the row the pointer sits on.
-    self.damage = rectJoin(self.damage, self.pointerRegion(self.ptr_x, self.ptr_y));
-    self.damage = rectJoin(self.damage, self.popupRect());
-    self.needs_repaint = true;
-    self.markAction("combo-open");
-    logz.log("ux: combo open {s} id={d} dir={d} rows={d}", .{ @tagName(kind), id, dir, self.dd.count });
-}
-
-/// The i-th node of the open `.move` dropdown (sinks for playback streams,
-/// sources for recording streams).
-fn ddItemNode(self: *Win, i: usize) ?*Node {
-    const want: graph_mod.Role = if (self.dd_state.dir == 1) .sink else .source;
-    var n: usize = 0;
-    for (self.graph.nodes.items) |*node| {
-        if (node.role != want) continue;
-        if (n == i) return node;
-        n += 1;
-    }
-    return null;
-}
-
-fn ddItemRoute(self: *Win, i: usize) ?*const Route {
-    const node = self.graph.findNode(self.dd_state.id) orelse return null;
-    return self.portRouteAt(node, self.dd_state.dir, i);
-}
-
-fn ddItemProfile(self: *Win, i: usize) ?*const Profile {
-    const dev = self.graph.findDevice(self.dd_state.id) orelse return null;
-    if (i >= dev.profiles.items.len) return null;
-    return &dev.profiles.items[i];
-}
-
-fn ddCount(self: *Win) usize {
-    switch (self.dd_state.kind) {
-        .none => return 0,
-        .move => {
-            var n: usize = 0;
-            while (self.ddItemNode(n) != null) n += 1;
-            return n;
-        },
-        .port => {
-            const node = self.graph.findNode(self.dd_state.id) orelse return 0;
-            return self.portCount(node, self.dd_state.dir);
-        },
-        .profile => {
-            const dev = self.graph.findDevice(self.dd_state.id) orelse return 0;
-            return dev.profiles.items.len;
-        },
-        .engine => return engineRowValueCount(self, self.dd_state.id),
-    }
-}
-
-fn ddLabel(self: *Win, i: usize) []const u8 {
-    switch (self.dd_state.kind) {
-        .none => return "",
-        .move => {
-            const node = self.ddItemNode(i) orelse return "";
-            return node.displayName();
-        },
-        .port => {
-            const route = self.ddItemRoute(i) orelse return "";
-            return route.label();
-        },
-        .profile => {
-            const prof = self.ddItemProfile(i) orelse return "";
-            return prof.label();
-        },
-        .engine => {
-            const row: usize = @intCast(self.dd_state.id);
-            if (row >= engine_row_count) return "";
-            return self.engineRowItemLabel(row, i);
-        },
-    }
-}
-
-/// Index of the current value inside the open list, for the popup highlight.
-fn ddCurrentSel(self: *Win) i32 {
-    switch (self.dd_state.kind) {
-        .none => return -1,
-        .move => {
-            const cur: u32 = if (self.dd_state.dir == 1)
-                (self.graph.sinkForStream(self.dd_state.id) orelse return -1)
+        var dsp_buf: [24]u8 = undefined;
+        const dsp_s = if (!self.top.available)
+            "—"
+        else blk: {
+            const pct = @max(0, @min(100, self.top.dsp_load_pct));
+            // DSP load is often well under 1% for a desktop graph. Scale the
+            // precision so the number actually moves instead of reading "0%".
+            break :blk if (pct < 1)
+                std.fmt.bufPrint(&dsp_buf, "{d:.2}%", .{pct}) catch "0%"
+            else if (pct < 10)
+                std.fmt.bufPrint(&dsp_buf, "{d:.1}%", .{pct}) catch "0%"
             else
-                (self.graph.sourceForStream(self.dd_state.id) orelse return -1);
-            var i: usize = 0;
-            while (self.ddItemNode(i)) |node| : (i += 1) {
-                if (node.id == cur) return @intCast(i);
-            }
-            return -1;
-        },
-        .port => {
-            const node = self.graph.findNode(self.dd_state.id) orelse return -1;
-            const dev = self.deviceFor(node) orelse return -1;
-            const active = dev.activeRouteFor(self.dd_state.dir).index;
-            if (active < 0) return -1;
-            var i: usize = 0;
-            while (self.ddItemRoute(i)) |route| : (i += 1) {
-                if (route.index == active) return @intCast(i);
-            }
-            return -1;
-        },
-        .profile => {
-            const dev = self.graph.findDevice(self.dd_state.id) orelse return -1;
-            if (dev.active_profile < 0) return -1;
-            var i: usize = 0;
-            while (self.ddItemProfile(i)) |prof| : (i += 1) {
-                if (prof.index == dev.active_profile) return @intCast(i);
-            }
-            return -1;
-        },
-        .engine => {
-            const row: usize = @intCast(self.dd_state.id);
-            return self.engineRowSel(row);
-        },
+                std.fmt.bufPrint(&dsp_buf, "{d:.0}%", .{pct}) catch "0%";
+        };
+        const dx = x0 + 2 * cw + 14;
+        ui_paint.showText(c, @floatFromInt(dx), @floatFromInt(r.y + 24), "DSP LOAD", 9, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.45);
+        ui_paint.showText(c, @floatFromInt(dx), @floatFromInt(r.y + 48), dsp_s, 15, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        const my = r.y + r.h - 16;
+        const mw = cw - 28;
+        ui_paint.roundRect(c, @floatFromInt(dx), @floatFromInt(my), @floatFromInt(mw), 4, 2);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.10);
+        cairo.cairo_fill(c);
+        if (self.top.available and self.top.dsp_load_pct > 0) {
+            const pct: f64 = @max(0, @min(100, self.top.dsp_load_pct));
+            const fw: f64 = @as(f64, @floatFromInt(mw)) * pct / 100.0;
+            ui_paint.roundRect(c, @floatFromInt(dx), @floatFromInt(my), fw, 4, 2);
+            cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
+            cairo.cairo_fill(c);
+        }
     }
-}
 
-/// Land a popup row: move the stream, switch the port or the profile.
-fn ddApply(self: *Win, row: i32) void {
-    if (row < 0) return;
-    const i: usize = @intCast(row);
-    if (self.dd_state.kind == .engine) {
-        self.applyEngineRow(@intCast(self.dd_state.id), i);
-    } else {
-        const c = self.client orelse return;
+    /// Expected graph latency from the resolved quantum and rate.
+    fn engineLatencyDisplay(self: *Win, buf: []u8) []const u8 {
+        // Prefer the sink's live pw-top row: it is the cycle the graph is actually
+        // running, while `clock.quantum` is only the ceiling clients may ask for.
+        const qn: i32 = if (self.top.focus_quantum > 0)
+            self.top.focus_quantum
+        else if (self.es.clock_force_quantum > 0)
+            self.es.clock_force_quantum
+        else if (self.es.clock_quantum > 0)
+            self.es.clock_quantum
+        else
+            self.top.reference_quantum;
+        const rate: i32 = if (self.top.focus_rate_hz > 0)
+            self.top.focus_rate_hz
+        else if (self.es.clock_force_rate_hz > 0)
+            self.es.clock_force_rate_hz
+        else if (self.es.clock_rate_hz > 0)
+            self.es.clock_rate_hz
+        else
+            self.top.reference_rate_hz;
+        if (qn <= 0 or rate <= 0) return "—";
+        const ms = @as(f64, @floatFromInt(qn)) / @as(f64, @floatFromInt(rate)) * 1000.0;
+        return std.fmt.bufPrint(buf, "{d:.2} ms", .{ms}) catch "—";
+    }
+
+    fn paintEngineLatencyRow(self: *Win, c: *cairo.cairo_t, r: common.Rect) void {
+        ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "timer", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(8), 15, 500, @floatFromInt(r.w - 500), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(8), 11, 400, @floatFromInt(r.w - 500), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+
+        const has_node = self.latencyNode() != null;
+        paintEngineTextField(c, engineLatFieldRect(r), self.lat_field[0..self.lat_len], self.lat_focus, "0");
+        paintEngineUnitToggle(self, c, engineLatUnitRect(r), self.lat_ns);
+        const ar = engineLatApplyRect(r);
+        if (has_node) {
+            ui_paint.paintBtn(c, ar.x, ar.y, ar.w, ar.h, "Apply", false);
+        } else {
+            ui_paint.paintBtnDisabled(c, ar.x, ar.y, ar.w, ar.h, "Apply");
+        }
+        const rr = engineLatResetRect(r);
+        if (self.latencyNodeCount() > 0) {
+            ui_paint.paintBtn(c, rr.x, rr.y, rr.w, rr.h, "Reset all", false);
+        } else {
+            ui_paint.paintBtnDisabled(c, rr.x, rr.y, rr.w, rr.h, "Reset all");
+        }
+    }
+
+    fn paintEngineRestartRow(self: *Win, c: *cairo.cairo_t, r: common.Rect, row: usize) void {
+        ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, "restart_alt", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(row), 15, 500, @floatFromInt(r.w - 260), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(row), 11, 400, @floatFromInt(r.w - 260), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+
+        const now = liveNowNs();
+        const is_wp = engineRow(row) == .restart_wp;
+        const arm_ns = if (is_wp) self.restart_wp_arm_ns else self.restart_pw_arm_ns;
+        const done_ns = if (is_wp) self.restart_wp_done_ns else self.restart_pw_done_ns;
+        const armed = arm_ns != 0 and now - arm_ns <= engine_restart_arm_ns;
+        const done = done_ns != 0 and now - done_ns <= engine_restart_done_ns;
+        const br = engineRestartBtnRect(r);
+        const label = if (done) "Restarted" else if (armed) "Confirm" else "Restart";
+        ui_paint.paintBtn(c, br.x, br.y, br.w, br.h, label, false);
+        if (done) {
+            ui_paint.glyph(c, @floatFromInt(br.x + 22), @floatFromInt(br.y + @divTrunc(br.h, 2)), 15, "check", Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
+        }
+    }
+
+    fn paintEngineModal(self: *Win, c: *cairo.cairo_t) void {
+        if (self.emodal == .none) return;
+        // Dim the page so the dialog reads as modal.
+        cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.55);
+        cairo.cairo_paint(c);
+
+        const r = engineModalRect(self.win_w, self.win_h);
+        ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 16);
+        cairo.cairo_set_source_rgba(c, Theme.bg_r * 0.55, Theme.bg_g * 0.55, Theme.bg_b * 0.55, 0.99);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, 0.45);
+        cairo.cairo_stroke(c);
+
+        const title = switch (self.emodal) {
+            .rate => "Custom sample rate",
+            .quantum => "Custom quantum",
+            .none => "",
+        };
+        const hint = switch (self.emodal) {
+            .rate => "Written to the graph through pw-metadata.",
+            .quantum => "Frames per graph cycle; lower means less latency.",
+            .none => "",
+        };
+        ui_paint.showText(c, @floatFromInt(r.x + 20), @floatFromInt(r.y + 34), title, 17, 600, Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 20), @floatFromInt(r.y + 56), hint, 11, 400, @floatFromInt(r.w - 40), Theme.text_r, Theme.text_g, Theme.text_b, 0.55);
+
+        const placeholder = switch (self.emodal) {
+            .rate => "e.g. 48000",
+            .quantum => "e.g. 1024",
+            .none => "",
+        };
+        paintEngineTextField(c, engineModalFieldRect(r), self.emodal_buf[0..self.emodal_len], true, placeholder);
+        const cr = engineModalCancelRect(r);
+        ui_paint.paintBtn(c, cr.x, cr.y, cr.w, cr.h, "Cancel", false);
+        const sr = engineModalSubmitRect(r);
+        ui_paint.paintBtn(c, sr.x, sr.y, sr.w, sr.h, "Apply", false);
+    }
+
+    fn paintEngineCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, i: usize) void {
+        self.paintCardBg(c, r);
+        switch (engineRow(i)) {
+            .status => return paintEngineStatus(self, c, r),
+            .latency_offset => return paintEngineLatencyRow(self, c, r),
+            .restart_wp, .restart_pw => return paintEngineRestartRow(self, c, r, i),
+            else => {},
+        }
+        const row = engineRow(i);
+        const glyph_name: []const u8 = switch (row) {
+            .latency_node => "timer",
+            .pcm => "tune",
+            else => "tune",
+        };
+        ui_paint.glyph(c, @floatFromInt(r.x + card_pad + 18), @floatFromInt(r.y + @divTrunc(r.h, 2)), 24, glyph_name, Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 30), engineRowTitle(i), 15, 500, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 50), engineRowHint(i), 11, 400, @floatFromInt(r.w - 420), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+        var buf: [64]u8 = undefined;
+        const cr = profileComboRect(r);
+        const open = self.dd.open and self.dd_state.kind == .engine and self.dd_state.id == @as(u32, @intCast(i));
+        paintCombo(c, r, cr, self.engineRowValue(i, &buf), open);
+    }
+
+    /// "What this output can actually do" line: sink, rate span, formats,
+    /// channels and quantum limit from its `EnumFormat`.
+    fn engineHardwareCaption(self: *Win, buf: []u8) []const u8 {
+        const caps = &self.caps;
+        if (!caps.available) {
+            return if (self.defaultSinkNodeId() != 0) "Hardware limits unavailable" else "No output device";
+        }
+        var n: usize = 0;
+        const append = struct {
+            fn add(b: []u8, at: *usize, part: []const u8) void {
+                if (part.len == 0) return;
+                const sep = if (at.* == 0) "" else " · ";
+                if (at.* + sep.len + part.len > b.len) return;
+                @memcpy(b[at.*..][0..sep.len], sep);
+                at.* += sep.len;
+                @memcpy(b[at.*..][0..part.len], part);
+                at.* += part.len;
+            }
+        }.add;
+
+        var rate_b: [40]u8 = undefined;
+        if (caps.rate_min > 0 and caps.rate_max >= caps.rate_min) {
+            var lo_b: [12]u8 = undefined;
+            var hi_b: [12]u8 = undefined;
+            const lo = engineShortRate(&lo_b, caps.rate_min);
+            const hi = engineShortRate(&hi_b, caps.rate_max);
+            if (caps.rate_min == caps.rate_max) {
+                append(buf, &n, std.fmt.bufPrint(&rate_b, "{s} kHz", .{lo}) catch "");
+            } else {
+                append(buf, &n, std.fmt.bufPrint(&rate_b, "{s}-{s} kHz", .{ lo, hi }) catch "");
+            }
+        } else if (caps.rate_count > 0) {
+            var lo_b: [12]u8 = undefined;
+            var hi_b: [12]u8 = undefined;
+            const lo = engineShortRate(&lo_b, caps.rates[0]);
+            const hi = engineShortRate(&hi_b, caps.rates[caps.rate_count - 1]);
+            append(buf, &n, std.fmt.bufPrint(&rate_b, "{s}-{s} kHz", .{ lo, hi }) catch "");
+        }
+
+        var fmt_b: [32]u8 = undefined;
+        const fmt_s = engineCapsFormats(caps.formats, &fmt_b);
+        append(buf, &n, fmt_s);
+
+        var ch_b: [24]u8 = undefined;
+        if (caps.channels > 0) append(buf, &n, std.fmt.bufPrint(&ch_b, "{d} ch", .{caps.channels}) catch "");
+
+        var q_b: [32]u8 = undefined;
+        if (caps.quantum_limit > 0) append(buf, &n, std.fmt.bufPrint(&q_b, "quantum <={d}", .{caps.quantum_limit}) catch "");
+
+        return buf[0..n];
+    }
+
+    fn engineShortRate(buf: []u8, hz: i32) []const u8 {
+        if (hz <= 0) return "?";
+        if (@mod(hz, 1000) == 0) return std.fmt.bufPrint(buf, "{d}", .{@divTrunc(hz, 1000)}) catch "?";
+        return std.fmt.bufPrint(buf, "{d}.{d}", .{
+            @divTrunc(hz, 1000),
+            @divTrunc(@mod(hz, 1000), 100),
+        }) catch "?";
+    }
+
+    fn engineCapsFormats(bits: u16, buf: []u8) []const u8 {
+        const names = [_]struct { bit: u16, name: []const u8 }{
+            .{ .bit = live_audio.fmt_s16, .name = "S16LE" },
+            .{ .bit = live_audio.fmt_s24, .name = "S24LE" },
+            .{ .bit = live_audio.fmt_s32, .name = "S32LE" },
+            .{ .bit = live_audio.fmt_f32, .name = "F32LE" },
+            .{ .bit = live_audio.fmt_f64, .name = "F64LE" },
+        };
+        var n: usize = 0;
+        for (names) |entry| {
+            if (bits & entry.bit == 0) continue;
+            const need: usize = entry.name.len + (if (n == 0) @as(usize, 0) else 3);
+            if (n + need > buf.len) break;
+            if (n > 0) {
+                @memcpy(buf[n..][0..3], " / ");
+                n += 3;
+            }
+            @memcpy(buf[n..][0..entry.name.len], entry.name);
+            n += entry.name.len;
+        }
+        return buf[0..n];
+    }
+
+    fn paintConfigCard(self: *Win, c: *cairo.cairo_t, r: common.Rect, dev: *const Device) void {
+        var t = liveNowNs();
+        self.paintCardBg(c, r);
+        self.card_prof.bg += liveNowNs() - t;
+        t = liveNowNs();
+        const ir = iconRect(r);
+        _ = ir;
+        const ix = r.x + card_pad + 18;
+        const iy = r.y + @divTrunc(r.h, 2);
+        ui_paint.glyph(c, @floatFromInt(ix), @floatFromInt(iy), 24, "tune", Theme.text_r, Theme.text_g, Theme.text_b, 0.62);
+        self.card_prof.icon += liveNowNs() - t;
+
+        t = liveNowNs();
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 34), dev.displayName(), 15, 500, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+        ui_paint.showTextW(c, @floatFromInt(r.x + 56), @floatFromInt(r.y + 54), dev.device_name.get(), 11, 400, @floatFromInt(r.w - 400), Theme.text_r, Theme.text_g, Theme.text_b, 0.50);
+        self.card_prof.text += liveNowNs() - t;
+
+        t = liveNowNs();
+        const pr = profileComboRect(r);
+        const open = self.dd.open and self.dd_state.kind == .profile and self.dd_state.id == dev.id;
+        const cur = if (dev.active_profile >= 0) blk: {
+            if (dev.findProfile(dev.active_profile)) |p| break :blk p.label();
+            break :blk "(unknown)";
+        } else "(unset)";
+        paintCombo(c, r, pr, cur, open);
+        self.card_prof.ctrl += liveNowNs() - t;
+    }
+
+    /// The shared combo look: rounded body, current value, chevron. `open`
+    /// lifts the fill and stroke so the trigger reads as pressed.
+    fn paintCombo(c: *cairo.cairo_t, card_rect: common.Rect, r: common.Rect, value: []const u8, open: bool) void {
+        _ = card_rect;
+        ui_paint.roundRect(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h), 8);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (open) 0.10 else 0.06);
+        cairo.cairo_fill_preserve(c);
+        cairo.cairo_set_line_width(c, 1.0);
+        cairo.cairo_set_source_rgba(c, Theme.outline_r, Theme.outline_g, Theme.outline_b, if (open) 0.9 else 0.45);
+        cairo.cairo_stroke(c);
+        ui_paint.showTextW(
+            c,
+            @floatFromInt(r.x + 10),
+            @floatFromInt(comboLabelTop(r, ui_paint.textSizePx(c, value, 12, 500).h)),
+            value,
+            12,
+            500,
+            @floatFromInt(@max(0, r.w - 10 - 28)),
+            Theme.text_r,
+            Theme.text_g,
+            Theme.text_b,
+            0.92,
+        );
+        ui_paint.glyph(
+            c,
+            @floatFromInt(r.x + r.w - 13),
+            @floatFromInt(r.y + @divTrunc(r.h, 2)),
+            13,
+            "expand_more",
+            Theme.text_r,
+            Theme.text_g,
+            Theme.text_b,
+            0.55,
+        );
+    }
+
+    /// Mute button, track, percentage and L/R meter bars for one row.
+    fn paintVolumeRow(self: *Win, c: *cairo.cairo_t, r: common.Rect, node: *const Node, monitor: bool) void {
+        const target = self.graph.volumeTarget(node, monitor);
+        const muted = target.mute or node.mute and target.n_volumes == 0;
+        var pct: i32 = blk: {
+            if (target.n_volumes == 0) break :blk 100;
+            const ratio = graph_mod.amplitudeRatio(target.volumes[0]);
+            break :blk common.clampInt(@intFromFloat(@round(ratio * 100.0)), 0, slider_max_pct);
+        };
+        if (self.drag) |d| {
+            if (d.id == node.id and d.monitor == monitor) pct = d.pct;
+        }
+
+        // Mute button.
+        const mr = muteBtnRect(r);
+        const mhov = rowHover(self.ptr_x, self.ptr_y, mr);
+        ui_paint.roundRect(c, @floatFromInt(mr.x), @floatFromInt(mr.y), @floatFromInt(mr.w), @floatFromInt(mr.h), 10);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, if (mhov) 0.13 else 0.06);
+        cairo.cairo_fill(c);
+        const on_glyph = if (monitor) "mic" else "volume_up";
+        const off_glyph = if (monitor) "mic_off" else "volume_off";
+        ui_paint.glyph(
+            c,
+            @floatFromInt(mr.x + @divTrunc(mr.w, 2)),
+            @floatFromInt(mr.y + @divTrunc(mr.h, 2)),
+            18,
+            if (muted) off_glyph else on_glyph,
+            Theme.text_r,
+            Theme.text_g,
+            Theme.text_b,
+            if (muted) 0.45 else 0.92,
+        );
+
+        // Track, fill, knob.
+        const tr = trackRect(r);
+        const yf: f64 = @floatFromInt(tr.y);
+        const hf: f64 = @floatFromInt(tr.h);
+        ui_paint.roundRect(c, @floatFromInt(tr.x), yf, @floatFromInt(tr.w), hf, hf / 2.0);
+        cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.10);
+        cairo.cairo_fill(c);
+        const pct_frac = @as(f64, @floatFromInt(pct)) / @as(f64, @floatFromInt(slider_max_pct));
+        if (pct > 0) {
+            const fw = @max(hf, @as(f64, @floatFromInt(tr.w)) * pct_frac);
+            ui_paint.roundRect(c, @floatFromInt(tr.x), yf, fw, hf, hf / 2.0);
+            if (muted) {
+                cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.30);
+            } else {
+                cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.95);
+            }
+            cairo.cairo_fill(c);
+        }
+        const kx = @as(f64, @floatFromInt(tr.x)) + @as(f64, @floatFromInt(tr.w)) * pct_frac;
+        ui_paint.glassBox(c, kx - 7, yf + hf / 2.0 - 7, 14, 14, 7, 1, 1, 1, 0.96);
+
+        var vbuf: [16]u8 = undefined;
+        const vs = std.fmt.bufPrint(&vbuf, "{d}%", .{pct}) catch "0%";
+        ui_paint.showText(
+            c,
+            @floatFromInt(tr.x + tr.w + 12),
+            yf + hf / 2.0 + 5,
+            vs,
+            12,
+            600,
+            Theme.text_r,
+            Theme.text_g,
+            Theme.text_b,
+            0.85,
+        );
+
+        self.noteMeterBand(node.id, tr, muted);
+    }
+
+    /// The L/R bars of one row, from the meter manager's latest levels.
+    fn paintMeterBars(self: *Win, c: *cairo.cairo_t, id: u32, tr: common.Rect, muted: bool) void {
+        const lv = self.meters.level(id) orelse return;
+        const y0 = tr.y + tr.h + 4;
+        for (0..2) |ch| {
+            const y = y0 + @as(i32, @intCast(ch)) * (meter_h + meter_gap);
+            ui_paint.roundRect(c, @floatFromInt(tr.x), @floatFromInt(y), @floatFromInt(tr.w), @floatFromInt(meter_h), @as(f64, @floatFromInt(meter_h)) / 2.0);
+            cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.07);
+            cairo.cairo_fill(c);
+            const v: f64 = @floatCast(@min(lv[ch], 1.0));
+            if (v > 0.001) {
+                const fw = @max(2.0, @as(f64, @floatFromInt(tr.w)) * v);
+                ui_paint.roundRect(c, @floatFromInt(tr.x), @floatFromInt(y), fw, @floatFromInt(meter_h), @as(f64, @floatFromInt(meter_h)) / 2.0);
+                if (muted) {
+                    cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.35);
+                } else {
+                    cairo.cairo_set_source_rgba(c, Theme.acc_r, Theme.acc_g, Theme.acc_b, 0.90);
+                }
+                cairo.cairo_fill(c);
+            }
+        }
+    }
+
+    /// The popup, painted above every card but inside the window. `popupGeom`
+    /// flips it above the trigger when the list would overflow the bottom;
+    /// `paintDropdown` additionally clamps x so it can never leave the frame.
+    fn paintDropdown(self: *Win, c: *cairo.cairo_t) void {
+        if (!self.dd.open) return;
+        const count = self.ddCount();
+        if (count == 0) return;
+        self.dd.count = count;
+        var g = self.dd.popupGeom(self.win_h);
+        if (g.x + g.w > self.win_w - 8) g.x = self.win_w - 8 - g.w;
+        if (g.x < 8) g.x = 8;
+
+        ui_paint.glassBox(
+            c,
+            @floatFromInt(g.x),
+            @floatFromInt(g.y),
+            @floatFromInt(g.w),
+            @floatFromInt(g.h),
+            12,
+            Theme.bg_r * 0.5,
+            Theme.bg_g * 0.5,
+            Theme.bg_b * 0.5,
+            0.97,
+        );
+        cairo.cairo_save(c);
+        ui_paint.roundRect(c, @floatFromInt(g.x), @floatFromInt(g.y), @floatFromInt(g.w), @floatFromInt(g.h), 12);
+        cairo.cairo_clip(c);
+        const sel = self.dd.displayIndex();
+        for (0..count) |i| {
+            const ry = g.y + @as(i32, @intCast(i)) * self.dd.row_h;
+            const hovered = @as(i32, @intCast(i)) == self.dd.hover_row;
+            if (hovered) {
+                cairo.cairo_set_source_rgba(c, Theme.text_r, Theme.text_g, Theme.text_b, 0.08);
+                cairo.cairo_rectangle(c, @floatFromInt(g.x), @floatFromInt(ry), @floatFromInt(g.w), @floatFromInt(self.dd.row_h));
+                cairo.cairo_fill(c);
+            }
+            const is_sel = i == sel;
+            const label = self.ddLabel(i);
+            const lth = ui_paint.textSizePx(c, label, 12, if (is_sel) 600 else 400).h;
+            ui_paint.showTextW(
+                c,
+                @floatFromInt(g.x + 12),
+                @floatFromInt(cyTextTop(ry, self.dd.row_h, lth)),
+                label,
+                12,
+                if (is_sel) @as(c_uint, 600) else @as(c_uint, 400),
+                @floatFromInt(g.w - 24 - (if (is_sel) @as(i32, 20) else @as(i32, 0))),
+                Theme.text_r,
+                Theme.text_g,
+                Theme.text_b,
+                if (is_sel) 1.0 else 0.82,
+            );
+            if (is_sel) {
+                ui_paint.glyph(
+                    c,
+                    @floatFromInt(g.x + g.w - 18),
+                    @floatFromInt(ry + @divTrunc(self.dd.row_h, 2)),
+                    13,
+                    "check",
+                    Theme.acc_r,
+                    Theme.acc_g,
+                    Theme.acc_b,
+                    0.95,
+                );
+            }
+        }
+        cairo.cairo_restore(c);
+    }
+
+    fn closeRect(win_w: i32) common.Rect {
+        return .{ .x = win_w - 44, .y = common.spacing_l, .w = 28, .h = 28 };
+    }
+
+    fn drawClose(cr: ?*cairo.cairo_t, win_w: i32) void {
+        const c = cr orelse return;
+        const r = closeRect(win_w);
+        const cx = @as(f64, @floatFromInt(r.x)) + @as(f64, @floatFromInt(r.w)) * 0.5;
+        const cy = @as(f64, @floatFromInt(r.y)) + @as(f64, @floatFromInt(r.h)) * 0.5;
+        ui_paint.glassBox(
+            c,
+            @floatFromInt(r.x),
+            @floatFromInt(r.y),
+            @floatFromInt(r.w),
+            @floatFromInt(r.h),
+            @as(f64, @floatFromInt(r.w)) * 0.5,
+            Theme.acc_r,
+            Theme.acc_g,
+            Theme.acc_b,
+            0.35,
+        );
+        ui_paint.glyph(c, cx, cy + 0.5, 15, "close", Theme.text_r, Theme.text_g, Theme.text_b, 0.95);
+    }
+
+    // ── dropdown plumbing ───────────────────────────────────────────────────────
+
+    fn closeDropdown(self: *Win) void {
+        if (self.dd.open) {
+            // The popup's pixels go away (and its shadow spills past the rect):
+            // whatever it covered has to be repainted.
+            self.damage = rectJoin(self.damage, self.popupRect());
+        }
+        self.dd.close();
+        self.dd_state = .{};
+    }
+
+    fn openDropdown(self: *Win, kind: DdKind, id: u32, dir: u32, trigger: common.Rect) void {
+        self.dd_state = .{ .kind = kind, .id = id, .dir = dir };
+        self.dd.count = self.ddCount();
+        self.dd.selected = self.ddCurrentSel();
+        self.dd.setAnchor(trigger.x, trigger.y, trigger.w, trigger.h);
+        self.dd.openPopup();
+        // The popup is new pixels; the trigger's own "open" highlight is inside
+        // the row the pointer sits on.
+        self.damage = rectJoin(self.damage, self.pointerRegion(self.ptr_x, self.ptr_y));
+        self.damage = rectJoin(self.damage, self.popupRect());
+        self.needs_repaint = true;
+        self.markAction("combo-open");
+        logz.log("ux: combo open {s} id={d} dir={d} rows={d}", .{ @tagName(kind), id, dir, self.dd.count });
+    }
+
+    /// The i-th node of the open `.move` dropdown (sinks for playback streams,
+    /// sources for recording streams).
+    fn ddItemNode(self: *Win, i: usize) ?*Node {
+        const want: graph_mod.Role = if (self.dd_state.dir == 1) .sink else .source;
+        var n: usize = 0;
+        for (self.graph.nodes.items) |*node| {
+            if (node.role != want) continue;
+            if (n == i) return node;
+            n += 1;
+        }
+        return null;
+    }
+
+    fn ddItemRoute(self: *Win, i: usize) ?*const Route {
+        const node = self.graph.findNode(self.dd_state.id) orelse return null;
+        return self.portRouteAt(node, self.dd_state.dir, i);
+    }
+
+    fn ddItemProfile(self: *Win, i: usize) ?*const Profile {
+        const dev = self.graph.findDevice(self.dd_state.id) orelse return null;
+        if (i >= dev.profiles.items.len) return null;
+        return &dev.profiles.items[i];
+    }
+
+    fn ddCount(self: *Win) usize {
         switch (self.dd_state.kind) {
-            .none, .engine => {},
+            .none => return 0,
             .move => {
-                const target = self.ddItemNode(i) orelse return;
-                _ = c.moveStream(self.dd_state.id, target.id);
+                var n: usize = 0;
+                while (self.ddItemNode(n) != null) n += 1;
+                return n;
             },
             .port => {
-                const node = self.graph.findNode(self.dd_state.id) orelse return;
-                const route = self.ddItemRoute(i) orelse return;
-                const dev = self.deviceFor(node) orelse return;
-                // Exactly what pipewire-pulse does: the route's index plus the
-                // node's `card.profile.device`.
-                _ = c.setRoute(dev.id, route.index, node.card_profile_device);
+                const node = self.graph.findNode(self.dd_state.id) orelse return 0;
+                return self.portCount(node, self.dd_state.dir);
             },
             .profile => {
-                const prof = self.ddItemProfile(i) orelse return;
-                _ = c.setProfile(self.dd_state.id, prof.index);
+                const dev = self.graph.findDevice(self.dd_state.id) orelse return 0;
+                return dev.profiles.items.len;
+            },
+            .engine => return engineRowValueCount(self, self.dd_state.id),
+        }
+    }
+
+    fn ddLabel(self: *Win, i: usize) []const u8 {
+        switch (self.dd_state.kind) {
+            .none => return "",
+            .move => {
+                const node = self.ddItemNode(i) orelse return "";
+                return node.displayName();
+            },
+            .port => {
+                const route = self.ddItemRoute(i) orelse return "";
+                return route.label();
+            },
+            .profile => {
+                const prof = self.ddItemProfile(i) orelse return "";
+                return prof.label();
+            },
+            .engine => {
+                const row: usize = @intCast(self.dd_state.id);
+                if (row >= engine_row_count) return "";
+                return self.engineRowItemLabel(row, i);
             },
         }
     }
-    logz.log("ux: combo select {s} id={d} row={d}", .{ @tagName(self.dd_state.kind), self.dd_state.id, row });
-    self.markAction("combo-select");
-    self.needs_repaint = true;
-}
 
-// ── volume drag ─────────────────────────────────────────────────────────────
-
-fn pctFromTrack(tr: common.Rect, x: f64) i32 {
-    const w: f64 = @floatFromInt(@max(1, tr.w));
-    const frac = (x - @as(f64, @floatFromInt(tr.x))) / w;
-    return common.clampInt(
-        @intFromFloat(@round(frac * @as(f64, @floatFromInt(slider_max_pct)))),
-        0,
-        slider_max_pct,
-    );
-}
-
-fn applyDrag(self: *Win, d: *Drag, force: bool) void {
-    const now = liveNowNs();
-    if (!force and now - d.last_apply_ns < drag_apply_ns) return;
-    d.last_apply_ns = now;
-    const node = self.graph.findNode(d.id) orelse return;
-    const target = self.graph.volumeTarget(node, d.monitor);
-    const c = self.client orelse return;
-    const n = if (target.n_volumes == 0) 2 else target.n_volumes;
-    var vols: [graph_mod.max_channels]f32 = @splat(0);
-    const amp = graph_mod.ratioAmplitude(@as(f32, @floatFromInt(d.pct)) / 100.0);
-    for (0..n) |i| vols[i] = amp;
-    _ = c.setVolume(d.id, vols[0..n], d.monitor);
-    // Every write is already throttled to one per 40 ms by the caller; the
-    // log line is the audit trail of what actually reached PipeWire.
-    logz.log("ux: volume set node={d} pct={d} monitor={} final={}", .{ d.id, d.pct, d.monitor, force });
-}
-
-// ── input ───────────────────────────────────────────────────────────────────
-
-fn onEnter(ctx: *anyopaque, x: f64, y: f64) void {
-    const self: *Win = @ptrCast(@alignCast(ctx));
-    self.ptr_x = x;
-    self.ptr_y = y;
-    self.damage = rectJoin(self.damage, self.pointerRegion(x, y));
-    self.repaint();
-}
-
-fn onLeave(ctx: *anyopaque) void {
-    const self: *Win = @ptrCast(@alignCast(ctx));
-    self.damagePointer(self.ptr_x, self.ptr_y, -1, -1);
-    self.ptr_x = -1;
-    self.ptr_y = -1;
-    if (self.dd.open) self.dd.hover_row = -1;
-    self.repaint();
-}
-
-fn onMotion(ctx: *anyopaque, x: f64, y: f64) void {
-    const self: *Win = @ptrCast(@alignCast(ctx));
-    const from_x = self.ptr_x;
-    const from_y = self.ptr_y;
-    self.ptr_x = x;
-    self.ptr_y = y;
-    if (self.dd.open) {
-        self.dd.hover_row = self.dd.hitRow(
-            @intFromFloat(@max(0, x)),
-            @intFromFloat(@max(0, y)),
-            self.win_h,
-        );
-    }
-    if (self.drag) |*d| {
-        const pct = pctFromTrack(d.track, x);
-        if (pct != d.pct) {
-            d.pct = pct;
-            self.applyDrag(d, false);
-            self.needs_repaint = true;
-            self.markAction("volume-drag");
-        }
-    }
-    // A hover highlight is all that moves with the pointer: repaint the rows
-    // (or header/popup) under the old and the new position, nothing else.
-    self.damagePointer(from_x, from_y, x, y);
-    if (self.drag) |d| self.damage = rectJoin(self.damage, padRect(d.row, 4));
-    self.repaint();
-}
-
-fn onAxis(ctx: *anyopaque, delta: f64) void {
-    const self: *Win = @ptrCast(@alignCast(ctx));
-    if (self.ptr_x >= 0 and self.ptr_x < @as(f64, @floatFromInt(rail_w))) return;
-    if (self.dd.open) self.closeDropdown();
-    self.damageAll();
-    self.scroll.scrollBy(delta * wheel_scale);
-    self.markAction("scroll");
-    self.repaint();
-}
-
-fn onKey(ctx: *anyopaque, ev: *const wl_seat.KeyEvent) void {
-    const self: *Win = @ptrCast(@alignCast(ctx));
-    if (ev.state != 1) return; // pressed only
-    if (self.emodal != .none) {
-        switch (ev.sym) {
-            wl_seat.xkb.XKB_KEY_Escape => self.emodal = .none,
-            wl_seat.xkb.XKB_KEY_Return, wl_seat.xkb.XKB_KEY_KP_Enter => self.submitEngineModal(),
-            wl_seat.xkb.XKB_KEY_BackSpace => {
-                if (self.emodal_len > 0) self.emodal_len -= 1;
-            },
-            else => {
-                if (ev.utf8_len > 0) {
-                    const ch = ev.utf8[0];
-                    if (ch >= '0' and ch <= '9' and self.emodal_len < self.emodal_buf.len - 1) {
-                        self.emodal_buf[self.emodal_len] = ch;
-                        self.emodal_len += 1;
-                    }
+    /// Index of the current value inside the open list, for the popup highlight.
+    fn ddCurrentSel(self: *Win) i32 {
+        switch (self.dd_state.kind) {
+            .none => return -1,
+            .move => {
+                const cur: u32 = if (self.dd_state.dir == 1)
+                    (self.graph.sinkForStream(self.dd_state.id) orelse return -1)
+                else
+                    (self.graph.sourceForStream(self.dd_state.id) orelse return -1);
+                var i: usize = 0;
+                while (self.ddItemNode(i)) |node| : (i += 1) {
+                    if (node.id == cur) return @intCast(i);
                 }
+                return -1;
             },
-        }
-        self.needs_repaint = true;
-        self.damageAll();
-        self.repaint();
-        return;
-    }
-    if (self.lat_focus and self.page == .engine) {
-        switch (ev.sym) {
-            wl_seat.xkb.XKB_KEY_Escape => {
-                self.lat_focus = false;
-            },
-            wl_seat.xkb.XKB_KEY_Return, wl_seat.xkb.XKB_KEY_KP_Enter => {
-                self.applyLatency();
-                self.lat_focus = false;
-            },
-            wl_seat.xkb.XKB_KEY_BackSpace => {
-                if (self.lat_len > 0) self.lat_len -= 1;
-            },
-            else => {
-                if (ev.utf8_len > 0) {
-                    const ch = ev.utf8[0];
-                    if (ch >= '0' and ch <= '9' and self.lat_len < self.lat_field.len - 1) {
-                        self.lat_field[self.lat_len] = ch;
-                        self.lat_len += 1;
-                    }
+            .port => {
+                const node = self.graph.findNode(self.dd_state.id) orelse return -1;
+                const dev = self.deviceFor(node) orelse return -1;
+                const active = dev.activeRouteFor(self.dd_state.dir).index;
+                if (active < 0) return -1;
+                var i: usize = 0;
+                while (self.ddItemRoute(i)) |route| : (i += 1) {
+                    if (route.index == active) return @intCast(i);
                 }
+                return -1;
+            },
+            .profile => {
+                const dev = self.graph.findDevice(self.dd_state.id) orelse return -1;
+                if (dev.active_profile < 0) return -1;
+                var i: usize = 0;
+                while (self.ddItemProfile(i)) |prof| : (i += 1) {
+                    if (prof.index == dev.active_profile) return @intCast(i);
+                }
+                return -1;
+            },
+            .engine => {
+                const row: usize = @intCast(self.dd_state.id);
+                return self.engineRowSel(row);
             },
         }
-        self.needs_repaint = true;
-        self.damageAll();
-        self.repaint();
-        return;
-    }
-    switch (ev.sym) {
-        wl_seat.xkb.XKB_KEY_Escape => {
-            if (self.dd.open) {
-                self.closeDropdown();
-            } else {
-                self.running = false;
-                wl_loop.Loop.requestStop();
-                return;
-            }
-            self.repaint();
-        },
-        else => {},
-    }
-}
-
-fn onButton(ctx: *anyopaque, button: u32, state: u32) void {
-    const self: *Win = @ptrCast(@alignCast(ctx));
-    const BTN_LEFT: u32 = 0x110;
-    if (button != BTN_LEFT) return;
-    const px = self.ptr_x;
-    const py = self.ptr_y;
-
-    if (state == 0) {
-        // Release: land the final volume write of a drag.
-        if (self.drag) |*d| {
-            self.applyDrag(d, true);
-            self.damage = rectJoin(self.damage, padRect(d.row, 4));
-            self.drag = null;
-            self.repaint();
-        }
-        return;
     }
 
-    // The custom-value dialog is modal: it swallows every click.
-    if (self.emodal != .none) {
-        const r = engineModalRect(self.win_w, self.win_h);
-        if (common.pointInRect(px, py, engineModalSubmitRect(r))) {
-            self.submitEngineModal();
+    /// Land a popup row: move the stream, switch the port or the profile.
+    fn ddApply(self: *Win, row: i32) void {
+        if (row < 0) return;
+        const i: usize = @intCast(row);
+        if (self.dd_state.kind == .engine) {
+            self.applyEngineRow(@intCast(self.dd_state.id), i);
         } else {
-            self.emodal = .none;
-            self.needs_repaint = true;
-            self.damageAll();
+            const c = self.client orelse return;
+            switch (self.dd_state.kind) {
+                .none, .engine => {},
+                .move => {
+                    const target = self.ddItemNode(i) orelse return;
+                    _ = c.moveStream(self.dd_state.id, target.id);
+                },
+                .port => {
+                    const node = self.graph.findNode(self.dd_state.id) orelse return;
+                    const route = self.ddItemRoute(i) orelse return;
+                    const dev = self.deviceFor(node) orelse return;
+                    // Exactly what pipewire-pulse does: the route's index plus the
+                    // node's `card.profile.device`.
+                    _ = c.setRoute(dev.id, route.index, node.card_profile_device);
+                },
+                .profile => {
+                    const prof = self.ddItemProfile(i) orelse return;
+                    _ = c.setProfile(self.dd_state.id, prof.index);
+                },
+            }
         }
-        self.repaint();
-        return;
+        logz.log("ux: combo select {s} id={d} row={d}", .{ @tagName(self.dd_state.kind), self.dd_state.id, row });
+        self.markAction("combo-select");
+        self.needs_repaint = true;
     }
 
-    // An open dropdown swallows the next click: a popup row applies, any
-    // other click just closes it.
-    if (self.dd.open) {
-        const row = self.dd.hitRow(
-            @intFromFloat(@max(0, px)),
-            @intFromFloat(@max(0, py)),
-            self.win_h,
+    // ── volume drag ─────────────────────────────────────────────────────────────
+
+    fn pctFromTrack(tr: common.Rect, x: f64) i32 {
+        const w: f64 = @floatFromInt(@max(1, tr.w));
+        const frac = (x - @as(f64, @floatFromInt(tr.x))) / w;
+        return common.clampInt(
+            @intFromFloat(@round(frac * @as(f64, @floatFromInt(slider_max_pct)))),
+            0,
+            slider_max_pct,
         );
-        const applied = row >= 0;
-        if (applied) self.ddApply(row);
-        self.closeDropdown();
-        // Applying a row can rewrite the label, move the stream to another
-        // device, change a profile — pixels anywhere. A plain close only
-        // drops the popup, which closeDropdown has already marked.
-        if (applied) self.damageAll();
+    }
+
+    fn applyDrag(self: *Win, d: *Drag, force: bool) void {
+        const now = liveNowNs();
+        if (!force and now - d.last_apply_ns < drag_apply_ns) return;
+        d.last_apply_ns = now;
+        const node = self.graph.findNode(d.id) orelse return;
+        const target = self.graph.volumeTarget(node, d.monitor);
+        const c = self.client orelse return;
+        const n = if (target.n_volumes == 0) 2 else target.n_volumes;
+        var vols: [graph_mod.max_channels]f32 = @splat(0);
+        const amp = graph_mod.ratioAmplitude(@as(f32, @floatFromInt(d.pct)) / 100.0);
+        for (0..n) |i| vols[i] = amp;
+        _ = c.setVolume(d.id, vols[0..n], d.monitor);
+        // Every write is already throttled to one per 40 ms by the caller; the
+        // log line is the audit trail of what actually reached PipeWire.
+        logz.log("ux: volume set node={d} pct={d} monitor={} final={}", .{ d.id, d.pct, d.monitor, force });
+    }
+
+    // ── input ───────────────────────────────────────────────────────────────────
+
+    fn onEnter(ctx: *anyopaque, x: f64, y: f64) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        self.ptr_x = x;
+        self.ptr_y = y;
+        self.damage = rectJoin(self.damage, self.pointerRegion(x, y));
         self.repaint();
-        return;
     }
 
-    if (common.pointInRect(px, py, closeRect(self.win_w))) {
-        self.running = false;
-        wl_loop.Loop.requestStop();
-        return;
+    fn onLeave(ctx: *anyopaque) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        self.damagePointer(self.ptr_x, self.ptr_y, -1, -1);
+        self.ptr_x = -1;
+        self.ptr_y = -1;
+        if (self.dd.open) self.dd.hover_row = -1;
+        self.repaint();
     }
 
-    // Rail: page switch.
-    if (px >= 0 and px < @as(f64, @floatFromInt(rail_w))) {
-        for (pages, 0..) |p, i| {
-            if (common.pointInRect(px, py, railBtnRect(i))) {
-                self.setPage(p);
-                self.repaint();
-                return;
-            }
+    fn onMotion(ctx: *anyopaque, x: f64, y: f64) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        const from_x = self.ptr_x;
+        const from_y = self.ptr_y;
+        self.ptr_x = x;
+        self.ptr_y = y;
+        if (self.dd.open) {
+            self.dd.hover_row = self.dd.hitRow(
+                @intFromFloat(@max(0, x)),
+                @intFromFloat(@max(0, y)),
+                self.win_h,
+            );
         }
-        return;
-    }
-
-    // Header toggles.
-    if (py < @as(f64, @floatFromInt(header_h))) {
-        var changed = false;
-        if (self.hit_engine_refresh) |r| {
-            if (common.pointInRect(px, py, r)) {
-                self.refreshEngine(true);
+        if (self.drag) |*d| {
+            const pct = pctFromTrack(d.track, x);
+            if (pct != d.pct) {
+                d.pct = pct;
+                self.applyDrag(d, false);
                 self.needs_repaint = true;
-                self.damageAll();
-                self.markAction("engine-refresh");
-                self.repaint();
-                return;
+                self.markAction("volume-drag");
             }
         }
-        if (common.pointInRect(px, py, self.hit_meters)) {
-            self.show_meters = !self.show_meters;
-            changed = true;
-        } else if (self.hit_page_toggle) |r| {
-            if (common.pointInRect(px, py, r)) {
-                switch (self.page) {
-                    .recording => self.all_streams = !self.all_streams,
-                    .output, .input => self.hw_only = !self.hw_only,
-                    .engine => {},
-                    else => {},
-                }
-                changed = true;
-            }
-        }
-        if (changed) {
-            self.scroll.setMax(self.scrollMax());
-            self.savePrefs();
-            self.markAction("toggle");
-            logz.log("ux: toggle meters={} hw_only={} all_streams={}", .{
-                self.show_meters,
-                self.hw_only,
-                self.all_streams,
-            });
-            // Rows appear and disappear: everything below moves.
-            self.damageAll();
-            self.repaint();
-        }
-        return;
+        // A hover highlight is all that moves with the pointer: repaint the rows
+        // (or header/popup) under the old and the new position, nothing else.
+        self.damagePointer(from_x, from_y, x, y);
+        if (self.drag) |d| self.damage = rectJoin(self.damage, padRect(d.row, 4));
+        self.repaint();
     }
 
-    const idx = self.hitCard(px, py) orelse return;
-    const r = self.cardRect(idx);
-    switch (self.page) {
-        .configuration => {
-            const dev = self.deviceAt(idx) orelse return;
-            const pr = profileComboRect(r);
-            if (common.pointInRect(px, py, pr)) self.openDropdown(.profile, dev.id, 0, pr);
-        },
-        .output, .input => {
-            const node = self.nodeAt(idx) orelse return;
-            self.clickNodeRow(r, node);
-        },
-        .engine => {
-            const now = liveNowNs();
-            switch (engineRow(idx)) {
-                .status => {
-                    if (self.top.available and common.pointInRect(px, py, engineXrunHitRect(r))) {
-                        self.xrun_base = self.top.xruns_total;
-                        self.needs_repaint = true;
-                        self.markAction("xrun-reset");
-                        self.damageAll();
-                    }
-                },
-                .latency_offset => {
-                    if (common.pointInRect(px, py, engineLatFieldRect(r))) {
-                        self.lat_focus = true;
-                        self.needs_repaint = true;
-                        self.markAction("latency-focus");
-                    } else if (common.pointInRect(px, py, engineLatUnitRect(r))) {
-                        // Pick the half that was clicked, not a blind toggle.
-                        const ur = engineLatUnitRect(r);
-                        const split = if (self.engine_unit_split > 0) self.engine_unit_split else @divTrunc(ur.w, 2);
-                        self.lat_ns = px >= @as(f64, @floatFromInt(ur.x + split));
-                        self.needs_repaint = true;
-                        self.damageAll();
-                    } else if (common.pointInRect(px, py, engineLatApplyRect(r))) {
-                        if (self.latencyNode() != null) self.applyLatency();
-                    } else if (common.pointInRect(px, py, engineLatResetRect(r))) {
-                        if (self.latencyNodeCount() > 0) self.resetAllLatency();
-                    } else {
-                        self.lat_focus = false;
-                    }
-                },
-                .restart_wp => {
-                    if (common.pointInRect(px, py, engineRestartBtnRect(r))) {
-                        const armed = self.restart_wp_arm_ns != 0 and now - self.restart_wp_arm_ns <= engine_restart_arm_ns;
-                        if (!armed) {
-                            self.restart_wp_arm_ns = now;
-                        } else {
-                            self.restart_wp_arm_ns = 0;
-                            _ = live_audio.restartWirePlumber(self.io);
-                            self.restart_wp_done_ns = now;
-                            self.engine_at_ns = 0;
-                            self.caps_at_ns = 0;
-                        }
-                        self.needs_repaint = true;
-                        self.damageAll();
-                        self.markAction("restart-wp");
-                    }
-                },
-                .restart_pw => {
-                    if (common.pointInRect(px, py, engineRestartBtnRect(r))) {
-                        const armed = self.restart_pw_arm_ns != 0 and now - self.restart_pw_arm_ns <= engine_restart_arm_ns;
-                        if (!armed) {
-                            self.restart_pw_arm_ns = now;
-                        } else {
-                            self.restart_pw_arm_ns = 0;
-                            _ = live_audio.restartPipeWire(self.io);
-                            self.restart_pw_done_ns = now;
-                            self.engine_at_ns = 0;
-                            self.caps_at_ns = 0;
-                        }
-                        self.needs_repaint = true;
-                        self.damageAll();
-                        self.markAction("restart-pw");
-                    }
+    fn onAxis(ctx: *anyopaque, delta: f64) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        if (self.ptr_x >= 0 and self.ptr_x < @as(f64, @floatFromInt(rail_w))) return;
+        if (self.dd.open) self.closeDropdown();
+        self.damageAll();
+        self.scroll.scrollBy(delta * wheel_scale);
+        self.markAction("scroll");
+        self.repaint();
+    }
+
+    fn onKey(ctx: *anyopaque, ev: *const wl_seat.KeyEvent) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        if (ev.state != 1) return; // pressed only
+        if (self.emodal != .none) {
+            switch (ev.sym) {
+                wl_seat.xkb.XKB_KEY_Escape => self.emodal = .none,
+                wl_seat.xkb.XKB_KEY_Return, wl_seat.xkb.XKB_KEY_KP_Enter => self.submitEngineModal(),
+                wl_seat.xkb.XKB_KEY_BackSpace => {
+                    if (self.emodal_len > 0) self.emodal_len -= 1;
                 },
                 else => {
-                    const cr = profileComboRect(r);
-                    if (common.pointInRect(px, py, cr)) {
-                        self.lat_focus = false;
-                        self.openDropdown(.engine, @intCast(idx), 0, cr);
+                    if (ev.utf8_len > 0) {
+                        const ch = ev.utf8[0];
+                        if (ch >= '0' and ch <= '9' and self.emodal_len < self.emodal_buf.len - 1) {
+                            self.emodal_buf[self.emodal_len] = ch;
+                            self.emodal_len += 1;
+                        }
                     }
                 },
             }
-        },
-        else => {
-            const node = self.nodeAt(idx) orelse return;
-            if (common.pointInRect(px, py, closeBtnRect(r))) {
-                if (self.client) |c| _ = c.killNode(node.id);
-                self.needs_repaint = true;
-                self.markAction("kill");
-                logz.log("ux: kill stream node={d} app={s}", .{ node.id, node.app_name.get() });
-                // The row disappears and everything below it moves up.
-                self.damageAll();
-            } else if (common.pointInRect(px, py, moveComboRect(r))) {
-                const dir: u32 = if (self.page == .playback) 1 else 0;
-                self.openDropdown(.move, node.id, dir, moveComboRect(r));
-            } else {
-                self.clickVolumeRow(r, node, false);
-            }
-        },
-    }
-    self.repaint();
-}
-
-fn clickNodeRow(self: *Win, r: common.Rect, node: *const Node) void {
-    const dir: u32 = if (node.role == .sink) 1 else 0;
-    const px = self.ptr_x;
-    const py = self.ptr_y;
-    if (self.portCount(node, dir) > 0 and common.pointInRect(px, py, portComboRect(r))) {
-        self.openDropdown(.port, node.id, dir, portComboRect(r));
-        return;
-    }
-    if (common.pointInRect(px, py, defaultBtnRect(r))) {
-        if (!self.isDefaultNode(node)) {
-            if (self.client) |c| {
-                if (node.role == .sink) {
-                    _ = c.setDefaultSinkName(node.node_name.get());
-                } else {
-                    _ = c.setDefaultSourceName(node.node_name.get());
-                }
+            self.needs_repaint = true;
+            self.damageAll();
+            self.repaint();
+            return;
+        }
+        if (self.lat_focus and self.page == .engine) {
+            switch (ev.sym) {
+                wl_seat.xkb.XKB_KEY_Escape => {
+                    self.lat_focus = false;
+                },
+                wl_seat.xkb.XKB_KEY_Return, wl_seat.xkb.XKB_KEY_KP_Enter => {
+                    self.applyLatency();
+                    self.lat_focus = false;
+                },
+                wl_seat.xkb.XKB_KEY_BackSpace => {
+                    if (self.lat_len > 0) self.lat_len -= 1;
+                },
+                else => {
+                    if (ev.utf8_len > 0) {
+                        const ch = ev.utf8[0];
+                        if (ch >= '0' and ch <= '9' and self.lat_len < self.lat_field.len - 1) {
+                            self.lat_field[self.lat_len] = ch;
+                            self.lat_len += 1;
+                        }
+                    }
+                },
             }
             self.needs_repaint = true;
-            self.markAction("default");
-            logz.log("ux: default {s} = {s}", .{ @tagName(node.role), node.node_name.get() });
-            // The default chip moves from another row to this one — that row
-            // can be any card on the page, so this frame is a full paint.
             self.damageAll();
+            self.repaint();
+            return;
         }
-        return;
+        switch (ev.sym) {
+            wl_seat.xkb.XKB_KEY_Escape => {
+                if (self.dd.open) {
+                    self.closeDropdown();
+                } else {
+                    self.running = false;
+                    wl_loop.Loop.requestStop();
+                    return;
+                }
+                self.repaint();
+            },
+            else => {},
+        }
     }
-    self.clickVolumeRow(r, node, false);
-}
 
-/// Mute button toggles; the track starts a drag.
-fn clickVolumeRow(self: *Win, r: common.Rect, node: *const Node, monitor: bool) void {
-    const tr = trackRect(r);
-    if (common.pointInRect(self.ptr_x, self.ptr_y, muteBtnRect(r))) {
-        const t = self.graph.volumeTarget(node, monitor);
-        if (self.client) |c| _ = c.setMute(node.id, !t.mute, monitor);
-        self.needs_repaint = true;
-        self.damage = rectJoin(self.damage, padRect(r, 4));
-        self.markAction("mute");
-        logz.log("ux: mute node={d} -> {} (monitor={})", .{ node.id, !t.mute, monitor });
-        return;
-    }
-    const grab = common.Rect{ .x = tr.x, .y = tr.y - 8, .w = tr.w, .h = tr.h + 16 };
-    if (common.pointInRect(self.ptr_x, self.ptr_y, grab)) {
-        self.drag = .{
-            .id = node.id,
-            .monitor = monitor,
-            .track = tr,
-            .row = r,
-            .pct = pctFromTrack(tr, self.ptr_x),
-            .last_apply_ns = 0,
-        };
-        if (self.drag) |*d| self.applyDrag(d, true);
-        self.needs_repaint = true;
-        self.markAction("volume-seek");
-        self.damage = rectJoin(self.damage, padRect(r, 4));
-    }
-}
+    fn onButton(ctx: *anyopaque, button: u32, state: u32) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        const BTN_LEFT: u32 = 0x110;
+        if (button != BTN_LEFT) return;
+        const px = self.ptr_x;
+        const py = self.ptr_y;
 
-fn hitCard(self: *Win, px: f64, py: f64) ?usize {
-    const n = self.rowCount();
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const r = self.cardRect(i);
-        if (common.pointInRect(px, py, r)) return i;
+        if (state == 0) {
+            // Release: land the final volume write of a drag.
+            if (self.drag) |*d| {
+                self.applyDrag(d, true);
+                self.damage = rectJoin(self.damage, padRect(d.row, 4));
+                self.drag = null;
+                self.repaint();
+            }
+            return;
+        }
+
+        // The custom-value dialog is modal: it swallows every click.
+        if (self.emodal != .none) {
+            const r = engineModalRect(self.win_w, self.win_h);
+            if (common.pointInRect(px, py, engineModalSubmitRect(r))) {
+                self.submitEngineModal();
+            } else {
+                self.emodal = .none;
+                self.needs_repaint = true;
+                self.damageAll();
+            }
+            self.repaint();
+            return;
+        }
+
+        // An open dropdown swallows the next click: a popup row applies, any
+        // other click just closes it.
+        if (self.dd.open) {
+            const row = self.dd.hitRow(
+                @intFromFloat(@max(0, px)),
+                @intFromFloat(@max(0, py)),
+                self.win_h,
+            );
+            const applied = row >= 0;
+            if (applied) self.ddApply(row);
+            self.closeDropdown();
+            // Applying a row can rewrite the label, move the stream to another
+            // device, change a profile — pixels anywhere. A plain close only
+            // drops the popup, which closeDropdown has already marked.
+            if (applied) self.damageAll();
+            self.repaint();
+            return;
+        }
+
+        if (common.pointInRect(px, py, closeRect(self.win_w))) {
+            self.running = false;
+            wl_loop.Loop.requestStop();
+            return;
+        }
+
+        // Rail: page switch.
+        if (px >= 0 and px < @as(f64, @floatFromInt(rail_w))) {
+            for (pages, 0..) |p, i| {
+                if (common.pointInRect(px, py, railBtnRect(i))) {
+                    self.setPage(p);
+                    self.repaint();
+                    return;
+                }
+            }
+            return;
+        }
+
+        // Header toggles.
+        if (py < @as(f64, @floatFromInt(header_h))) {
+            var changed = false;
+            if (self.hit_engine_refresh) |r| {
+                if (common.pointInRect(px, py, r)) {
+                    self.refreshEngine(true);
+                    self.needs_repaint = true;
+                    self.damageAll();
+                    self.markAction("engine-refresh");
+                    self.repaint();
+                    return;
+                }
+            }
+            if (common.pointInRect(px, py, self.hit_meters)) {
+                self.show_meters = !self.show_meters;
+                changed = true;
+            } else if (self.hit_page_toggle) |r| {
+                if (common.pointInRect(px, py, r)) {
+                    switch (self.page) {
+                        .recording => self.all_streams = !self.all_streams,
+                        .output, .input => self.hw_only = !self.hw_only,
+                        .engine => {},
+                        else => {},
+                    }
+                    changed = true;
+                }
+            }
+            if (changed) {
+                self.scroll.setMax(self.scrollMax());
+                self.savePrefs();
+                self.markAction("toggle");
+                logz.log("ux: toggle meters={} hw_only={} all_streams={}", .{
+                    self.show_meters,
+                    self.hw_only,
+                    self.all_streams,
+                });
+                // Rows appear and disappear: everything below moves.
+                self.damageAll();
+                self.repaint();
+            }
+            return;
+        }
+
+        const idx = self.hitCard(px, py) orelse return;
+        const r = self.cardRect(idx);
+        switch (self.page) {
+            .configuration => {
+                const dev = self.deviceAt(idx) orelse return;
+                const pr = profileComboRect(r);
+                if (common.pointInRect(px, py, pr)) self.openDropdown(.profile, dev.id, 0, pr);
+            },
+            .output, .input => {
+                const node = self.nodeAt(idx) orelse return;
+                self.clickNodeRow(r, node);
+            },
+            .engine => {
+                const now = liveNowNs();
+                switch (engineRow(idx)) {
+                    .status => {
+                        if (self.top.available and common.pointInRect(px, py, engineXrunHitRect(r))) {
+                            self.xrun_base = self.top.xruns_total;
+                            self.needs_repaint = true;
+                            self.markAction("xrun-reset");
+                            self.damageAll();
+                        }
+                    },
+                    .latency_offset => {
+                        if (common.pointInRect(px, py, engineLatFieldRect(r))) {
+                            self.lat_focus = true;
+                            self.needs_repaint = true;
+                            self.markAction("latency-focus");
+                        } else if (common.pointInRect(px, py, engineLatUnitRect(r))) {
+                            // Pick the half that was clicked, not a blind toggle.
+                            const ur = engineLatUnitRect(r);
+                            const split = if (self.engine_unit_split > 0) self.engine_unit_split else @divTrunc(ur.w, 2);
+                            self.lat_ns = px >= @as(f64, @floatFromInt(ur.x + split));
+                            self.needs_repaint = true;
+                            self.damageAll();
+                        } else if (common.pointInRect(px, py, engineLatApplyRect(r))) {
+                            if (self.latencyNode() != null) self.applyLatency();
+                        } else if (common.pointInRect(px, py, engineLatResetRect(r))) {
+                            if (self.latencyNodeCount() > 0) self.resetAllLatency();
+                        } else {
+                            self.lat_focus = false;
+                        }
+                    },
+                    .restart_wp => {
+                        if (common.pointInRect(px, py, engineRestartBtnRect(r))) {
+                            const armed = self.restart_wp_arm_ns != 0 and now - self.restart_wp_arm_ns <= engine_restart_arm_ns;
+                            if (!armed) {
+                                self.restart_wp_arm_ns = now;
+                            } else {
+                                self.restart_wp_arm_ns = 0;
+                                _ = live_audio.restartWirePlumber(self.io);
+                                self.restart_wp_done_ns = now;
+                                self.engine_at_ns = 0;
+                                self.caps_at_ns = 0;
+                            }
+                            self.needs_repaint = true;
+                            self.damageAll();
+                            self.markAction("restart-wp");
+                        }
+                    },
+                    .restart_pw => {
+                        if (common.pointInRect(px, py, engineRestartBtnRect(r))) {
+                            const armed = self.restart_pw_arm_ns != 0 and now - self.restart_pw_arm_ns <= engine_restart_arm_ns;
+                            if (!armed) {
+                                self.restart_pw_arm_ns = now;
+                            } else {
+                                self.restart_pw_arm_ns = 0;
+                                _ = live_audio.restartPipeWire(self.io);
+                                self.restart_pw_done_ns = now;
+                                self.engine_at_ns = 0;
+                                self.caps_at_ns = 0;
+                            }
+                            self.needs_repaint = true;
+                            self.damageAll();
+                            self.markAction("restart-pw");
+                        }
+                    },
+                    else => {
+                        const cr = profileComboRect(r);
+                        if (common.pointInRect(px, py, cr)) {
+                            self.lat_focus = false;
+                            self.openDropdown(.engine, @intCast(idx), 0, cr);
+                        }
+                    },
+                }
+            },
+            else => {
+                const node = self.nodeAt(idx) orelse return;
+                if (common.pointInRect(px, py, closeBtnRect(r))) {
+                    if (self.client) |c| _ = c.killNode(node.id);
+                    self.needs_repaint = true;
+                    self.markAction("kill");
+                    logz.log("ux: kill stream node={d} app={s}", .{ node.id, node.app_name.get() });
+                    // The row disappears and everything below it moves up.
+                    self.damageAll();
+                } else if (common.pointInRect(px, py, moveComboRect(r))) {
+                    const dir: u32 = if (self.page == .playback) 1 else 0;
+                    self.openDropdown(.move, node.id, dir, moveComboRect(r));
+                } else {
+                    self.clickVolumeRow(r, node, false);
+                }
+            },
+        }
+        self.repaint();
     }
-    return null;
-}
+
+    fn clickNodeRow(self: *Win, r: common.Rect, node: *const Node) void {
+        const dir: u32 = if (node.role == .sink) 1 else 0;
+        const px = self.ptr_x;
+        const py = self.ptr_y;
+        if (self.portCount(node, dir) > 0 and common.pointInRect(px, py, portComboRect(r))) {
+            self.openDropdown(.port, node.id, dir, portComboRect(r));
+            return;
+        }
+        if (common.pointInRect(px, py, defaultBtnRect(r))) {
+            if (!self.isDefaultNode(node)) {
+                if (self.client) |c| {
+                    if (node.role == .sink) {
+                        _ = c.setDefaultSinkName(node.node_name.get());
+                    } else {
+                        _ = c.setDefaultSourceName(node.node_name.get());
+                    }
+                }
+                self.needs_repaint = true;
+                self.markAction("default");
+                logz.log("ux: default {s} = {s}", .{ @tagName(node.role), node.node_name.get() });
+                // The default chip moves from another row to this one — that row
+                // can be any card on the page, so this frame is a full paint.
+                self.damageAll();
+            }
+            return;
+        }
+        self.clickVolumeRow(r, node, false);
+    }
+
+    /// Mute button toggles; the track starts a drag.
+    fn clickVolumeRow(self: *Win, r: common.Rect, node: *const Node, monitor: bool) void {
+        const tr = trackRect(r);
+        if (common.pointInRect(self.ptr_x, self.ptr_y, muteBtnRect(r))) {
+            const t = self.graph.volumeTarget(node, monitor);
+            if (self.client) |c| _ = c.setMute(node.id, !t.mute, monitor);
+            self.needs_repaint = true;
+            self.damage = rectJoin(self.damage, padRect(r, 4));
+            self.markAction("mute");
+            logz.log("ux: mute node={d} -> {} (monitor={})", .{ node.id, !t.mute, monitor });
+            return;
+        }
+        const grab = common.Rect{ .x = tr.x, .y = tr.y - 8, .w = tr.w, .h = tr.h + 16 };
+        if (common.pointInRect(self.ptr_x, self.ptr_y, grab)) {
+            self.drag = .{
+                .id = node.id,
+                .monitor = monitor,
+                .track = tr,
+                .row = r,
+                .pct = pctFromTrack(tr, self.ptr_x),
+                .last_apply_ns = 0,
+            };
+            if (self.drag) |*d| self.applyDrag(d, true);
+            self.needs_repaint = true;
+            self.markAction("volume-seek");
+            self.damage = rectJoin(self.damage, padRect(r, 4));
+        }
+    }
+
+    fn hitCard(self: *Win, px: f64, py: f64) ?usize {
+        const n = self.rowCount();
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const r = self.cardRect(i);
+            if (common.pointInRect(px, py, r)) return i;
+        }
+        return null;
+    }
 };
 
 pub fn run(init: std.process.Init) !u8 {

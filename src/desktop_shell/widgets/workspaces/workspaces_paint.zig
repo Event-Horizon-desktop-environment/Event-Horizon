@@ -11,9 +11,9 @@
 //!   omission), so `Strip.poll` takes the host's regions plus its
 //!   desk-key → app-id map in — the throttle, the entry mapping and the
 //!   max-slots gap fill are the port; the enumeration stays with the host.
-//! * **The `jumpTo` call.** `activateTarget` answers the workspace id to
-//!   jump to (null for placeholders); the host's own workspaces object
-//!   performs the jump, ignoring any compositor-kind parameter.
+//! * **The `jumpTo` call.** `activateTarget` answers the compositor target
+//!   to jump to — the workspace name when the backend recorded one, else the
+//!   numeric id — and null for placeholders; the host performs the jump.
 //! * **The `IconCache`.** `paintWorkspacesSlot` takes an `Icons` provider
 //!   (a key → cairo surface lookup the host fills in, e.g. from its icon
 //!   theme); a null provider or a missing key paints the ghost tile. Steam keys keep their blue tile.
@@ -59,6 +59,9 @@ pub const anim_duration_ms: u64 = 200;
 pub const Entry = struct {
     id: i32 = 0,
     label: []u8 = &.{},
+    /// Compositor workspace name for activation; empty means the numeric
+    /// `id` is the target (Hyprland).
+    target: []u8 = &.{},
     active: bool = false,
     occupied: bool = false,
     urgent: bool = false,
@@ -110,6 +113,7 @@ pub fn applyMaxSlots(alloc: std.mem.Allocator, entries: []const Entry, max_slots
         for (entries, 0..) |*e, i| out[i] = .{
             .id = e.id,
             .label = try alloc.dupe(u8, e.label),
+            .target = try alloc.dupe(u8, e.target),
             .active = e.active,
             .occupied = e.occupied,
             .urgent = e.urgent,
@@ -138,6 +142,7 @@ pub fn applyMaxSlots(alloc: std.mem.Allocator, entries: []const Entry, max_slots
             try out.append(alloc, .{
                 .id = src.id,
                 .label = try alloc.dupe(u8, src.label),
+                .target = try alloc.dupe(u8, src.target),
                 .active = src.active,
                 .occupied = src.occupied,
                 .urgent = src.urgent,
@@ -164,6 +169,7 @@ fn dupeKeys(alloc: std.mem.Allocator, keys: []const []const u8) ![][]const u8 {
 
 fn freeEntry(alloc: std.mem.Allocator, e: *Entry) void {
     alloc.free(e.label);
+    alloc.free(e.target);
     for (e.app_keys) |k| alloc.free(k);
     alloc.free(e.app_keys);
     e.* = .{};
@@ -229,6 +235,7 @@ pub const Strip = struct {
             try fresh.append(self.alloc, .{
                 .id = @intCast(r.index),
                 .label = try self.alloc.dupe(u8, if (r.name.len > 0) r.name else r.id),
+                .target = try self.alloc.dupe(u8, r.id),
                 .active = r.active,
                 .occupied = r.occupied,
                 .urgent = r.urgent,
@@ -246,8 +253,9 @@ pub const Strip = struct {
 };
 
 /// `workspace_activate_entry` — the id to jump to, or null for placeholders
-/// (`id <= 0`). The host performs the jump on its own workspaces object.
+/// (`id <= 0`). A named target wins over the numeric id.
 pub fn activateTarget(e: *const Entry, buf: []u8) ?[]const u8 {
+    if (e.target.len > 0) return e.target;
     if (e.id <= 0) return null;
     return std.fmt.bufPrint(buf, "{d}", .{e.id}) catch null;
 }
@@ -1208,6 +1216,9 @@ test "workspaces: pick and activate" {
     try t.expectEqual(@as(i32, -1), try pickIndex(t.allocator, 10.0, 400.0, &loaded.cfg, "ws", 30.0, &.{}));
     var buf: [12]u8 = undefined;
     try t.expectEqualStrings("2", activateTarget(&src[1], &buf).?);
+    // A recorded compositor name wins over the synthetic numeric id.
+    var named = Entry{ .id = 4, .target = @constCast("dev") };
+    try t.expectEqualStrings("dev", activateTarget(&named, &buf).?);
     var ph = Entry{ .id = 0 };
     try t.expect(activateTarget(&ph, &buf) == null);
     var list = [_][]const u8{"ws"};

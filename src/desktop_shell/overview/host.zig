@@ -60,6 +60,8 @@ pub const Win = struct {
 pub const Card = struct {
     id: i32 = 0,
     label: []const u8 = "",
+    /// Compositor workspace name for activation; empty means the numeric id.
+    target: []const u8 = "",
     active: bool = false,
     /// The monitor this workspace sits on, borrowed like the label: the
     /// key the shot store answers by.
@@ -498,6 +500,7 @@ pub const Host = struct {
             out[i] = .{
                 .id = c.id,
                 .label = al.dupe(u8, c.label) catch "",
+                .target = al.dupe(u8, c.target) catch "",
                 .monitor = al.dupe(u8, c.monitor) catch "",
                 .active = c.active,
                 .wins = wins,

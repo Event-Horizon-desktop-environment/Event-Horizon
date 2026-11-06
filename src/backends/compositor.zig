@@ -6,6 +6,7 @@ pub const Kind = enum {
     mango,
     sway,
     labwc,
+    zoolander,
     unknown,
 
     /// Environment probes in historical precedence, then the desktop-hint
@@ -17,6 +18,21 @@ pub const Kind = enum {
     /// `containsFolded` only ever matches within one string, so a match
     /// cannot straddle a separator — the same answers, with no allocation.
     pub fn detectWithMap(env: *const std.process.Environ.Map) Kind {
+        // Zoolander exports `HYPRLAND_INSTANCE_SIGNATURE` for client
+        // compatibility, so its own markers have to win before the Hyprland
+        // probe below can claim the session.
+        const zoolander_probes = [_][]const u8{
+            "ZOOLANDER_INSTANCE_SIGNATURE",
+            "ZOOLANDER_SOCKET",
+            "ZOOLANDER_RUNTIME_DIR",
+            "ZOOLANDER_CONFIG",
+        };
+        for (zoolander_probes) |key| {
+            if (env.get(key)) |v| {
+                if (v.len != 0) return .zoolander;
+            }
+        }
+
         const probes = [_]struct { env_key: []const u8, kind: Kind }{
             .{ .env_key = "HYPRLAND_INSTANCE_SIGNATURE", .kind = .hyprland },
             .{ .env_key = "NIRI_SOCKET", .kind = .niri },
@@ -38,9 +54,21 @@ pub const Kind = enum {
             .{ .text = "sway", .kind = .sway },
             .{ .text = "mango", .kind = .mango },
             .{ .text = "labwc", .kind = .labwc },
+            .{ .text = "zoolander", .kind = .zoolander },
         };
         const vars = [_][]const u8{ "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION" };
+        // The hint may name both Zoolander and Hyprland; check Zoolander
+        // first for the same compatibility reason as the env probes.
         for (hints) |h| {
+            if (h.kind != .zoolander) continue;
+            for (vars) |v| {
+                if (env.get(v)) |value| {
+                    if (containsFolded(value, h.text)) return h.kind;
+                }
+            }
+        }
+        for (hints) |h| {
+            if (h.kind == .zoolander) continue;
             for (vars) |v| {
                 if (env.get(v)) |value| {
                     if (containsFolded(value, h.text)) return h.kind;
@@ -98,6 +126,7 @@ pub fn capabilitiesFor(kind: Kind) Capabilities {
         .niri => .{ .workspaces = true, .toplevel_tracking = true, .output_config = false },
         .mango => .{ .workspaces = true, .toplevel_tracking = true, .output_config = false },
         .sway => .{ .workspaces = true, .toplevel_tracking = true, .output_config = true },
+        .zoolander => .{ .workspaces = true, .toplevel_tracking = true, .output_config = true },
         .labwc, .unknown => .{},
     };
 }
@@ -162,4 +191,21 @@ test "backends: detection probes the variables in precedence order" {
     try t.expectEqual(Kind.mango, Kind.detectWithMap(&hint));
     try hint.put("DESKTOP_SESSION", "");
     try t.expectEqual(Kind.unknown, Kind.detectWithMap(&hint));
+}
+
+test "backends: zoolander wins over the Hyprland compatibility marker" {
+    const t = std.testing;
+    var env = std.process.Environ.Map.init(t.allocator);
+    defer env.deinit();
+    try env.put("HYPRLAND_INSTANCE_SIGNATURE", "hypr-compat");
+    try env.put("ZOOLANDER_CONFIG", "/home/u/.config/zoolander");
+    try t.expectEqual(Kind.zoolander, Kind.detectWithMap(&env));
+
+    // A hint naming both still resolves to Zoolander.
+    var hinted = std.process.Environ.Map.init(t.allocator);
+    defer hinted.deinit();
+    try hinted.put("XDG_CURRENT_DESKTOP", "Hyprland:Zoolander");
+    try t.expectEqual(Kind.zoolander, Kind.detectWithMap(&hinted));
+
+    try t.expect(capabilitiesFor(.zoolander).workspaces);
 }

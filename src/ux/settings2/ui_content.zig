@@ -18,6 +18,8 @@ const default_apps_tab = @import("default_apps_tab.zig");
 const hyprland_data = @import("hyprland_data.zig");
 const hyprland_tab = @import("hyprland_tab.zig");
 const hyprland_page = @import("hyprland_page.zig");
+const zoolander_page = @import("zoolander_page.zig");
+const zoolander_data = @import("zoolander_data.zig");
 const bluetooth_tab = @import("bluetooth_tab.zig");
 const sound_tab = @import("sound_tab.zig");
 const network_tab = @import("network_tab.zig");
@@ -26,6 +28,7 @@ const time_tab = @import("time_tab.zig");
 const accounts_tab = @import("accounts_tab.zig");
 const icon_cache = @import("../../desktop_shell/common/icon_cache.zig");
 const cairo = @import("../../wl/buffer/shm.zig").cairo;
+const xkb = @import("../../wl/seat.zig").xkb;
 
 // Content paint + input — the generic renderer for the per-tab card lists in
 // rows.zig. It renders every tab with one geometry pass:
@@ -70,11 +73,16 @@ fn cardBottomPad(c: rows_mod.Card) i32 {
 pub const Column = struct { x: i32, w: i32 };
 
 pub fn columnFor(tab: i32, content_x: i32, content_w: i32) ?Column {
-    // The Hyprland section pages center their cards — and align their page
-    // headers — in one 68% column (`hyprland_page.column`); every other tab
-    // spans the content box with the usual 8px inset (placeCards's default).
-    const hy = hyprland_page.column(tab, content_x, content_w) orelse return null;
-    return .{ .x = hy.x, .w = hy.w };
+    // The Hyprland and Zoolander section pages center their cards — and
+    // align their page headers — in one 68% column; every other tab spans
+    // the content box with the usual 8px inset (placeCards's default).
+    if (hyprland_page.column(tab, content_x, content_w)) |hy| {
+        return .{ .x = hy.x, .w = hy.w };
+    }
+    if (zoolander_page.column(tab, content_x, content_w)) |zl| {
+        return .{ .x = zl.x, .w = zl.w };
+    }
+    return null;
 }
 
 /// `*total_h` to the scrollable height below `y0`. `board_max` is the live
@@ -209,6 +217,8 @@ pub const Hit = union(enum) {
     toggle: fields.Field,
     slider: Drag,
     combo: rows_mod.ComboRow,
+    /// Focus an inline text band (`Content.beginText`).
+    text: fields.Field,
     /// Row picked inside an open popup (index into its options).
     combo_pick: usize,
     button: []const u8,
@@ -306,6 +316,16 @@ pub const Content = struct {
     pointer_ly: f64 = -1,
     drag: ?Drag = null,
     open_combo: ?ComboPopup = null,
+    /// Inline text editor (Zoolander XKB / colour / font keys). Only one
+    /// row edits at a time; keys route here before the window's own
+    /// shortcuts while `edit_field` is set.
+    edit_field: ?fields.Field = null,
+    edit_buf: [256]u8 = @splat(0),
+    edit_len: usize = 0,
+    edit_max: usize = 128,
+    /// Set by `textKey` when Enter/Tab committed a value, consumed by the
+    /// window so it can flush the page's store.
+    text_commit: bool = false,
     placed: [max_placed]PlacedRow = undefined,
     placed_len: usize = 0,
     total_h: i32 = 0,
@@ -659,6 +679,7 @@ pub const Content = struct {
     /// first card sits at `common.content_top + page_header.h`.
     pub fn y0(self: *const Content) i32 {
         if (hyprland_page.ownsTab(self.active_tab)) return hyprland_page.pageTop();
+        if (zoolander_page.ownsTab(self.active_tab)) return zoolander_page.pageTop();
         return if (ui_subtab.barRect(self.active_tab, self.content_x, self.content_w) != null)
             common.child_content_top
         else
@@ -671,6 +692,7 @@ pub const Content = struct {
     /// fixed child-tab bar stays clear of the scroll.
     pub fn clipTop(self: *const Content) i32 {
         if (hyprland_page.ownsTab(self.active_tab)) return content_top;
+        if (zoolander_page.ownsTab(self.active_tab)) return content_top;
         return self.y0();
     }
 
@@ -813,6 +835,7 @@ pub const Content = struct {
             return mon_page.fieldBool(self.mon.?, f);
         }
         if (f.hyprSlot()) |slot| return hyprland_data.getBool(slot);
+        if (f.zoolSlot()) |slot| return zoolander_data.getBool(slot);
         return fields.getBool(self.settings, f);
     }
 
@@ -825,6 +848,10 @@ pub const Content = struct {
             hyprland_data.setBool(slot, v);
             return;
         }
+        if (f.zoolSlot()) |slot| {
+            zoolander_data.setBool(slot, v);
+            return;
+        }
         fields.setBool(self.settings, f, v);
     }
 
@@ -833,6 +860,7 @@ pub const Content = struct {
             return mon_page.fieldInt(self.mon.?, f);
         }
         if (f.hyprSlot()) |slot| return hyprland_data.getInt(slot);
+        if (f.zoolSlot()) |slot| return zoolander_data.getInt(slot);
         return fields.getInt(self.settings, f);
     }
 
@@ -845,6 +873,10 @@ pub const Content = struct {
             hyprland_data.setInt(slot, v);
             return;
         }
+        if (f.zoolSlot()) |slot| {
+            zoolander_data.setInt(slot, v);
+            return;
+        }
         fields.setInt(self.settings, f, v);
     }
 
@@ -853,6 +885,7 @@ pub const Content = struct {
             return mon_page.fieldComboIndex(self.mon.?, f, options);
         }
         if (f.hyprSlot()) |slot| return hyprland_data.comboIndex(slot, options);
+        if (f.zoolSlot()) |slot| return zoolander_data.comboIndex(slot, options);
         return fields.comboIndex(self.settings, f, options);
     }
 
@@ -865,7 +898,87 @@ pub const Content = struct {
             hyprland_data.setComboIndex(slot, options, idx);
             return;
         }
+        if (f.zoolSlot()) |slot| {
+            zoolander_data.setComboIndex(slot, options, idx);
+            return;
+        }
         fields.setComboIndex(self.settings, f, options, idx);
+    }
+
+    pub fn getText(self: *const Content, f: fields.Field) []const u8 {
+        if (f.zoolSlot()) |slot| return zoolander_data.getStr(slot);
+        return fields.getStr(self.settings, f);
+    }
+
+    pub fn setText(self: *Content, f: fields.Field, v: []const u8) void {
+        if (f.zoolSlot()) |slot| {
+            zoolander_data.setStr(slot, v);
+            return;
+        }
+        fields.setStr(self.settings, f, v);
+    }
+
+    /// Start editing a text band, seeded with its stored value.
+    pub fn beginText(self: *Content, f: fields.Field, max_len: usize) void {
+        const cur = self.getText(f);
+        const n = @min(cur.len, @min(self.edit_buf.len, @max(max_len, 1)));
+        @memcpy(self.edit_buf[0..n], cur[0..n]);
+        self.edit_len = n;
+        self.edit_max = @min(self.edit_buf.len, @max(max_len, 1));
+        self.edit_field = f;
+        self.text_commit = false;
+    }
+
+    pub fn textEditing(self: *const Content) bool {
+        return self.edit_field != null;
+    }
+
+    /// Window key routing while a text band has focus. Escape cancels,
+    /// Enter/Tab commits (`text_commit`), Backspace removes one UTF-8
+    /// scalar and every printable key appends.
+    pub fn textKey(self: *Content, sym: u32, text: []const u8) bool {
+        if (self.edit_field == null) return false;
+        switch (sym) {
+            xkb.XKB_KEY_Escape => {
+                self.edit_field = null;
+                self.text_commit = false;
+            },
+            xkb.XKB_KEY_Return, xkb.XKB_KEY_KP_Enter, xkb.XKB_KEY_Tab => _ = self.commitText(),
+            xkb.XKB_KEY_BackSpace => {
+                if (self.edit_len > 0) {
+                    var end = self.edit_len - 1;
+                    while (end > 0 and (self.edit_buf[end] & 0xC0) == 0x80) end -= 1;
+                    self.edit_len = end;
+                }
+            },
+            else => {
+                if (text.len == 0 or text[0] < 0x20) return true;
+                const room = self.edit_max -| self.edit_len;
+                const n = @min(room, text.len);
+                if (n > 0) {
+                    @memcpy(self.edit_buf[self.edit_len .. self.edit_len + n], text[0..n]);
+                    self.edit_len += n;
+                }
+            },
+        }
+        return true;
+    }
+
+    /// Commit the focused band (Enter or a click elsewhere). No-op when
+    /// nothing is being edited.
+    pub fn commitText(self: *Content) bool {
+        const f = self.edit_field orelse return false;
+        self.setText(f, self.edit_buf[0..self.edit_len]);
+        self.edit_field = null;
+        self.text_commit = true;
+        return true;
+    }
+
+    /// Consume the "Enter committed" edge, so the window flushes once.
+    pub fn takeTextCommit(self: *Content) bool {
+        const v = self.text_commit;
+        self.text_commit = false;
+        return v;
     }
 
     /// Slider display string: monitor sliders carry their own unit/format
@@ -876,6 +989,7 @@ pub const Content = struct {
         // print `value_labels[val - lo]`, then `%d %%`, then the plain
         // number, and never a unit.
         if (sl.field.hyprSlot()) |slot| return hyprland_data.valueText(slot, v, sl.min, buf);
+        if (sl.field.zoolSlot()) |slot| return zoolander_data.valueText(slot, v, sl.unit, buf);
         // Workspaces slot count prints "Auto" at 0.
         // kWsSlotLabels[0]), like the value pill.
         if (sl.field == fields.Field.workspaces_max_slots and v == 0) return "Auto";
@@ -1072,6 +1186,7 @@ pub const Content = struct {
                     return .none;
                 },
                 .combo => |cb| return .{ .combo = cb },
+                .text => |tr| return .{ .text = tr.field },
                 .button => |bt| return .{ .button = bt.label },
                 .widget_board => {
                     const lists = self.boardLists(self.active_tab);
@@ -1179,6 +1294,10 @@ pub const Content = struct {
                 return true;
             },
             .combo_pick => return false, // window calls selectComboIndex
+            .text => |f| {
+                self.beginText(f, 128);
+                return true;
+            },
             .button => return false,
             .sub_tab => |i| {
                 if (self.sub_for[@intCast(self.active_tab)] == @as(i32, @intCast(i))) return false;
@@ -1749,7 +1868,7 @@ pub const Content = struct {
         if (p.row_i > 0) {
             if (is_hypr) {
                 switch (p.row) {
-                    .toggle, .slider, .combo, .anim => {
+                    .toggle, .slider, .combo, .text, .anim => {
                         cairo_save(c);
                         cairo_set_line_width(c, 1.0);
                         cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, 0.08);
@@ -1761,7 +1880,7 @@ pub const Content = struct {
                     else => {},
                 }
             } else switch (p.row) {
-                .toggle, .combo => {
+                .toggle, .combo, .text => {
                     cairo_save(c);
                     cairo_set_line_width(c, 1.0);
                     cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.15);
@@ -1859,6 +1978,52 @@ pub const Content = struct {
                 const idx_opt = self.comboIndex(cb.field, opts);
                 const disp = comboLabel(cb, idx_opt, opts);
                 drawCombo(c, bx, by, bw, bh, disp, open or hov, comboIcon(self, cb, idx_opt), cb.icons.len > 0);
+            },
+            .text => |tr| {
+                const yf: f64 = @floatFromInt(p.y);
+                ui_paint.settingLabel(
+                    c,
+                    @floatFromInt(p.x + common.card_pad),
+                    yf + 26,
+                    tr.label,
+                    tr.desc,
+                );
+                const bw: i32 = @min(280, @max(160, @divTrunc(p.w, 3)));
+                const bh = common.settings_combo_h;
+                const bx = p.x + p.w - common.card_pad - bw;
+                const by = p.y + @divTrunc(p.h - bh, 2);
+                const focused = self.edit_field != null and self.edit_field.? == tr.field;
+                const hov = common.pointInRect(self.pointer_x, self.pointer_ly, .{ .x = bx, .y = by, .w = bw, .h = bh });
+                ui_paint.glassBox(
+                    c,
+                    @floatFromInt(bx),
+                    @floatFromInt(by),
+                    @floatFromInt(bw),
+                    @floatFromInt(bh),
+                    8,
+                    if (focused) t.acc_r else t.text_r,
+                    if (focused) t.acc_g else t.text_g,
+                    if (focused) t.acc_b else t.text_b,
+                    if (focused) 0.26 else if (hov) 0.12 else 0.07,
+                );
+                // Keep long XKB options / font stacks inside the pill.
+                cairo_save(c);
+                cairo_rectangle(c, @floatFromInt(bx + 2), @floatFromInt(by), @floatFromInt(bw - 4), @floatFromInt(bh));
+                cairo_clip(c);
+                const raw = if (focused) self.edit_buf[0..self.edit_len] else self.getText(tr.field);
+                const shown = if (raw.len > 0) raw else tr.placeholder;
+                const tx: f64 = @floatFromInt(bx + 12);
+                const baseline: f64 = @as(f64, @floatFromInt(by)) + 21;
+                ui_paint.showText(c, tx, baseline, shown, 12, 400, t.text_r, t.text_g, t.text_b, if (raw.len > 0) 0.9 else 0.38);
+                if (focused) {
+                    const cw = ui_paint.textWidthPx(c, raw, 12, 400);
+                    cairo_set_line_width(c, 1.5);
+                    cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.9);
+                    cairo_move_to(c, tx + @as(f64, @floatFromInt(cw)) + 1, baseline - 12);
+                    cairo_line_to(c, tx + @as(f64, @floatFromInt(cw)) + 1, baseline + 3);
+                    cairo_stroke(c);
+                }
+                cairo_restore(c);
             },
             .tile_slider => |sl| {
                 // Appearance tile: surface,
@@ -2861,4 +3026,33 @@ test "settings-ui-content: Display combos follow the live outputs" {
     try t.expectEqualStrings("DP-2", s.dock_output_name);
     content.setComboIndex(.notifications_output, nopts, 1);
     try t.expectEqualStrings("all", s.notifications_output);
+}
+
+test "settings-ui-content: inline text bands edit, cancel and commit" {
+    const t = std.testing;
+    var s = app_mod.Settings{};
+    var content = Content{ .settings = &s };
+    const f = fields.Field.zool_keyboard_layout;
+    content.setText(f, "de");
+    content.beginText(f, 128);
+    try t.expect(content.textEditing());
+    try t.expectEqualStrings("de", content.edit_buf[0..content.edit_len]);
+    // Escape drops the edit and leaves the stored value untouched.
+    try t.expect(content.textKey(xkb.XKB_KEY_Escape, ""));
+    try t.expect(!content.textEditing());
+    try t.expect(!content.takeTextCommit());
+    try t.expectEqualStrings("de", content.getText(f));
+    // Backspace drops a whole UTF-8 scalar, Enter commits.
+    content.beginText(f, 128);
+    var i: usize = 0;
+    while (i < content.edit_len) : (i += 1) content.edit_buf[i] = 0;
+    content.edit_len = 0;
+    try t.expect(content.textKey(0, "fr"));
+    try t.expect(content.textKey(xkb.XKB_KEY_BackSpace, ""));
+    try t.expectEqualStrings("f", content.edit_buf[0..content.edit_len]);
+    try t.expect(content.textKey(xkb.XKB_KEY_Return, ""));
+    try t.expect(!content.textEditing());
+    try t.expect(content.takeTextCommit());
+    try t.expectEqualStrings("f", content.getText(f));
+    content.setText(f, "");
 }

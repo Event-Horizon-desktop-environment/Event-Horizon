@@ -1,14 +1,17 @@
-//! Hyprland workspace snapshot for the overview and the strip widget.
+//! Workspace snapshot for the overview and the strip widget.
 //!
-//! Three IPC documents — `j/workspaces`, `j/clients`, `j/monitors` — become
-//! one owned snapshot: workspaces with monitor geometry plus their windows
-//! with absolute geometry and normalized (monitor-relative) geometry for
-//! tile layout. Special workspaces (id <= 0) and unmapped clients are
-//! skipped. `applyMaxSlots` pads/truncates to the widget's `max_workspaces`
-//! the way the strip does, keeping real workspaces past the cap when they
-//! hold windows or focus.
+//! Two sources produce the same owned shape. On Hyprland, three IPC
+//! documents — `j/workspaces`, `j/clients`, `j/monitors` — become workspaces
+//! with monitor geometry plus their windows. On Zoolander, `clients-json`,
+//! `monitors-json` and one Lua `eval` are read through the control socket.
+//! Special workspaces and unmapped clients are skipped. `applyMaxSlots`
+//! pads/truncates to the widget's `max_workspaces` the way the strip does,
+//! keeping real workspaces past the cap when they hold windows or focus;
+//! name-keyed Zoolander sessions are left alone because they have no dense
+//! numeric range to fill.
 
 const std = @import("std");
+const compositor = @import("../../backends/compositor.zig");
 const desk = @import("../../backends/desk.zig");
 const hypr_ipc = @import("../../backends/hyprland_ipc.zig");
 
@@ -37,6 +40,9 @@ pub const Window = struct {
 pub const Workspace = struct {
     id: i32 = 0,
     label: []const u8 = "",
+    /// The name the compositor expects for activation. Empty means the
+    /// numeric `id` is the target (Hyprland, and Zoolander's numeric names).
+    target: []const u8 = "",
     monitor: []const u8 = "",
     mon_x: f64 = 0,
     mon_y: f64 = 0,
@@ -50,10 +56,14 @@ pub const Workspace = struct {
 pub const Snapshot = struct {
     alloc: std.mem.Allocator,
     ws: []Workspace = &.{},
+    /// Workspace names are not a dense `1..N` numeric range, so
+    /// `applyMaxSlots` must not manufacture numeric placeholders.
+    named: bool = false,
 
     pub fn deinit(self: *Snapshot) void {
         for (self.ws) |*w| {
             self.alloc.free(w.label);
+            self.alloc.free(w.target);
             self.alloc.free(w.monitor);
             for (w.wins) |*win| {
                 self.alloc.free(win.addr);
@@ -229,6 +239,7 @@ pub fn assemble(alloc: std.mem.Allocator, ws_text: []const u8, mon_text: []const
     errdefer {
         for (out.items) |*w| {
             alloc.free(w.label);
+            alloc.free(w.target);
             alloc.free(w.monitor);
             for (w.wins) |*win| {
                 alloc.free(win.addr);
@@ -304,6 +315,10 @@ pub fn assemble(alloc: std.mem.Allocator, ws_text: []const u8, mon_text: []const
 /// hold windows or focus. Non-positive `max` disables the fill.
 pub fn applyMaxSlots(alloc: std.mem.Allocator, snap: *Snapshot, max: i32) !void {
     if (max <= 0) return;
+    // A name-keyed session has no dense numeric range: IDs were assigned in
+    // discovery order and manufacturing `1..max` placeholders would add
+    // workspaces the compositor does not have.
+    if (snap.named) return;
     std.mem.sort(Workspace, snap.ws, {}, struct {
         fn lt(_: void, a: Workspace, b: Workspace) bool {
             return a.id < b.id;
@@ -360,6 +375,415 @@ pub fn send(
     command: []const u8,
 ) ?[]u8 {
     return hypr_ipc.ipcRequest(alloc, io, env, command);
+}
+
+// -- Zoolander control socket ------------------------------------------------
+
+const ZMon = struct {
+    name: []const u8,
+    x: f64 = 0,
+    y: f64 = 0,
+    w: f64 = 0,
+    h: f64 = 0,
+};
+
+const RawZWin = struct {
+    id: []const u8 = "",
+    app_id: []const u8 = "",
+    title: []const u8 = "",
+    ws: []const u8 = "",
+    output: []const u8 = "",
+    x: f64 = 0,
+    y: f64 = 0,
+    w: f64 = 0,
+    h: f64 = 0,
+    floating: bool = false,
+    focused: bool = false,
+};
+
+const ActiveWs = struct { output: []const u8, ws: []const u8 };
+
+/// One Lua chunk asked for each output's active workspace. `eval` returns the
+/// chunk's first result, so the chunk joins the pairs itself. The control
+/// protocol replaces newlines in replies, and workspace names may contain any
+/// other byte, so the pairs use the ASCII record/unit separators rather than
+/// punctuation a name could plausibly hold.
+const kActiveWorkspacesLua =
+    "return (function() local o={} for i=0,zl.monitor_count()-1 do local m=zl.monitor_info(i) if m and m.active_workspace then o[#o+1]=m.name..\"\\30\"..m.active_workspace.name end end return table.concat(o,\"\\31\") end)()";
+
+const kPairSep = 0x1f;
+const kFieldSep = 0x1e;
+
+/// Run one `zoolanderctl` command and return its stdout. The status line is
+/// kept: callers that parse JSON look for the first bracket anyway, and the
+/// eval path strips the `OK ` prefix itself.
+fn runCtl(alloc: std.mem.Allocator, io: std.Io, args: []const []const u8) ?[]u8 {
+    var argv_buf: [4][]const u8 = undefined;
+    if (args.len + 1 > argv_buf.len) return null;
+    argv_buf[0] = "zoolanderctl";
+    for (args, 0..) |a, i| argv_buf[i + 1] = a;
+    const res = std.process.run(alloc, io, .{ .argv = argv_buf[0 .. args.len + 1] }) catch return null;
+    alloc.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) {
+        alloc.free(res.stdout);
+        return null;
+    }
+    return res.stdout;
+}
+
+fn replyBody(text: []const u8) []const u8 {
+    const t = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.eql(u8, t, "OK")) return "";
+    if (std.mem.startsWith(u8, t, "OK ")) return t[3..];
+    return t;
+}
+
+fn findMon(mons: []const ZMon, name: []const u8) ?usize {
+    if (name.len == 0) return null;
+    for (mons, 0..) |m, i| {
+        if (std.mem.eql(u8, m.name, name)) return i;
+    }
+    return null;
+}
+
+fn parsePositiveId(name: []const u8) ?i32 {
+    const v = std.fmt.parseInt(i32, name, 10) catch return null;
+    return if (v > 0) v else null;
+}
+
+fn idUsed(ids: []const i32, id: i32) bool {
+    for (ids) |x| if (x == id) return true;
+    return false;
+}
+
+/// Parse the `outputs` array of `monitors-json`; only enabled outputs carry
+/// usable geometry.
+fn parseZMons(doc: std.json.Value, out: *std.ArrayList(ZMon), alloc: std.mem.Allocator) !void {
+    if (doc != .object) return error.BadJson;
+    const arr_v = doc.object.get("outputs") orelse return error.BadJson;
+    if (arr_v != .array) return error.BadJson;
+    for (arr_v.array.items) |item| {
+        if (item != .object) continue;
+        if (!desk.jsonBoolOr(item, "enabled", false)) continue;
+        const w = numKey(item, "logical_width");
+        const h = numKey(item, "logical_height");
+        if (w <= 0.0 or h <= 0.0) continue;
+        const name = desk.jsonStr(item, "name");
+        if (name.len == 0) continue;
+        try out.append(alloc, .{
+            .name = name,
+            .x = numKey(item, "x"),
+            .y = numKey(item, "y"),
+            .w = w,
+            .h = h,
+        });
+    }
+}
+
+/// Build the same owned snapshot from Zoolander's three control replies.
+/// Workspace names come from the active-workspace eval and from every
+/// non-special client. Empty named workspaces only appear once the
+/// compositor makes them active; numeric sessions still get the usual
+/// `max_workspaces` gap fill.
+pub fn assembleZoolander(
+    alloc: std.mem.Allocator,
+    clients_text: []const u8,
+    monitors_text: []const u8,
+    active_text: []const u8,
+) !Snapshot {
+    const cstart = std.mem.indexOfScalar(u8, clients_text, '[') orelse return error.BadJson;
+    var cparsed = try std.json.parseFromSlice(std.json.Value, alloc, clients_text[cstart..], .{});
+    defer cparsed.deinit();
+    const mstart = std.mem.indexOfScalar(u8, monitors_text, '{') orelse return error.BadJson;
+    var mparsed = try std.json.parseFromSlice(std.json.Value, alloc, monitors_text[mstart..], .{});
+    defer mparsed.deinit();
+
+    var mons: std.ArrayList(ZMon) = .empty;
+    defer mons.deinit(alloc);
+    try parseZMons(mparsed.value, &mons, alloc);
+
+    var active: std.ArrayList(ActiveWs) = .empty;
+    defer active.deinit(alloc);
+    var ait = std.mem.splitScalar(u8, active_text, kPairSep);
+    while (ait.next()) |entry| {
+        const eq = std.mem.indexOfScalar(u8, entry, kFieldSep) orelse continue;
+        const o = std.mem.trim(u8, entry[0..eq], " \t\r\n");
+        const w = std.mem.trim(u8, entry[eq + 1 ..], " \t\r\n");
+        if (o.len == 0 or w.len == 0) continue;
+        try active.append(alloc, .{ .output = o, .ws = w });
+    }
+
+    const WsMeta = struct { active: bool = false, occupied: bool = false, monitor: []const u8 = "" };
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(alloc);
+    var metas: std.ArrayList(WsMeta) = .empty;
+    defer metas.deinit(alloc);
+    var index = std.StringHashMap(usize).init(alloc);
+    defer index.deinit();
+
+    // Active workspaces first so an empty active card keeps its output.
+    for (active.items) |a| {
+        const gop = try index.getOrPut(a.ws);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = names.items.len;
+            try names.append(alloc, a.ws);
+            try metas.append(alloc, .{});
+        }
+        const m = &metas.items[gop.value_ptr.*];
+        m.active = true;
+        if (m.monitor.len == 0) m.monitor = a.output;
+    }
+
+    var wins: std.ArrayList(RawZWin) = .empty;
+    defer wins.deinit(alloc);
+    const carr = if (cparsed.value == .array) cparsed.value.array else return error.BadJson;
+    for (carr.items) |item| {
+        if (item != .object) continue;
+        if (desk.jsonBoolOr(item, "special", false)) continue;
+        const ws = desk.jsonStr(item, "workspace");
+        if (ws.len == 0) continue;
+        const output = desk.jsonStr(item, "output");
+        const gop = try index.getOrPut(ws);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = names.items.len;
+            try names.append(alloc, ws);
+            try metas.append(alloc, .{});
+        }
+        const m = &metas.items[gop.value_ptr.*];
+        m.occupied = true;
+        if (m.monitor.len == 0) m.monitor = output;
+        var app = desk.jsonStr(item, "app_id");
+        if (app.len == 0) app = desk.jsonStr(item, "class");
+        if (app.len == 0) app = desk.jsonStr(item, "instance");
+        try wins.append(alloc, .{
+            .id = desk.jsonStr(item, "id"),
+            .app_id = app,
+            .title = desk.jsonStr(item, "title"),
+            .ws = ws,
+            .output = output,
+            .x = numKey(item, "x"),
+            .y = numKey(item, "y"),
+            .w = numKey(item, "width"),
+            .h = numKey(item, "height"),
+            .floating = desk.jsonBoolOr(item, "floating", false),
+            .focused = desk.jsonBoolOr(item, "focused", false),
+        });
+    }
+
+    if (names.items.len == 0) return .{ .alloc = alloc };
+
+    var ids: std.ArrayList(i32) = .empty;
+    defer ids.deinit(alloc);
+    var named = false;
+    var next_id: i32 = 1;
+    for (names.items) |n| {
+        if (parsePositiveId(n)) |id| {
+            if (!idUsed(ids.items, id)) {
+                try ids.append(alloc, id);
+                if (id >= next_id) next_id = id + 1;
+                continue;
+            }
+        }
+        named = true;
+        while (idUsed(ids.items, next_id)) next_id += 1;
+        try ids.append(alloc, next_id);
+        next_id += 1;
+    }
+
+    const order = try alloc.alloc(usize, names.items.len);
+    defer alloc.free(order);
+    for (order, 0..) |*o, i| o.* = i;
+    if (!named) {
+        std.mem.sort(usize, order, ids.items, struct {
+            fn lt(slice: []i32, a: usize, b: usize) bool {
+                return slice[a] < slice[b];
+            }
+        }.lt);
+    }
+
+    var out: std.ArrayList(Workspace) = .empty;
+    errdefer {
+        for (out.items) |*w| {
+            alloc.free(w.label);
+            alloc.free(w.target);
+            alloc.free(w.monitor);
+            for (w.wins) |*win| {
+                alloc.free(win.addr);
+                alloc.free(win.app_id);
+                alloc.free(win.title);
+            }
+            alloc.free(w.wins);
+        }
+        out.deinit(alloc);
+    }
+    for (order) |i| {
+        const name = names.items[i];
+        const meta = metas.items[i];
+        var list: std.ArrayList(Window) = .empty;
+        errdefer {
+            for (list.items) |*w| {
+                alloc.free(w.addr);
+                alloc.free(w.app_id);
+                alloc.free(w.title);
+            }
+            list.deinit(alloc);
+        }
+        for (wins.items) |rw| {
+            if (!std.mem.eql(u8, rw.ws, name)) continue;
+            var c = Window{
+                .addr = try alloc.dupe(u8, rw.id),
+                .app_id = try alloc.dupe(u8, rw.app_id),
+                .title = try alloc.dupe(u8, rw.title),
+                .x = rw.x,
+                .y = rw.y,
+                .w = rw.w,
+                .h = rw.h,
+                .floating = rw.floating,
+                .focused = rw.focused,
+                .monitor = if (findMon(mons.items, rw.output)) |mi| @intCast(mi) else -1,
+                .ws_id = ids.items[i],
+            };
+            if (c.monitor >= 0) {
+                const mm = mons.items[@intCast(c.monitor)];
+                if (rw.w > 0.0 and rw.h > 0.0) {
+                    c.nw = std.math.clamp(rw.w / mm.w, 0.0, 1.0);
+                    c.nh = std.math.clamp(rw.h / mm.h, 0.0, 1.0);
+                    c.nx = clamp01((rw.x - mm.x) / mm.w);
+                    c.ny = clamp01((rw.y - mm.y) / mm.h);
+                }
+                c.overflow = outsideMonitor(rw.x, rw.y, rw.w, rw.h, mm.x, mm.y, mm.w, mm.h);
+            }
+            try list.append(alloc, c);
+        }
+        var ws = Workspace{
+            .id = ids.items[i],
+            .label = try alloc.dupe(u8, name),
+            .target = try alloc.dupe(u8, name),
+            .monitor = try alloc.dupe(u8, meta.monitor),
+            .active = meta.active,
+            .occupied = meta.occupied or list.items.len > 0,
+            .wins = try list.toOwnedSlice(alloc),
+        };
+        if (ws.monitor.len == 0 and ws.wins.len > 0 and ws.wins[0].monitor >= 0) {
+            const fallback = mons.items[@intCast(ws.wins[0].monitor)].name;
+            alloc.free(ws.monitor);
+            ws.monitor = try alloc.dupe(u8, fallback);
+        }
+        var mon_idx = findMon(mons.items, ws.monitor);
+        if (mon_idx == null and ws.wins.len > 0 and ws.wins[0].monitor >= 0) {
+            mon_idx = @intCast(ws.wins[0].monitor);
+        }
+        if (mon_idx) |mi| {
+            const mm = mons.items[mi];
+            ws.mon_x = mm.x;
+            ws.mon_y = mm.y;
+            ws.mon_w = mm.w;
+            ws.mon_h = mm.h;
+        }
+        try out.append(alloc, ws);
+    }
+    return .{ .alloc = alloc, .ws = try out.toOwnedSlice(alloc), .named = named };
+}
+
+/// One control round trip per document. The active-workspace eval is best
+/// effort: a failed eval still leaves the occupied workspaces usable.
+pub fn fetchZoolander(alloc: std.mem.Allocator, io: std.Io) ?Snapshot {
+    const clients = runCtl(alloc, io, &.{"clients-json"}) orelse return null;
+    defer alloc.free(clients);
+    // Geometry is a nicety: without it the cards still show ids, labels and
+    // occupancy, just no monitor-relative tile placement.
+    const monitors = runCtl(alloc, io, &.{"monitors-json"});
+    defer if (monitors) |m| alloc.free(m);
+    const eval_owned = runCtl(alloc, io, &.{ "eval", kActiveWorkspacesLua });
+    defer if (eval_owned) |e| alloc.free(e);
+    const active = if (eval_owned) |e| replyBody(e) else "";
+    const docs = monitors orelse "{\"outputs\":[]}";
+    return assembleZoolander(alloc, clients, docs, active) catch null;
+}
+
+/// Pick the snapshot source the environment names. Hyprland remains the
+/// fallback for every other detected compositor.
+pub fn fetchAuto(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+) ?Snapshot {
+    return switch (compositor.Kind.detectWithMap(env)) {
+        .zoolander => fetchZoolander(alloc, io),
+        .hyprland, .niri, .mango, .sway, .labwc, .unknown => fetch(alloc, io, env),
+    };
+}
+
+fn hyprCommand(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    command: []const u8,
+) bool {
+    const reply = send(alloc, io, env, command) orelse return false;
+    defer alloc.free(reply);
+    return repliedOk(reply);
+}
+
+fn zoolanderEval(alloc: std.mem.Allocator, io: std.Io, code: []const u8) bool {
+    const out = runCtl(alloc, io, &.{ "eval", code }) orelse return false;
+    defer alloc.free(out);
+    const t = std.mem.trim(u8, out, " \t\r\n");
+    return std.mem.eql(u8, t, "OK") or std.mem.startsWith(u8, t, "OK ");
+}
+
+/// `return zl.workspace("<name>")`, with the name quoted for Lua.
+fn luaWorkspaceCode(buf: []u8, name: []const u8) ?[]const u8 {
+    const prefix = "return zl.workspace(\"";
+    const suffix = "\")";
+    if (prefix.len + name.len * 2 + suffix.len > buf.len) return null;
+    var n: usize = 0;
+    @memcpy(buf[n..][0..prefix.len], prefix);
+    n += prefix.len;
+    for (name) |ch| {
+        switch (ch) {
+            '"', '\\' => {
+                buf[n] = '\\';
+                n += 1;
+                buf[n] = ch;
+                n += 1;
+            },
+            '\n', '\r' => {
+                buf[n] = ' ';
+                n += 1;
+            },
+            else => {
+                buf[n] = ch;
+                n += 1;
+            },
+        }
+    }
+    @memcpy(buf[n..][0..suffix.len], suffix);
+    n += suffix.len;
+    return buf[0..n];
+}
+
+/// Activate a workspace on whichever compositor the environment names.
+/// `target` is the workspace's compositor name, or its decimal id under
+/// Hyprland.
+pub fn jumpWorkspace(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    target: []const u8,
+) bool {
+    if (target.len == 0) return false;
+    if (compositor.Kind.detectWithMap(env) == .zoolander) {
+        var buf: [1024]u8 = undefined;
+        const code = luaWorkspaceCode(&buf, target) orelse return false;
+        return zoolanderEval(alloc, io, code);
+    }
+    const id = std.fmt.parseInt(i32, target, 10) catch return false;
+    var buf: [64]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{workspace = {d}}})", .{id}) catch return false;
+    if (hyprCommand(alloc, io, env, cmd)) return true;
+    const plain = std.fmt.bufPrint(&buf, "dispatch workspace {d}", .{id}) catch return false;
+    return hyprCommand(alloc, io, env, plain);
 }
 
 pub fn repliedOk(reply: ?[]const u8) bool {
@@ -442,4 +866,72 @@ test "overview-ws: max slots pads, keeps real overflow" {
     try t.expectEqualStrings("2", snap.ws[1].label);
     try t.expectEqual(@as(i32, 7), snap.ws[6].id);
     try t.expect(snap.ws[6].active);
+}
+
+test "overview-ws: zoolander clients and active outputs assemble" {
+    const t = std.testing;
+    const clients =
+        \\OK json
+        \\[{"id":"0xaaa","app_id":"kitty","title":"sh","workspace":"1","special":false,
+        \\  "output":"DP-1","x":0,"y":0,"width":960,"height":1080,"floating":false,"focused":true},
+        \\ {"id":"0xbbb","app_id":"firefox","title":"web","workspace":"2","special":false,
+        \\  "output":"DP-1","x":0,"y":0,"width":1920,"height":1080,"floating":true,"focused":false},
+        \\ {"id":"0xccc","app_id":"scratch","title":"hidden","workspace":"special:scratch","special":true,
+        \\  "output":"DP-1","x":0,"y":0,"width":100,"height":100,"floating":false,"focused":false}]
+    ;
+    const monitors =
+        \\OK json
+        \\{"version":1,"outputs":[
+        \\ {"name":"DP-1","enabled":true,"x":0,"y":0,"logical_width":1920,"logical_height":1080},
+        \\ {"name":"HDMI-A-1","enabled":false,"x":1920,"y":0,"logical_width":1280,"logical_height":720}]}
+    ;
+    var snap = try assembleZoolander(t.allocator, clients, monitors, "DP-1\x1e2");
+    defer snap.deinit();
+    try t.expect(!snap.named);
+    try t.expectEqual(@as(usize, 2), snap.ws.len);
+    try t.expectEqualStrings("1", snap.ws[0].label);
+    try t.expectEqualStrings("1", snap.ws[0].target);
+    try t.expectEqual(@as(usize, 1), snap.ws[0].wins.len);
+    try t.expect(snap.ws[0].wins[0].focused);
+    try t.expectEqual(@as(f64, 0.5), snap.ws[0].wins[0].nw);
+    try t.expectEqualStrings("2", snap.ws[1].label);
+    try t.expect(snap.ws[1].active);
+    try t.expectEqual(@as(usize, 1), snap.ws[1].wins.len);
+    try t.expectEqualStrings("DP-1", snap.ws[1].monitor);
+    try t.expectEqual(@as(f64, 1920), snap.ws[1].mon_w);
+}
+
+test "overview-ws: zoolander named workspaces keep discovery order and no padding" {
+    const t = std.testing;
+    const clients =
+        \\[{"id":"0x1","app_id":"a","title":"","workspace":"dev","special":false,
+        \\  "output":"DP-1","x":0,"y":0,"width":100,"height":100,"floating":false,"focused":false}]
+    ;
+    const monitors =
+        \\{"version":1,"outputs":[{"name":"DP-1","enabled":true,"x":0,"y":0,
+        \\  "logical_width":1000,"logical_height":1000}]}
+    ;
+    var snap = try assembleZoolander(t.allocator, clients, monitors, "DP-1\x1ewe|ird=x");
+    defer snap.deinit();
+    try t.expect(snap.named);
+    try t.expectEqual(@as(usize, 2), snap.ws.len);
+    try t.expectEqualStrings("we|ird=x", snap.ws[0].target);
+    try t.expect(snap.ws[0].active);
+    try t.expectEqualStrings("dev", snap.ws[1].target);
+    try applyMaxSlots(t.allocator, &snap, 5);
+    try t.expectEqual(@as(usize, 2), snap.ws.len);
+}
+
+test "overview-ws: zoolander reply bodies strip the status tag" {
+    const t = std.testing;
+    try t.expectEqualStrings("DP-1\x1e2", replyBody("OK DP-1\x1e2\n"));
+    try t.expectEqualStrings("", replyBody("OK\n"));
+    try t.expectEqualStrings("ERR nope", replyBody("ERR nope\n"));
+}
+
+test "overview-ws: zoolander lua workspace names are quoted" {
+    const t = std.testing;
+    var buf: [128]u8 = undefined;
+    const code = luaWorkspaceCode(&buf, "we\"ird\\name").?;
+    try t.expectEqualStrings("return zl.workspace(\"we\\\"ird\\\\name\")", code);
 }

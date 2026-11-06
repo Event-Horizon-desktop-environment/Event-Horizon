@@ -620,7 +620,7 @@ const Dock = struct {
     /// PID of the running `horizon-overview` copy, if the slot spawned
     /// one that has not been reaped yet. Second click toggles it off.
     ov_pid: ?i32 = null,
-    /// Last Hyprland workspace snapshot feeding the overview and the
+    /// Last compositor workspace snapshot feeding the overview and the
     /// workspaces strip widget, plus when it was taken. Refreshed on
     /// overview open, on window-set changes and throttled on the tick.
     ws_snap: ?ov_ws.Snapshot = null,
@@ -5527,8 +5527,19 @@ const Dock = struct {
     /// built here is freed before returning.
     fn hyprEnv(self: *Dock) std.process.Environ.Map {
         var env = std.process.Environ.Map.init(self.app.gpa);
-        if (getenvStr("HYPRLAND_INSTANCE_SIGNATURE")) |v| env.put("HYPRLAND_INSTANCE_SIGNATURE", v) catch {};
-        if (getenvStr("XDG_RUNTIME_DIR")) |v| env.put("XDG_RUNTIME_DIR", v) catch {};
+        const keys = [_][:0]const u8{
+            "HYPRLAND_INSTANCE_SIGNATURE",  "XDG_RUNTIME_DIR",
+            "NIRI_SOCKET",                  "SWAYSOCK",
+            "LABWC_PID",                    "MANGO_INSTANCE_SIGNATURE",
+            "ZOOLANDER_INSTANCE_SIGNATURE", "ZOOLANDER_SOCKET",
+            "ZOOLANDER_RUNTIME_DIR",        "ZOOLANDER_CONFIG",
+            "WAYLAND_DISPLAY",              "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",          "DESKTOP_SESSION",
+            "XDG_CONFIG_HOME",              "HOME",
+        };
+        for (keys) |k| {
+            if (getenvStr(k)) |v| env.put(k, v) catch {};
+        }
         return env;
     }
 
@@ -5561,6 +5572,7 @@ const Dock = struct {
         errdefer {
             for (out.items) |*e| {
                 gpa.free(e.label);
+                gpa.free(e.target);
                 for (e.app_keys) |k| gpa.free(k);
                 gpa.free(e.app_keys);
             }
@@ -5595,13 +5607,21 @@ const Dock = struct {
                 gpa.free(owned_keys);
                 continue :ws_loop;
             };
+            const target = gpa.dupe(u8, w.target) catch {
+                gpa.free(label);
+                for (owned_keys) |k| gpa.free(k);
+                gpa.free(owned_keys);
+                continue :ws_loop;
+            };
             out.append(gpa, .{
                 .id = w.id,
                 .label = label,
+                .target = target,
                 .active = w.active,
                 .occupied = w.occupied,
                 .app_keys = owned_keys,
             }) catch {
+                gpa.free(target);
                 gpa.free(label);
                 for (owned_keys) |k| gpa.free(k);
                 gpa.free(owned_keys);
@@ -5611,16 +5631,15 @@ const Dock = struct {
         self.ws_entries = out.toOwnedSlice(gpa) catch &.{};
     }
 
-    /// Refetch the Hyprland snapshot, throttled unless forced. Answers
+    /// Refetch the compositor snapshot, throttled unless forced. Answers
     /// whether the entries changed.
     fn reloadWorkspaces(self: *Dock, force: bool) bool {
         const now: i64 = @intCast(Dock.nowMs());
         if (!force and self.ws_snap != null and now - self.ws_fetched_ms < 5000) return false;
         var env = self.hyprEnv();
         defer env.deinit();
-        if (env.get("HYPRLAND_INSTANCE_SIGNATURE") == null) return false;
         const gpa = self.app.gpa;
-        var snap = ov_ws.fetch(gpa, self.app.io, &env) orelse return false;
+        var snap = ov_ws.fetchAuto(gpa, self.app.io, &env) orelse return false;
         errdefer snap.deinit();
         ov_ws.applyMaxSlots(gpa, &snap, self.wsMaxSlots()) catch {
             snap.deinit();
@@ -5633,24 +5652,13 @@ const Dock = struct {
         return true;
     }
 
-    /// Fire-and-forget compositor command. Answers whether the reply starts
-    /// with `ok`.
-    fn hyprSend(self: *Dock, cmd: []const u8) bool {
+    /// Focus a workspace by its compositor target (a Hyprland numeric id or a
+    /// Zoolander name). The compositor creates a missing numeric workspace on
+    /// demand.
+    fn wsJump(self: *Dock, target: []const u8) void {
         var env = self.hyprEnv();
         defer env.deinit();
-        const reply = ov_ws.send(self.app.gpa, self.app.io, &env, cmd) orelse return false;
-        defer self.app.gpa.free(reply);
-        return ov_ws.repliedOk(reply);
-    }
-
-    /// Focus a workspace by id; Hyprland creates a missing one on demand.
-    fn wsJump(self: *Dock, id: i32) void {
-        var buf: [64]u8 = undefined;
-        const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{workspace = {d}}})", .{id}) catch return;
-        if (!self.hyprSend(cmd)) {
-            const plain = std.fmt.bufPrint(&buf, "dispatch workspace {d}", .{id}) catch return;
-            _ = self.hyprSend(plain);
-        }
+        _ = ov_ws.jumpWorkspace(self.app.gpa, self.app.io, &env, target);
     }
 
     /// Cairo surface for a strip cell's app key. Borrowed for the
@@ -5733,8 +5741,7 @@ const Dock = struct {
         if (idx < 0 or idx >= self.ws_entries.len) return;
         var buf: [12]u8 = undefined;
         const target = ws_paint.activateTarget(&self.ws_entries[@intCast(idx)], &buf) orelse return;
-        const id = std.fmt.parseInt(i32, target, 10) catch return;
-        self.wsJump(id);
+        self.wsJump(target);
     }
 
     /// Toggle the standalone `horizon-overview` process. A live copy is

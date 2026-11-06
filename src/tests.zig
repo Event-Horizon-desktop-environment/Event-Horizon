@@ -21,6 +21,7 @@ test {
     _ = @import("wl/seat.zig");
     _ = @import("wl/input/clipboard.zig");
     _ = @import("wl/input/virtual_keyboard.zig");
+    _ = @import("wl/zoolander_monitors.zig");
     _ = @import("clipstack/store.zig");
     _ = @import("clipstack/capture.zig");
     _ = @import("clipstack/picker.zig");
@@ -447,6 +448,7 @@ test {
     _ = @import("ux/settings2/desktop_widgets_data.zig");
     _ = @import("ux/settings2/desktop_widgets_persist.zig");
     _ = @import("ux/settings2/desktop_widgets_tab.zig");
+    _ = @import("ux/settings2/display_confirm.zig");
     _ = @import("ux/settings2/display_picker.zig");
     _ = @import("ux/settings2/dock_appearance_tab.zig");
     _ = @import("ux/settings2/dock_persist.zig");
@@ -486,6 +488,7 @@ test {
     _ = @import("ux/settings2/retain.zig");
     _ = @import("ux/settings2/rows_appearance.zig");
     _ = @import("ux/settings2/rows.zig");
+    _ = @import("ux/settings2/rows_zoolander.zig");
     _ = @import("ux/settings2/scroll_clamp.zig");
     _ = @import("ux/settings2/scroll.zig");
     _ = @import("ux/settings2/search.zig");
@@ -523,4 +526,6 @@ test {
     _ = @import("ux/settings2/widget_picker.zig");
     _ = @import("ux/settings2/workspaces_tab.zig");
     _ = @import("ux/settings2/world_clock_popup.zig");
+    _ = @import("ux/settings2/zoolander_data.zig");
+    _ = @import("ux/settings2/zoolander_page.zig");
 }
