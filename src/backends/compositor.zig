@@ -18,14 +18,15 @@ pub const Kind = enum {
     /// `containsFolded` only ever matches within one string, so a match
     /// cannot straddle a separator — the same answers, with no allocation.
     pub fn detectWithMap(env: *const std.process.Environ.Map) Kind {
-        // Zoolander exports `HYPRLAND_INSTANCE_SIGNATURE` for client
-        // compatibility, so its own markers have to win before the Hyprland
-        // probe below can claim the session.
+        // Zoolander strips `HYPRLAND_INSTANCE_SIGNATURE` (and the other
+        // foreign-IPC markers) from every process it spawns, so a shell it
+        // starts usually has no compositor marker at all. `ZOOLANDER_WSI` is
+        // the one variable it does export to those children; the XDG hint and
+        // the control-socket probe cover sessions started another way.
         const zoolander_probes = [_][]const u8{
+            "ZOOLANDER_WSI",
             "ZOOLANDER_INSTANCE_SIGNATURE",
             "ZOOLANDER_SOCKET",
-            "ZOOLANDER_RUNTIME_DIR",
-            "ZOOLANDER_CONFIG",
         };
         for (zoolander_probes) |key| {
             if (env.get(key)) |v| {
@@ -114,6 +115,38 @@ pub const Kind = enum {
     }
 };
 
+/// `$XDG_RUNTIME_DIR/zoolander-<basename WAYLAND_DISPLAY>.sock`, written into
+/// `buf`. Zoolander names its control socket after the Wayland socket, so the
+/// path is derivable from the environment alone. Null when either variable is
+/// missing, empty, or the result does not fit.
+pub fn zoolanderControlPath(buf: []u8, env: *const std.process.Environ.Map) ?[]const u8 {
+    const rt = env.get("XDG_RUNTIME_DIR") orelse return null;
+    const disp = env.get("WAYLAND_DISPLAY") orelse return null;
+    if (rt.len == 0 or disp.len == 0) return null;
+    const base = std.fs.path.basename(disp);
+    if (base.len == 0) return null;
+    return std.fmt.bufPrint(buf, "{s}/zoolander-{s}.sock", .{ rt, base }) catch null;
+}
+
+/// Whether the control socket exists. Its presence beside the Wayland socket
+/// is the definitive Zoolander signal when no marker or hint is set.
+pub fn zoolanderSocketPresent(io: std.Io, env: *const std.process.Environ.Map) bool {
+    var buf: [256]u8 = undefined;
+    const path = zoolanderControlPath(&buf, env) orelse return false;
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return st.kind == .unix_domain_socket;
+}
+
+/// Full detection: environment first, then the control-socket probe. Callers
+/// with an `io` should prefer this over `detectWithMap`, so a Zoolander session
+/// started without any marker (the common case) still resolves.
+pub fn detect(io: std.Io, env: *const std.process.Environ.Map) Kind {
+    const k = Kind.detectWithMap(env);
+    if (k != .unknown) return k;
+    if (zoolanderSocketPresent(io, env)) return .zoolander;
+    return .unknown;
+}
+
 pub const Capabilities = struct {
     workspaces: bool = false,
     toplevel_tracking: bool = false,
@@ -195,10 +228,12 @@ test "backends: detection probes the variables in precedence order" {
 
 test "backends: zoolander wins over the Hyprland compatibility marker" {
     const t = std.testing;
+    // A nested Zoolander strips the Hyprland marker from its clients, but a
+    // process that still carries both counts as Zoolander.
     var env = std.process.Environ.Map.init(t.allocator);
     defer env.deinit();
     try env.put("HYPRLAND_INSTANCE_SIGNATURE", "hypr-compat");
-    try env.put("ZOOLANDER_CONFIG", "/home/u/.config/zoolander");
+    try env.put("ZOOLANDER_WSI", "1");
     try t.expectEqual(Kind.zoolander, Kind.detectWithMap(&env));
 
     // A hint naming both still resolves to Zoolander.
@@ -208,4 +243,21 @@ test "backends: zoolander wins over the Hyprland compatibility marker" {
     try t.expectEqual(Kind.zoolander, Kind.detectWithMap(&hinted));
 
     try t.expect(capabilitiesFor(.zoolander).workspaces);
+}
+
+test "backends: zoolander control socket path follows the Wayland socket" {
+    const t = std.testing;
+    var env = std.process.Environ.Map.init(t.allocator);
+    defer env.deinit();
+    var buf: [256]u8 = undefined;
+
+    try t.expect(zoolanderControlPath(&buf, &env) == null);
+    try env.put("XDG_RUNTIME_DIR", "/run/user/1000");
+    try t.expect(zoolanderControlPath(&buf, &env) == null);
+    try env.put("WAYLAND_DISPLAY", "wayland-3");
+    try t.expectEqualStrings("/run/user/1000/zoolander-wayland-3.sock", zoolanderControlPath(&buf, &env).?);
+
+    // An absolute WAYLAND_DISPLAY still keys the control socket by basename.
+    try env.put("WAYLAND_DISPLAY", "/run/user/1000/wayland-7");
+    try t.expectEqualStrings("/run/user/1000/zoolander-wayland-7.sock", zoolanderControlPath(&buf, &env).?);
 }

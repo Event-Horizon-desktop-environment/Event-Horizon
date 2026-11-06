@@ -5532,7 +5532,7 @@ const Dock = struct {
             "NIRI_SOCKET",                  "SWAYSOCK",
             "LABWC_PID",                    "MANGO_INSTANCE_SIGNATURE",
             "ZOOLANDER_INSTANCE_SIGNATURE", "ZOOLANDER_SOCKET",
-            "ZOOLANDER_RUNTIME_DIR",        "ZOOLANDER_CONFIG",
+            "ZOOLANDER_WSI",
             "WAYLAND_DISPLAY",              "XDG_CURRENT_DESKTOP",
             "XDG_SESSION_DESKTOP",          "DESKTOP_SESSION",
             "XDG_CONFIG_HOME",              "HOME",

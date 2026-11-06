@@ -30,13 +30,12 @@ const env_probes = [_]EnvProbe{
     .{ .var_name = "SWAYSOCK", .k = .sway },
     .{ .var_name = "LABWC_PID", .k = .labwc },
     .{ .var_name = "MANGO_INSTANCE_SIGNATURE", .k = .mango },
-    // Zoolander exports its control socket and config path into the
-    // session. The XDG hint below covers sessions that only set
-    // XDG_CURRENT_DESKTOP.
+    // Zoolander exports `ZOOLANDER_WSI` to the processes it spawns. A shell
+    // it did not start has no marker, so the XDG hint and the control-socket
+    // probe below cover those sessions.
+    .{ .var_name = "ZOOLANDER_WSI", .k = .zoolander },
     .{ .var_name = "ZOOLANDER_INSTANCE_SIGNATURE", .k = .zoolander },
     .{ .var_name = "ZOOLANDER_SOCKET", .k = .zoolander },
-    .{ .var_name = "ZOOLANDER_RUNTIME_DIR", .k = .zoolander },
-    .{ .var_name = "ZOOLANDER_CONFIG", .k = .zoolander },
 };
 
 const HintProbe = struct { needle: []const u8, k: Kind };
@@ -96,9 +95,25 @@ fn containsFolded(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+/// Zoolander names its control socket after the Wayland socket, so its
+/// presence is provable from the environment alone. It is the definitive
+/// signal for a session that carries no marker or hint.
+fn zoolanderSocketPresent() bool {
+    const dir = getEnv("XDG_RUNTIME_DIR");
+    const disp = getEnv("WAYLAND_DISPLAY");
+    if (dir.len == 0 or disp.len == 0) return false;
+    const base = std.fs.path.basename(disp);
+    if (base.len == 0) return false;
+    var buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&buf, "{s}/zoolander-{s}.sock", .{ dir, base }) catch return false;
+    const rc = std.os.linux.access(path.ptr, std.posix.F_OK);
+    return std.os.linux.errno(rc) == .SUCCESS;
+}
+
 fn detect() Kind {
-    // Zoolander sets HYPRLAND_INSTANCE_SIGNATURE for compatibility, so an
-    // explicit Zoolander hint/env must win over the Hyprland socket marker.
+    // A Zoolander hint or marker must win outright: a nested session may
+    // still carry the Hyprland marker in its own environment, but a shell it
+    // spawned has that marker stripped and lands on the socket probe below.
     for (env_probes) |p| {
         if (p.k == .zoolander and envSet(p.var_name)) return .zoolander;
     }
@@ -111,12 +126,12 @@ fn detect() Kind {
     for (env_probes) |p| {
         if (p.k != .zoolander and envSet(p.var_name)) return p.k;
     }
-    if (hint.len == 0) return .unknown;
+    if (hint.len == 0) return if (zoolanderSocketPresent()) .zoolander else .unknown;
     for (hint_probes) |p| {
         if (p.k != .zoolander and containsFolded(hint, p.needle)) return p.k;
     }
     if (containsFolded(hint, "dwl")) return .mango;
-    return .unknown;
+    return if (zoolanderSocketPresent()) .zoolander else .unknown;
 }
 
 /// Sidebar category visibility — skipping `def.id == 16`

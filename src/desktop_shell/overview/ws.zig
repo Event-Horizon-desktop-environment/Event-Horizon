@@ -414,21 +414,24 @@ const kActiveWorkspacesLua =
 const kPairSep = 0x1f;
 const kFieldSep = 0x1e;
 
-/// Run one `zoolanderctl` command and return its stdout. The status line is
-/// kept: callers that parse JSON look for the first bracket anyway, and the
-/// eval path strips the `OK ` prefix itself.
-fn runCtl(alloc: std.mem.Allocator, io: std.Io, args: []const []const u8) ?[]u8 {
-    var argv_buf: [4][]const u8 = undefined;
-    if (args.len + 1 > argv_buf.len) return null;
-    argv_buf[0] = "zoolanderctl";
-    for (args, 0..) |a, i| argv_buf[i + 1] = a;
-    const res = std.process.run(alloc, io, .{ .argv = argv_buf[0 .. args.len + 1] }) catch return null;
-    alloc.free(res.stderr);
-    if (res.term != .exited or res.term.exited != 0) {
-        alloc.free(res.stdout);
-        return null;
-    }
-    return res.stdout;
+/// One control-socket round trip. The server greets with `ZLCTL 1` and then
+/// answers each newline-terminated command with an `OK`/`ERR` status line,
+/// followed (for the query commands) by the report. The reply is read to EOF
+/// and the greeting line dropped, so callers see the status line first. Null
+/// when the socket is absent or the exchange fails.
+fn zCtl(
+    alloc: std.mem.Allocator,
+    env: *const std.process.Environ.Map,
+    command: []const u8,
+) ?[]u8 {
+    var path_buf: [256]u8 = undefined;
+    const path = compositor.zoolanderControlPath(&path_buf, env) orelse return null;
+    const line = std.fmt.allocPrint(alloc, "{s}\n", .{command}) catch return null;
+    defer alloc.free(line);
+    const raw = hypr_ipc.requestOnce(alloc, path, line) orelse return null;
+    defer alloc.free(raw);
+    const nl = std.mem.indexOfScalar(u8, raw, '\n') orelse return null;
+    return alloc.dupe(u8, raw[nl + 1 ..]) catch null;
 }
 
 fn replyBody(text: []const u8) []const u8 {
@@ -687,14 +690,14 @@ pub fn assembleZoolander(
 
 /// One control round trip per document. The active-workspace eval is best
 /// effort: a failed eval still leaves the occupied workspaces usable.
-pub fn fetchZoolander(alloc: std.mem.Allocator, io: std.Io) ?Snapshot {
-    const clients = runCtl(alloc, io, &.{"clients-json"}) orelse return null;
+pub fn fetchZoolander(alloc: std.mem.Allocator, env: *const std.process.Environ.Map) ?Snapshot {
+    const clients = zCtl(alloc, env, "clients-json") orelse return null;
     defer alloc.free(clients);
     // Geometry is a nicety: without it the cards still show ids, labels and
     // occupancy, just no monitor-relative tile placement.
-    const monitors = runCtl(alloc, io, &.{"monitors-json"});
+    const monitors = zCtl(alloc, env, "monitors-json");
     defer if (monitors) |m| alloc.free(m);
-    const eval_owned = runCtl(alloc, io, &.{ "eval", kActiveWorkspacesLua });
+    const eval_owned = zCtl(alloc, env, "eval " ++ kActiveWorkspacesLua);
     defer if (eval_owned) |e| alloc.free(e);
     const active = if (eval_owned) |e| replyBody(e) else "";
     const docs = monitors orelse "{\"outputs\":[]}";
@@ -708,8 +711,8 @@ pub fn fetchAuto(
     io: std.Io,
     env: *const std.process.Environ.Map,
 ) ?Snapshot {
-    return switch (compositor.Kind.detectWithMap(env)) {
-        .zoolander => fetchZoolander(alloc, io),
+    return switch (compositor.detect(io, env)) {
+        .zoolander => fetchZoolander(alloc, env),
         .hyprland, .niri, .mango, .sway, .labwc, .unknown => fetch(alloc, io, env),
     };
 }
@@ -725,8 +728,10 @@ fn hyprCommand(
     return repliedOk(reply);
 }
 
-fn zoolanderEval(alloc: std.mem.Allocator, io: std.Io, code: []const u8) bool {
-    const out = runCtl(alloc, io, &.{ "eval", code }) orelse return false;
+fn zoolanderEval(alloc: std.mem.Allocator, env: *const std.process.Environ.Map, code: []const u8) bool {
+    const cmd = std.fmt.allocPrint(alloc, "eval {s}", .{code}) catch return false;
+    defer alloc.free(cmd);
+    const out = zCtl(alloc, env, cmd) orelse return false;
     defer alloc.free(out);
     const t = std.mem.trim(u8, out, " \t\r\n");
     return std.mem.eql(u8, t, "OK") or std.mem.startsWith(u8, t, "OK ");
@@ -773,10 +778,10 @@ pub fn jumpWorkspace(
     target: []const u8,
 ) bool {
     if (target.len == 0) return false;
-    if (compositor.Kind.detectWithMap(env) == .zoolander) {
+    if (compositor.detect(io, env) == .zoolander) {
         var buf: [1024]u8 = undefined;
         const code = luaWorkspaceCode(&buf, target) orelse return false;
-        return zoolanderEval(alloc, io, code);
+        return zoolanderEval(alloc, env, code);
     }
     const id = std.fmt.parseInt(i32, target, 10) catch return false;
     var buf: [64]u8 = undefined;

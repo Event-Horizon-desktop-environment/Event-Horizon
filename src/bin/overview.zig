@@ -450,7 +450,7 @@ const Ov = struct {
             "NIRI_SOCKET",                  "SWAYSOCK",
             "LABWC_PID",                    "MANGO_INSTANCE_SIGNATURE",
             "ZOOLANDER_INSTANCE_SIGNATURE", "ZOOLANDER_SOCKET",
-            "ZOOLANDER_RUNTIME_DIR",        "ZOOLANDER_CONFIG",
+            "ZOOLANDER_WSI",
             "WAYLAND_DISPLAY",              "XDG_CURRENT_DESKTOP",
             "XDG_SESSION_DESKTOP",          "DESKTOP_SESSION",
             "XDG_CONFIG_HOME",              "HOME",
@@ -577,7 +577,7 @@ const Ov = struct {
     fn isZoolander(self: *Self) bool {
         var env = self.hyprEnv();
         defer env.deinit();
-        return compositor.Kind.detectWithMap(&env) == .zoolander;
+        return compositor.detect(self.io, &env) == .zoolander;
     }
 
     /// The activation target for a card id: its recorded compositor name
