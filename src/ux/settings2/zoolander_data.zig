@@ -15,6 +15,9 @@
 //! alone; the app never tries to evaluate Lua.
 
 const std = @import("std");
+const linux = std.os.linux;
+const sock = @import("../../sock.zig");
+const logz = @import("../../logz.zig");
 
 pub const Kind = enum { boolean, integer, number, text, flag, list };
 
@@ -1200,7 +1203,12 @@ pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
             }
             if (unchanged) continue;
             if (touches_displays) captureBackup(path, io);
-            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text }) catch {};
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text }) catch |e| {
+                logz.log("zoolander-data: cannot write {s}: {s}", .{ path, @errorName(e) });
+                setReloadError("Could not write the Zoolander config");
+                continue;
+            };
+            logz.log("zoolander-data: wrote {s} ({d} bytes)", .{ path, text.len });
         }
         if (touches_displays) writeMarker(io);
         reload(alloc, io);
@@ -1213,14 +1221,122 @@ pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
     load(io);
 }
 
-/// `zoolanderctl reload`, when the control tool is on PATH. A missing tool
-/// or a refused reload is harmless: the files are already on disk.
+/// How long one `reload` request may take. Zoolander evaluates the whole
+/// config before it answers, so this is generous.
+const reload_timeout_ms: i32 = 8000;
+
+var g_reload_err_buf: [256]u8 = undefined;
+var g_reload_err_len: usize = 0;
+
+/// The compositor's last refusal (`ERR ...`) or a transport problem, or null
+/// when the last reload succeeded. Lets the UI say why a change did not land.
+pub fn lastReloadError() ?[]const u8 {
+    return if (g_reload_err_len == 0) null else g_reload_err_buf[0..g_reload_err_len];
+}
+
+fn setReloadError(msg: []const u8) void {
+    const trimmed = std.mem.trim(u8, msg, " \t\r\n");
+    const n = @min(trimmed.len, g_reload_err_buf.len);
+    @memcpy(g_reload_err_buf[0..n], trimmed[0..n]);
+    g_reload_err_len = n;
+}
+
+/// `$XDG_RUNTIME_DIR/zoolander-<WAYLAND_DISPLAY>.sock`, the same socket
+/// `zoolanderctl` talks to. `WAYLAND_DISPLAY` may be an absolute path; the
+/// socket is named after its last component.
+fn controlSocketPath(buf: []u8) ?[]const u8 {
+    const rt = envStr("XDG_RUNTIME_DIR") orelse return null;
+    const wd = envStr("WAYLAND_DISPLAY") orelse return null;
+    const base = if (std.mem.lastIndexOfScalar(u8, wd, '/')) |i| wd[i + 1 ..] else wd;
+    if (base.len == 0) return null;
+    return std.fmt.bufPrint(buf, "{s}/zoolander-{s}.sock", .{ rt, base }) catch null;
+}
+
+const ReloadOutcome = enum { ok, refused, unreachable_socket };
+
+/// Send `reload` straight to the control socket. This does not depend on
+/// `zoolanderctl` being on PATH or on `nc` supporting `-U -N`, and it reads
+/// the compositor's verdict so a refused config is not silent.
+fn reloadViaSocket(alloc: std.mem.Allocator) ReloadOutcome {
+    var path_buf: [512]u8 = undefined;
+    const path = controlSocketPath(&path_buf) orelse return .unreachable_socket;
+    const fd = sock.createStream(false) catch return .unreachable_socket;
+    defer sock.closeFd(fd);
+    if (sock.connectPath(fd, path)) |e| {
+        logz.log("zoolander-data: connect {s} failed: {s}", .{ path, @tagName(e) });
+        return .unreachable_socket;
+    }
+    sock.sendAll(fd, "reload\n") catch return .unreachable_socket;
+    // Same as `nc -N`: tell the compositor the command is complete.
+    _ = linux.shutdown(fd, linux.SHUT.WR);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(alloc);
+    var buf: [1024]u8 = undefined;
+    while (out.items.len < 64 * 1024) {
+        var pfd = std.posix.pollfd{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 };
+        const ready = std.posix.poll(@as(*[1]std.posix.pollfd, &pfd)[0..], reload_timeout_ms) catch break;
+        if (ready <= 0) {
+            logz.log("zoolander-data: reload timed out waiting for the compositor", .{});
+            break;
+        }
+        const rc = linux.recvfrom(fd, &buf, buf.len, 0, null, null);
+        const e = linux.errno(rc);
+        if (e == .INTR) continue;
+        if (e != .SUCCESS) break;
+        if (rc == 0) break;
+        out.appendSlice(alloc, buf[0..rc]) catch break;
+    }
+
+    // Line 1 is the greeting; line 2 is `OK ...` or `ERR <message>`.
+    var it = std.mem.splitScalar(u8, out.items, '\n');
+    _ = it.next();
+    const verdict = std.mem.trim(u8, it.next() orelse "", " \t\r");
+    if (std.mem.startsWith(u8, verdict, "OK")) {
+        logz.log("zoolander-data: reload ok ({s})", .{verdict});
+        return .ok;
+    }
+    if (verdict.len == 0) {
+        // Connected but no verdict: treat as a transport problem so the
+        // fallback still runs.
+        logz.log("zoolander-data: reload gave no verdict ({d} bytes)", .{out.items.len});
+        return .unreachable_socket;
+    }
+    logz.log("zoolander-data: reload refused: {s}", .{verdict});
+    setReloadError(verdict);
+    return .refused;
+}
+
+/// Ask Zoolander to reload its config. Tries the control socket first and
+/// falls back to the `zoolanderctl` script. A missing compositor or tool is
+/// harmless (the files are already on disk and Zoolander also watches the
+/// directory), but every outcome is logged to `~/EH-logs`.
 pub fn reload(alloc: std.mem.Allocator, io: std.Io) void {
+    g_reload_err_len = 0;
+    switch (reloadViaSocket(alloc)) {
+        .ok, .refused => return,
+        .unreachable_socket => {},
+    }
     const res = std.process.run(alloc, io, .{
         .argv = &.{ "zoolanderctl", "reload" },
-    }) catch return;
-    alloc.free(res.stdout);
-    alloc.free(res.stderr);
+    }) catch |e| {
+        logz.log("zoolander-data: zoolanderctl reload could not run: {s}", .{@errorName(e)});
+        setReloadError("Zoolander control socket not reachable");
+        return;
+    };
+    defer alloc.free(res.stdout);
+    defer alloc.free(res.stderr);
+    const failed = switch (res.term) {
+        .exited => |code| code != 0,
+        else => true,
+    };
+    if (failed) {
+        const detail = if (res.stdout.len > 0) res.stdout else res.stderr;
+        logz.log("zoolander-data: zoolanderctl reload failed: {s}", .{std.mem.trim(u8, detail, " \t\r\n")});
+        setReloadError(if (detail.len > 0) detail else "zoolanderctl reload failed");
+    } else {
+        logz.log("zoolander-data: zoolanderctl reload ok", .{});
+    }
 }
 
 // Tests.

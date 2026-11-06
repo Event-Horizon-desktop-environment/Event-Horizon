@@ -1,9 +1,10 @@
 const std = @import("std");
 const app_mod = @import("app.zig");
 const hyprland_data = @import("hyprland_data.zig");
+const zoolander_data = @import("zoolander_data.zig");
 
 // Field bindings between the declarative row list (rows.zig) and the
-// persisted `Settings` struct. Same design as C++, where every control in a
+// persisted `Settings` struct, where every control in a
 // tab reads/writes `app.settings.<field>`: here a control names a `Field`
 // and the generic renderer gets/sets it by switch, so paint, hit-test and
 // persistence can never disagree about which field a row drives.
@@ -17,15 +18,12 @@ pub const Field = enum {
     dock_widgets_enabled,
     dock_group_apps,
     dock_tooltips_enabled,
+    dock_slim,
     dock_border_enabled,
     taskbar_enabled,
     taskbar_position_top,
     taskbar_group_apps,
     taskbar_show_labels,
-    panel_enabled,
-    panel_position_top,
-    panel_auto_hide,
-    panel_reserve_space,
     dashboard_enabled,
     desktop_enabled,
     wallpaper_enabled,
@@ -60,7 +58,7 @@ pub const Field = enum {
     dock_running_apps_tray_pill,
     dock_liquid_glass,
     dock_colored_glass,
-    panel_border,
+    dock_icon_frames,
     taskbar_border,
     taskbar_auto_hide,
     taskbar_tooltips_enabled,
@@ -71,22 +69,16 @@ pub const Field = enum {
     taskbar_thumbnail_peek_enabled,
     taskbar_compact_media,
     taskbar_widgets_enabled,
-    panel_tooltips_enabled,
-    panel_widgets_enabled,
-    panel_overlay_layer,
-    panel_hover_highlight,
-    panel_smart_auto_hide,
-    panel_reveal_on_switch,
-    panel_scroll_volume,
-    panel_capsule,
     monitor_enabled,
     matugen_base_recipes,
     power_tuning_profile,
+    overlay_opacity_advanced,
 
     // -- ints --
     dock_radius,
     dock_icon_size,
     dock_icon_spacing,
+    dock_island_gap,
     dock_bottom_gap,
     dock_opacity,
     dock_border_size,
@@ -95,14 +87,13 @@ pub const Field = enum {
     nightlight_schedule,
     nightlight_start_min,
     nightlight_end_min,
+    nightlight_use_location,
+    nightlight_latitude,
+    nightlight_longitude,
     taskbar_height,
     taskbar_radius,
     taskbar_opacity,
     taskbar_icon_size,
-    panel_height,
-    panel_radius,
-    panel_opacity,
-    panel_width_mode,
     dashboard_columns,
     wallpaper_mode,
     bing_filter,
@@ -115,8 +106,22 @@ pub const Field = enum {
     color_brightness_pct,
     color_contrast_pct,
     color_vibrance_pct,
+    color_gamma_pct,
     overlay_opacity_master_pct,
+    overlay_opacity_control_center_pct,
+    overlay_opacity_control_center_inner_pct,
+    overlay_opacity_app_drawer_pct,
+    overlay_opacity_launchpad_pct,
     overlay_opacity_settings_pct,
+    overlay_opacity_settings_sidebar_pct,
+    overlay_opacity_dock_menu_pct,
+    overlay_opacity_desktop_menu_pct,
+    overlay_opacity_tray_menu_pct,
+    overlay_opacity_calendar_pct,
+    overlay_opacity_weather_pct,
+    overlay_opacity_world_clock_pct,
+    overlay_opacity_tooltip_pct,
+    overlay_opacity_widget_card_pct,
     overlay_opacity_notifications_pct,
     launchpad_grid_columns,
     launchpad_grid_rows,
@@ -153,18 +158,6 @@ pub const Field = enum {
     dock_scale_pct,
     dock_border_opacity,
     dock_exclusive_zone_gap,
-    panel_icon_size,
-    panel_icon_spacing,
-    panel_scale_pct,
-    panel_border_size,
-    panel_edge_gap,
-    panel_exclusive_zone_gap,
-    panel_floating_amount,
-    panel_capsule_opacity,
-    panel_corner_tl,
-    panel_corner_tr,
-    panel_corner_bl,
-    panel_corner_br,
     taskbar_icon_spacing,
     taskbar_scale_pct,
     taskbar_border_size,
@@ -192,6 +185,20 @@ pub const Field = enum {
     monitor_hdr_min_lum,
     monitor_hdr_max_lum,
     monitor_hdr_avg_lum,
+    monitor_focused,
+    monitor_primary,
+    monitor_tearing_toggle,
+    monitor_hdr_idx,
+    monitor_color_profile_idx,
+    monitor_bit_depth_idx,
+    monitor_max_bpc_idx,
+    monitor_ten_bit_toggle,
+    monitor_render_transfer_idx,
+    monitor_render_sdr_brightness,
+    monitor_render_sdr_saturation,
+    monitor_render_sdr_min_lum,
+    monitor_render_sdr_max_lum,
+    monitor_render_sdr_eotf_idx,
     power_perf_pref,
 
     // -- strings --
@@ -211,12 +218,18 @@ pub const Field = enum {
 
     dock_output_name,
     taskbar_output_name,
-    panel_output_name,
-    panel_deadzone_left,
-    panel_deadzone_middle,
-    panel_deadzone_right,
-    panel_icon_theme,
-    panel_click_through,
+
+    // Default Apps stored desktop ids (Settings members mirror the names,
+    // so kind() reflects them without touching the budgeted switch).
+    default_apps_web,
+    default_apps_mail,
+    default_apps_calendar,
+    default_apps_files,
+    default_apps_terminal,
+    default_apps_music,
+    default_apps_video,
+    default_apps_images,
+    default_apps_pdf,
 
     // -- Hyprland config bindings (settings_tab_hyprland) --
     // Declared last and contiguous: the value is the `hyprland_data` UI slot
@@ -224,7 +237,7 @@ pub const Field = enum {
     // generated `k_ui` table. They have no `Settings` field of their own, so
     // `kind` and every get/set route them through hyprland_data instead of
     // reflecting off `Settings` like the members above.
-// Hyprland config bindings: enum value = hyprland_data UI slot.
+    // Hyprland config bindings: enum value = hyprland_data UI slot.
     hypr_animations_enabled, // animations.enabled
     hypr_animations_workspace_wraparound, // animations.workspace_wraparound
     hypr_binds_workspace_back_and_forth, // binds.workspace_back_and_forth
@@ -386,11 +399,15 @@ pub const Field = enum {
     hypr_opengl_nvidia_anti_flicker, // opengl.nvidia_anti_flicker
     hypr_quirks_skip_non_kms_dmabuf_formats, // quirks.skip_non_kms_dmabuf_formats
     hypr_quirks_prefer_hdr, // quirks.prefer_hdr
-
-
-
-
-
+    hypr_render_cm_enabled, // render.cm_enabled
+    hypr_render_send_content_type, // render.send_content_type
+    hypr_render_new_render_scheduling, // render.new_render_scheduling
+    hypr_render_expand_undersized_textures, // render.expand_undersized_textures
+    hypr_render_use_shader_blur_blend, // render.use_shader_blur_blend
+    hypr_render_fp16_sdr_tf, // render.fp16_sdr_tf
+    hypr_render_use_fp16, // render.use_fp16
+    hypr_render_direct_scanout, // render.direct_scanout
+    hypr_scrolling_fullscreen_on_one_column, // scrolling.fullscreen_on_one_column
 
     hypr_scrolling_follow_focus, // scrolling.follow_focus
     hypr_scrolling_wrap_focus, // scrolling.wrap_focus
@@ -402,26 +419,234 @@ pub const Field = enum {
     hypr_xwayland_enabled, // xwayland.enabled
     hypr_general_layout, // general.layout
 
+    // -- Zoolander config bindings (`zoolander_data`) --
+    // Same shape as the Hyprland block: contiguous, value = UI slot in
+    // `zoolander_data.k_meta`, declared before the template toggles so
+    // `zoolSlot` has a fixed upper bound.
+    zool_presentation_allow_tearing, // set_presentation.allow_tearing
+    zool_presentation_immediate_fullscreen, // set_presentation.immediate_fullscreen
+    zool_presentation_direct_scanout, // set_presentation.direct_scanout
+    zool_presentation_partial_damage, // set_presentation.partial_damage
+    zool_presentation_vrr, // set_presentation.vrr
+    zool_presentation_hdr, // set_presentation.hdr
+    zool_presentation_sdr_brightness, // set_presentation.sdr_brightness
+    zool_presentation_sdr_saturation, // set_presentation.sdr_saturation
+    zool_presentation_sdr_min_luminance, // set_presentation.sdr_min_luminance
+    zool_presentation_sdr_max_luminance, // set_presentation.sdr_max_luminance
+    zool_presentation_sdr_eotf, // set_presentation.sdr_eotf
+    zool_keyboard_repeat_rate, // set_keyboard.repeat_rate
+    zool_keyboard_repeat_delay, // set_keyboard.repeat_delay
+    zool_keyboard_numlock, // set_keyboard.numlock
+    zool_pointer_left_handed, // set_pointer.left_handed
+    zool_pointer_accel_profile, // set_pointer.accel_profile
+    zool_pointer_sensitivity, // set_pointer.sensitivity
+    zool_pointer_follow_mouse, // set_pointer.follow_mouse
+    zool_floating_raise_on_hover, // set_floating.raise_on_hover
+    zool_floating_raise_delay, // set_floating.raise_delay
+    zool_window_style_gaps_in, // set_window_style.gaps_in
+    zool_window_style_gaps_out, // set_window_style.gaps_out
+    zool_window_style_border_size, // set_window_style.border_size
+    zool_window_style_rounding, // set_window_style.rounding
+    zool_window_style_rounding_power, // set_window_style.rounding_power
+    zool_window_style_active_opacity, // set_window_style.active_opacity
+    zool_window_style_inactive_opacity, // set_window_style.inactive_opacity
+    zool_window_style_fullscreen_opacity, // set_window_style.fullscreen_opacity
+    zool_ssd_enabled, // set_ssd.enabled
+    zool_ssd_floating_workspaces_only, // set_ssd.floating_workspaces_only
+    zool_ssd_include_floating_windows, // set_ssd.include_floating_windows
+    zool_ssd_follow_theme, // set_ssd.follow_theme
+    zool_ssd_show_title, // set_ssd.show_title
+    zool_ssd_border, // set_ssd.border
+    zool_ssd_titlebar, // set_ssd.titlebar
+    zool_ssd_title_font_size, // set_ssd.title_font_size
+    zool_ssd_title_align, // set_ssd.title_align
+    zool_blur_enabled, // set_blur.enabled
+    zool_blur_ignore_opacity, // set_blur.ignore_opacity
+    zool_blur_popups, // set_blur.popups
+    zool_blur_popups_ignorealpha, // set_blur.popups_ignorealpha
+    zool_blur_input_methods, // set_blur.input_methods
+    zool_blur_input_methods_ignorealpha, // set_blur.input_methods_ignorealpha
+    zool_blur_size, // set_blur.size
+    zool_blur_passes, // set_blur.passes
+    zool_blur_resolution, // set_blur.resolution
+    zool_blur_noise, // set_blur.noise
+    zool_blur_contrast, // set_blur.contrast
+    zool_blur_brightness, // set_blur.brightness
+    zool_blur_vibrancy, // set_blur.vibrancy
+    zool_blur_vibrancy_darkness, // set_blur.vibrancy_darkness
+    zool_dim_inactive, // set_dim.inactive
+    zool_dim_strength, // set_dim.strength
+    zool_dim_special, // set_dim.special
+    zool_dim_around, // set_dim.around
+    zool_tab_bar_enabled, // set_tab_bar.enabled
+    zool_tab_bar_height, // set_tab_bar.height
+    zool_tab_bar_radius, // set_tab_bar.radius
+    zool_tab_bar_gap, // set_tab_bar.gap
+    zool_tab_bar_padding_x, // set_tab_bar.padding_x
+    zool_tab_bar_size, // set_tab_bar.size
+    zool_tab_bar_monocle_all, // set_tab_bar.monocle_all
+    zool_animations_enabled, // set_animations.enabled
+    zool_animations_duration, // set_animations.duration
+    zool_animations_easing, // set_animations.easing
+    zool_layout_default, // set_layout(layout)
+    zool_dwindle_preserve_split, // set_dwindle.preserve_split
+    zool_dwindle_smart_split, // set_dwindle.smart_split
+    zool_dwindle_smart_resizing, // set_dwindle.smart_resizing
+    zool_dwindle_force_split, // set_dwindle.force_split
+    zool_dwindle_split_width_multiplier, // set_dwindle.split_width_multiplier
+    zool_spatial_fallback_width, // set_spatial.fallback_width
+    zool_spatial_fallback_height, // set_spatial.fallback_height
+    zool_spatial_width_cap, // set_spatial.width_cap
+    zool_spatial_shelf_width, // set_spatial.shelf_width
+    zool_spatial_shelf_mode, // set_spatial.shelf_mode
+    zool_spatial_snap, // set_spatial.snap
+    zool_spatial_reveal_margin, // set_spatial.reveal_margin
+    zool_spatial_pan_fingers, // set_spatial.pan_fingers
+    zool_overview_axis, // set_overview.axis
+    zool_overview_rail, // set_overview.rail
+    zool_overview_scale, // set_overview.scale
+    zool_xwayland_enabled, // set_xwayland.enabled
+    zool_xwayland_force_zero_scaling, // set_xwayland.force_zero_scaling
+    zool_keyboard_layout, // set_keyboard.layout
+    zool_keyboard_variant, // set_keyboard.variant
+    zool_keyboard_options, // set_keyboard.options
+    zool_keyboard_model, // set_keyboard.model
+    zool_keyboard_rules, // set_keyboard.rules
+    zool_window_style_active_border, // set_window_style.active_border
+    zool_window_style_active_border_end, // set_window_style.active_border_end
+    zool_window_style_active_border_angle, // set_window_style.active_border_angle
+    zool_window_style_inactive_border, // set_window_style.inactive_border
+    zool_window_style_inactive_border_end, // set_window_style.inactive_border_end
+    zool_window_style_inactive_border_angle, // set_window_style.inactive_border_angle
+    zool_ssd_active_border, // set_ssd.active_border
+    zool_ssd_active_border_end, // set_ssd.active_border_end
+    zool_ssd_active_border_angle, // set_ssd.active_border_angle
+    zool_ssd_inactive_border, // set_ssd.inactive_border
+    zool_ssd_inactive_border_end, // set_ssd.inactive_border_end
+    zool_ssd_inactive_border_angle, // set_ssd.inactive_border_angle
+    zool_ssd_active_titlebar, // set_ssd.active_titlebar
+    zool_ssd_inactive_titlebar, // set_ssd.inactive_titlebar
+    zool_ssd_title_color, // set_ssd.title_color
+    zool_ssd_inactive_title_color, // set_ssd.inactive_title_color
+    zool_ssd_title_font, // set_ssd.title_font
+    zool_tab_bar_font, // set_tab_bar.font
+    zool_tab_bar_bg, // set_tab_bar.bg
+    zool_tab_bar_fg, // set_tab_bar.fg
+    zool_tab_bar_focus_bg, // set_tab_bar.focus_bg
+    zool_tab_bar_focus_fg, // set_tab_bar.focus_fg
+    zool_animations_all_enabled, // set_animations_enabled(enabled)
+    zool_reduced_motion, // set_reduced_motion(enabled)
+    zool_window_style_shadow_enabled, // set_window_style.shadow.enabled
+    zool_window_style_shadow_range, // set_window_style.shadow.range
+    zool_window_style_shadow_sharp, // set_window_style.shadow.sharp
+    zool_window_style_shadow_render_power, // set_window_style.shadow.render_power
+    zool_window_style_shadow_offset_x, // set_window_style.shadow.offset_x
+    zool_window_style_shadow_offset_y, // set_window_style.shadow.offset_y
+    zool_window_style_shadow_scale, // set_window_style.shadow.scale
+    zool_window_style_shadow_color, // set_window_style.shadow.color
+    zool_window_style_shadow_color_inactive, // set_window_style.shadow.color_inactive
+    zool_scrolling_width_presets, // set_scrolling.width_presets
+
+    // -- matugen external-template toggles (`settings_tab_appearance`) --
+    // One variant per entry of `Settings.matugen_templates` (a [37]bool
+    // array, so nothing reflects off a same-named Settings member); the
+    // enum value's distance from `matugen_tpl_0` is the array index
+    // (`tplIndex`). Declared after the Hyprland block on purpose: the block
+    // stays contiguous for `hyprSlot`, whose upper bound is
+    // `hypr_general_layout`.
+    matugen_tpl_0, // Niri
+    matugen_tpl_1, // Hyprland
+    matugen_tpl_2, // Mango
+    matugen_tpl_3, // GTK shell CSS
+    matugen_tpl_4, // GTK colors (light)
+    matugen_tpl_5, // GTK colors (dark)
+    matugen_tpl_6, // KDE colors
+    matugen_tpl_7, // Qt5ct
+    matugen_tpl_8, // Qt6ct
+    matugen_tpl_9, // Kitty theme
+    matugen_tpl_10, // Kitty tabs
+    matugen_tpl_11, // Ghostty
+    matugen_tpl_12, // WezTerm
+    matugen_tpl_13, // Alacritty
+    matugen_tpl_14, // Foot
+    matugen_tpl_15, // Otter term
+    matugen_tpl_16, // btop
+    matugen_tpl_17, // Neovim
+    matugen_tpl_18, // VS Code material
+    matugen_tpl_19, // VS Code themes
+    matugen_tpl_20, // Firefox
+    matugen_tpl_21, // Zen
+    matugen_tpl_22, // Vesktop
+    matugen_tpl_23, // Equibop
+    matugen_tpl_24, // PyWalFox
+    matugen_tpl_25, // Steam
+    matugen_tpl_26, // dgop
+    matugen_tpl_27, // Emacs
+    matugen_tpl_28, // Zed
+    matugen_tpl_29, // Ptyxis
+    matugen_tpl_30, // Horizon Files
+    matugen_tpl_31, // OBS Studio
+    matugen_tpl_32, // Heroic
+    matugen_tpl_33, // Horizon Photo
+    matugen_tpl_34, // Horizon Calendar
+    matugen_tpl_35, // Fluxer
+    matugen_tpl_36, // Owler
+
     /// The `hyprland_data` UI slot a Hyprland field drives, or null for a
-    /// field that lives in `Settings`. The hypr block is declared last, so a
-    /// slot is just the distance from its first member.
+    /// field that lives in `Settings`. The hypr block is contiguous, so a
+    /// slot is just the distance from its first member — the bound rules
+    /// out the template block declared behind it.
     pub fn hyprSlot(self: Field) ?u16 {
         const n: u16 = @intFromEnum(self);
         const first: u16 = @intFromEnum(Field.hypr_animations_enabled);
-        if (n < first) return null;
+        const last: u16 = @intFromEnum(Field.hypr_general_layout);
+        if (n < first or n > last) return null;
         return n - first;
     }
 
     pub fn isHypr(self: Field) bool {
         return @intFromEnum(self) >= @intFromEnum(Field.hypr_animations_enabled) and
-               @intFromEnum(self) <= @intFromEnum(Field.hypr_general_layout);
+            @intFromEnum(self) <= @intFromEnum(Field.hypr_general_layout);
+    }
+
+    /// The `zoolander_data` UI slot a Zoolander field drives, or null.
+    pub fn zoolSlot(self: Field) ?u16 {
+        const n: u16 = @intFromEnum(self);
+        const first: u16 = @intFromEnum(Field.zool_presentation_allow_tearing);
+        const last: u16 = @intFromEnum(Field.zool_scrolling_width_presets);
+        if (n < first or n > last) return null;
+        return n - first;
+    }
+
+    pub fn isZool(self: Field) bool {
+        return @intFromEnum(self) >= @intFromEnum(Field.zool_presentation_allow_tearing) and
+            @intFromEnum(self) <= @intFromEnum(Field.zool_scrolling_width_presets);
+    }
+
+    /// Index into `Settings.matugen_templates` for the template toggles, or
+    /// null for every other field (they have no settings member of their own
+    /// to reflect off).
+    pub fn tplIndex(self: Field) ?usize {
+        const n: usize = @intFromEnum(self);
+        const first: usize = @intFromEnum(Field.matugen_tpl_0);
+        const last: usize = @intFromEnum(Field.matugen_tpl_36);
+        if (n < first or n > last) return null;
+        return n - first;
     }
 
     pub fn kind(self: Field) Kind {
+        // The reflective `inline else` walk expands one arm per enum member
+        // (500-plus, including the 37 template toggles), each doing comptime
+        // index work — past the default backwards-branch budget on its own.
+        @setEvalBranchQuota(40_000);
         return switch (self) {
             // Monitor fields are routed through Content -> monitors_state, so
             // they cannot be reflected off `Settings`; list them explicitly.
             .monitor_enabled => .bool,
+            .monitor_focused => .bool,
+            .monitor_primary => .bool,
+            .monitor_tearing_toggle => .bool,
+            .monitor_ten_bit_toggle => .bool,
             .monitor_sel,
             .monitor_mode_idx,
             .monitor_refresh_idx,
@@ -440,6 +665,16 @@ pub const Field = enum {
             .monitor_hdr_min_lum,
             .monitor_hdr_max_lum,
             .monitor_hdr_avg_lum,
+            .monitor_hdr_idx,
+            .monitor_color_profile_idx,
+            .monitor_bit_depth_idx,
+            .monitor_max_bpc_idx,
+            .monitor_render_transfer_idx,
+            .monitor_render_sdr_brightness,
+            .monitor_render_sdr_saturation,
+            .monitor_render_sdr_min_lum,
+            .monitor_render_sdr_max_lum,
+            .monitor_render_sdr_eotf_idx,
             => .int,
             // Notifications extras bypass the reflective walk below: the
             // enum sits exactly at the compiler's branch budget, and five
@@ -451,12 +686,24 @@ pub const Field = enum {
             .notifications_layer_shell => .bool,
             .notifications_output => .str,
             inline else => |f| blk: {
+                // Template toggles have no same-named `Settings` member (one
+                // [37]bool array behind them): answer from the index and keep
+                // the 37 variants out of the reflective walk below — it sits
+                // on the compiler's branch budget.
+                if (comptime f.tplIndex() != null) break :blk .bool;
                 // Hyprland slots have no `Settings` field; their kind comes
                 // from the config key behind them (a `.number` key is an int
                 // row too — the slider is integral in the UI).
                 if (comptime f.isHypr()) {
                     break :blk switch (hyprland_data.kindOf(f.hyprSlot().?)) {
                         .boolean => .bool,
+                        else => .int,
+                    };
+                }
+                if (comptime f.isZool()) {
+                    break :blk switch (zoolander_data.kindOf(f.zoolSlot().?)) {
+                        .boolean, .flag => .bool,
+                        .text, .list => .str,
                         else => .int,
                     };
                 }
@@ -474,15 +721,12 @@ pub fn getBool(s: *const app_mod.Settings, f: Field) bool {
         .dock_widgets_enabled => s.dock_widgets_enabled,
         .dock_group_apps => s.dock_group_apps,
         .dock_tooltips_enabled => s.dock_tooltips_enabled,
+        .dock_slim => s.dock_slim,
         .dock_border_enabled => s.dock_border_enabled,
         .taskbar_enabled => s.taskbar_enabled,
         .taskbar_position_top => s.taskbar_position_top,
         .taskbar_group_apps => s.taskbar_group_apps,
         .taskbar_show_labels => s.taskbar_show_labels,
-        .panel_enabled => s.panel_enabled,
-        .panel_position_top => s.panel_position_top,
-        .panel_auto_hide => s.panel_auto_hide,
-        .panel_reserve_space => s.panel_reserve_space,
         .dashboard_enabled => s.dashboard_enabled,
         .desktop_enabled => s.desktop_enabled,
         .wallpaper_enabled => s.wallpaper_enabled,
@@ -512,11 +756,12 @@ pub fn getBool(s: *const app_mod.Settings, f: Field) bool {
         .autostart_enabled => s.autostart_enabled,
         .updater_auto_check => s.updater_auto_check,
         .nightlight_enabled => s.nightlight_enabled,
+        .nightlight_use_location => s.nightlight_use_location,
         .dock_pinned_apps_tray_pill => s.dock_pinned_apps_tray_pill,
         .dock_running_apps_tray_pill => s.dock_running_apps_tray_pill,
         .dock_liquid_glass => s.dock_liquid_glass,
         .dock_colored_glass => s.dock_colored_glass,
-        .panel_border => s.panel_border,
+        .dock_icon_frames => s.dock_icon_frames,
         .taskbar_border => s.taskbar_border,
         .taskbar_auto_hide => s.taskbar_auto_hide,
         .taskbar_tooltips_enabled => s.taskbar_tooltips_enabled,
@@ -527,17 +772,10 @@ pub fn getBool(s: *const app_mod.Settings, f: Field) bool {
         .taskbar_thumbnail_peek_enabled => s.taskbar_thumbnail_peek_enabled,
         .taskbar_compact_media => s.taskbar_compact_media,
         .taskbar_widgets_enabled => s.taskbar_widgets_enabled,
-        .panel_tooltips_enabled => s.panel_tooltips_enabled,
-        .panel_widgets_enabled => s.panel_widgets_enabled,
-        .panel_overlay_layer => s.panel_overlay_layer,
-        .panel_hover_highlight => s.panel_hover_highlight,
-        .panel_smart_auto_hide => s.panel_smart_auto_hide,
-        .panel_reveal_on_switch => s.panel_reveal_on_switch,
-        .panel_scroll_volume => s.panel_scroll_volume,
-        .panel_capsule => s.panel_capsule,
         .matugen_base_recipes => s.matugen_base_recipes,
         .power_tuning_profile => s.power_tuning_profile,
-        else => false,
+        .overlay_opacity_advanced => s.overlay_opacity_advanced,
+        else => if (f.tplIndex()) |i| s.matugen_templates[i] else false,
     };
 }
 
@@ -548,15 +786,12 @@ pub fn setBool(s: *app_mod.Settings, f: Field, v: bool) void {
         .dock_widgets_enabled => s.dock_widgets_enabled = v,
         .dock_group_apps => s.dock_group_apps = v,
         .dock_tooltips_enabled => s.dock_tooltips_enabled = v,
+        .dock_slim => s.dock_slim = v,
         .dock_border_enabled => s.dock_border_enabled = v,
         .taskbar_enabled => s.taskbar_enabled = v,
         .taskbar_position_top => s.taskbar_position_top = v,
         .taskbar_group_apps => s.taskbar_group_apps = v,
         .taskbar_show_labels => s.taskbar_show_labels = v,
-        .panel_enabled => s.panel_enabled = v,
-        .panel_position_top => s.panel_position_top = v,
-        .panel_auto_hide => s.panel_auto_hide = v,
-        .panel_reserve_space => s.panel_reserve_space = v,
         .dashboard_enabled => s.dashboard_enabled = v,
         .desktop_enabled => s.desktop_enabled = v,
         .wallpaper_enabled => s.wallpaper_enabled = v,
@@ -566,8 +801,16 @@ pub fn setBool(s: *app_mod.Settings, f: Field, v: bool) void {
         .notifications_dbus_enabled => s.notifications_dbus_enabled = v,
         .notifications_dnd => s.notifications_dnd = v,
         .notifications_layer_shell => s.notifications_layer_shell = v,
-        .matugen_enabled => s.matugen_enabled = v,
-        .horizon_native => s.horizon_native = v,
+        .matugen_enabled => {
+            s.matugen_enabled = v;
+            // Wallpaper tint and the native color engine are mutually
+            // exclusive (`appearance_general_pointer_down`).
+            if (v) s.horizon_native = false;
+        },
+        .horizon_native => {
+            s.horizon_native = v;
+            if (v) s.matugen_enabled = false;
+        },
         .color_theme_enabled => s.color_theme_enabled = v,
         .overview_live_updates => s.overview_live_updates = v,
         .overview_multi_monitor => s.overview_multi_monitor = v,
@@ -586,11 +829,12 @@ pub fn setBool(s: *app_mod.Settings, f: Field, v: bool) void {
         .autostart_enabled => s.autostart_enabled = v,
         .updater_auto_check => s.updater_auto_check = v,
         .nightlight_enabled => s.nightlight_enabled = v,
+        .nightlight_use_location => s.nightlight_use_location = v,
         .dock_pinned_apps_tray_pill => s.dock_pinned_apps_tray_pill = v,
         .dock_running_apps_tray_pill => s.dock_running_apps_tray_pill = v,
         .dock_liquid_glass => s.dock_liquid_glass = v,
         .dock_colored_glass => s.dock_colored_glass = v,
-        .panel_border => s.panel_border = v,
+        .dock_icon_frames => s.dock_icon_frames = v,
         .taskbar_border => s.taskbar_border = v,
         .taskbar_auto_hide => s.taskbar_auto_hide = v,
         .taskbar_tooltips_enabled => s.taskbar_tooltips_enabled = v,
@@ -601,17 +845,12 @@ pub fn setBool(s: *app_mod.Settings, f: Field, v: bool) void {
         .taskbar_thumbnail_peek_enabled => s.taskbar_thumbnail_peek_enabled = v,
         .taskbar_compact_media => s.taskbar_compact_media = v,
         .taskbar_widgets_enabled => s.taskbar_widgets_enabled = v,
-        .panel_tooltips_enabled => s.panel_tooltips_enabled = v,
-        .panel_widgets_enabled => s.panel_widgets_enabled = v,
-        .panel_overlay_layer => s.panel_overlay_layer = v,
-        .panel_hover_highlight => s.panel_hover_highlight = v,
-        .panel_smart_auto_hide => s.panel_smart_auto_hide = v,
-        .panel_reveal_on_switch => s.panel_reveal_on_switch = v,
-        .panel_scroll_volume => s.panel_scroll_volume = v,
-        .panel_capsule => s.panel_capsule = v,
         .matugen_base_recipes => s.matugen_base_recipes = v,
         .power_tuning_profile => s.power_tuning_profile = v,
-        else => {},
+        .overlay_opacity_advanced => s.overlay_opacity_advanced = v,
+        else => if (f.tplIndex()) |i| {
+            s.matugen_templates[i] = v;
+        },
     }
 }
 
@@ -620,6 +859,7 @@ pub fn getInt(s: *const app_mod.Settings, f: Field) i32 {
         .dock_radius => s.dock_radius,
         .dock_icon_size => s.dock_icon_size,
         .dock_icon_spacing => s.dock_icon_spacing,
+        .dock_island_gap => s.dock_island_gap,
         .dock_bottom_gap => s.dock_bottom_gap,
         .dock_opacity => s.dock_opacity,
         .dock_border_size => s.dock_border_size,
@@ -628,21 +868,11 @@ pub fn getInt(s: *const app_mod.Settings, f: Field) i32 {
         .nightlight_schedule => s.nightlight_schedule,
         .nightlight_start_min => s.nightlight_start_min,
         .nightlight_end_min => s.nightlight_end_min,
+        .nightlight_latitude => s.nightlight_latitude,
+        .nightlight_longitude => s.nightlight_longitude,
         .dock_scale_pct => s.dock_scale_pct,
         .dock_border_opacity => s.dock_border_opacity,
         .dock_exclusive_zone_gap => s.dock_exclusive_zone_gap,
-        .panel_icon_size => s.panel_icon_size,
-        .panel_floating_amount => s.panel_floating_amount,
-        .panel_capsule_opacity => s.panel_capsule_opacity,
-        .panel_corner_tl => s.panel_corner_tl,
-        .panel_corner_tr => s.panel_corner_tr,
-        .panel_corner_bl => s.panel_corner_bl,
-        .panel_corner_br => s.panel_corner_br,
-        .panel_icon_spacing => s.panel_icon_spacing,
-        .panel_scale_pct => s.panel_scale_pct,
-        .panel_border_size => s.panel_border_size,
-        .panel_edge_gap => s.panel_edge_gap,
-        .panel_exclusive_zone_gap => s.panel_exclusive_zone_gap,
         .taskbar_icon_spacing => s.taskbar_icon_spacing,
         .taskbar_scale_pct => s.taskbar_scale_pct,
         .taskbar_border_size => s.taskbar_border_size,
@@ -655,10 +885,6 @@ pub fn getInt(s: *const app_mod.Settings, f: Field) i32 {
         .taskbar_radius => s.taskbar_radius,
         .taskbar_opacity => s.taskbar_opacity,
         .taskbar_icon_size => s.taskbar_icon_size,
-        .panel_height => s.panel_height,
-        .panel_radius => s.panel_radius,
-        .panel_opacity => s.panel_opacity,
-        .panel_width_mode => s.panel_width_mode,
         .dashboard_columns => s.dashboard_columns,
         .wallpaper_mode => s.wallpaper_mode,
         .bing_filter => s.bing_filter,
@@ -671,10 +897,23 @@ pub fn getInt(s: *const app_mod.Settings, f: Field) i32 {
         .color_brightness_pct => s.color_brightness_pct,
         .color_contrast_pct => s.color_contrast_pct,
         .color_vibrance_pct => s.color_vibrance_pct,
+        .color_gamma_pct => s.color_gamma_pct,
         .overlay_opacity_master_pct => s.overlay_opacity_master_pct,
+        .overlay_opacity_control_center_pct => s.overlay_opacity_control_center_pct,
+        .overlay_opacity_control_center_inner_pct => s.overlay_opacity_control_center_inner_pct,
+        .overlay_opacity_app_drawer_pct => s.overlay_opacity_app_drawer_pct,
+        .overlay_opacity_launchpad_pct => s.overlay_opacity_launchpad_pct,
         .overlay_opacity_settings_pct => s.overlay_opacity_settings_pct,
+        .overlay_opacity_settings_sidebar_pct => s.overlay_opacity_settings_sidebar_pct,
+        .overlay_opacity_dock_menu_pct => s.overlay_opacity_dock_menu_pct,
+        .overlay_opacity_desktop_menu_pct => s.overlay_opacity_desktop_menu_pct,
+        .overlay_opacity_tray_menu_pct => s.overlay_opacity_tray_menu_pct,
+        .overlay_opacity_calendar_pct => s.overlay_opacity_calendar_pct,
+        .overlay_opacity_weather_pct => s.overlay_opacity_weather_pct,
+        .overlay_opacity_world_clock_pct => s.overlay_opacity_world_clock_pct,
+        .overlay_opacity_tooltip_pct => s.overlay_opacity_tooltip_pct,
+        .overlay_opacity_widget_card_pct => s.overlay_opacity_widget_card_pct,
         .overlay_opacity_notifications_pct => s.overlay_opacity_notifications_pct,
-        .launchpad_grid_columns => s.launchpad_grid_columns,
         .launchpad_grid_rows => s.launchpad_grid_rows,
         .launchpad_layout_scale_pct => s.launchpad_layout_scale_pct,
         .launchpad_icon_fill_pct => s.launchpad_icon_fill_pct,
@@ -714,6 +953,7 @@ pub fn setInt(s: *app_mod.Settings, f: Field, v: i32) void {
         .dock_radius => s.dock_radius = v,
         .dock_icon_size => s.dock_icon_size = v,
         .dock_icon_spacing => s.dock_icon_spacing = v,
+        .dock_island_gap => s.dock_island_gap = v,
         .dock_bottom_gap => s.dock_bottom_gap = v,
         .dock_opacity => s.dock_opacity = v,
         .dock_border_size => s.dock_border_size = v,
@@ -722,21 +962,11 @@ pub fn setInt(s: *app_mod.Settings, f: Field, v: i32) void {
         .nightlight_schedule => s.nightlight_schedule = v,
         .nightlight_start_min => s.nightlight_start_min = v,
         .nightlight_end_min => s.nightlight_end_min = v,
+        .nightlight_latitude => s.nightlight_latitude = v,
+        .nightlight_longitude => s.nightlight_longitude = v,
         .dock_scale_pct => s.dock_scale_pct = v,
         .dock_border_opacity => s.dock_border_opacity = v,
         .dock_exclusive_zone_gap => s.dock_exclusive_zone_gap = v,
-        .panel_icon_size => s.panel_icon_size = v,
-        .panel_floating_amount => s.panel_floating_amount = v,
-        .panel_capsule_opacity => s.panel_capsule_opacity = v,
-        .panel_corner_tl => s.panel_corner_tl = v,
-        .panel_corner_tr => s.panel_corner_tr = v,
-        .panel_corner_bl => s.panel_corner_bl = v,
-        .panel_corner_br => s.panel_corner_br = v,
-        .panel_icon_spacing => s.panel_icon_spacing = v,
-        .panel_scale_pct => s.panel_scale_pct = v,
-        .panel_border_size => s.panel_border_size = v,
-        .panel_edge_gap => s.panel_edge_gap = v,
-        .panel_exclusive_zone_gap => s.panel_exclusive_zone_gap = v,
         .taskbar_icon_spacing => s.taskbar_icon_spacing = v,
         .taskbar_scale_pct => s.taskbar_scale_pct = v,
         .taskbar_border_size => s.taskbar_border_size = v,
@@ -749,10 +979,6 @@ pub fn setInt(s: *app_mod.Settings, f: Field, v: i32) void {
         .taskbar_radius => s.taskbar_radius = v,
         .taskbar_opacity => s.taskbar_opacity = v,
         .taskbar_icon_size => s.taskbar_icon_size = v,
-        .panel_height => s.panel_height = v,
-        .panel_radius => s.panel_radius = v,
-        .panel_opacity => s.panel_opacity = v,
-        .panel_width_mode => s.panel_width_mode = v,
         .dashboard_columns => s.dashboard_columns = v,
         .wallpaper_mode => s.wallpaper_mode = v,
         .bing_filter => s.bing_filter = v,
@@ -765,8 +991,22 @@ pub fn setInt(s: *app_mod.Settings, f: Field, v: i32) void {
         .color_brightness_pct => s.color_brightness_pct = v,
         .color_contrast_pct => s.color_contrast_pct = v,
         .color_vibrance_pct => s.color_vibrance_pct = v,
+        .color_gamma_pct => s.color_gamma_pct = v,
         .overlay_opacity_master_pct => s.overlay_opacity_master_pct = v,
+        .overlay_opacity_control_center_pct => s.overlay_opacity_control_center_pct = v,
+        .overlay_opacity_control_center_inner_pct => s.overlay_opacity_control_center_inner_pct = v,
+        .overlay_opacity_app_drawer_pct => s.overlay_opacity_app_drawer_pct = v,
+        .overlay_opacity_launchpad_pct => s.overlay_opacity_launchpad_pct = v,
         .overlay_opacity_settings_pct => s.overlay_opacity_settings_pct = v,
+        .overlay_opacity_settings_sidebar_pct => s.overlay_opacity_settings_sidebar_pct = v,
+        .overlay_opacity_dock_menu_pct => s.overlay_opacity_dock_menu_pct = v,
+        .overlay_opacity_desktop_menu_pct => s.overlay_opacity_desktop_menu_pct = v,
+        .overlay_opacity_tray_menu_pct => s.overlay_opacity_tray_menu_pct = v,
+        .overlay_opacity_calendar_pct => s.overlay_opacity_calendar_pct = v,
+        .overlay_opacity_weather_pct => s.overlay_opacity_weather_pct = v,
+        .overlay_opacity_world_clock_pct => s.overlay_opacity_world_clock_pct = v,
+        .overlay_opacity_tooltip_pct => s.overlay_opacity_tooltip_pct = v,
+        .overlay_opacity_widget_card_pct => s.overlay_opacity_widget_card_pct = v,
         .overlay_opacity_notifications_pct => s.overlay_opacity_notifications_pct = v,
         .launchpad_grid_columns => s.launchpad_grid_columns = v,
         .launchpad_grid_rows => s.launchpad_grid_rows = v,
@@ -779,7 +1019,7 @@ pub fn setInt(s: *app_mod.Settings, f: Field, v: i32) void {
         .launchpad_folder_rows => s.launchpad_folder_rows = v,
         .launchpad_dpi_scale_pct => s.launchpad_dpi_scale_pct = v,
         .launchpad_view_mode => s.launchpad_view_mode = v,
-        // One Widget-opacity slider drives both bars, like the C++
+        // One Widget-opacity slider drives both bars
         // `case 7: slotPillOpacity = v; taskbarSlotPillOpacity = v`.
         .slot_pill_opacity => {
             s.slot_pill_opacity = v;
@@ -816,12 +1056,6 @@ pub fn getStr(s: *const app_mod.Settings, f: Field) []const u8 {
         .renderer => s.renderer,
         .dock_output_name => s.dock_output_name,
         .taskbar_output_name => s.taskbar_output_name,
-        .panel_output_name => s.panel_output_name,
-        .panel_deadzone_left => s.panel_deadzone_left,
-        .panel_deadzone_middle => s.panel_deadzone_middle,
-        .panel_deadzone_right => s.panel_deadzone_right,
-        .panel_icon_theme => s.panel_icon_theme,
-        .panel_click_through => s.panel_click_through,
         .icon_theme => s.icon_theme,
         .wallpaper_image => s.wallpaper_image,
         .wallpaper_folder => s.wallpaper_folder,
@@ -834,6 +1068,15 @@ pub fn getStr(s: *const app_mod.Settings, f: Field) []const u8 {
         .time_timezone => s.time_timezone,
         .keyboard_layout => s.keyboard_layout,
         .avatar_path => s.avatar_path,
+        .default_apps_web => s.default_apps_web,
+        .default_apps_mail => s.default_apps_mail,
+        .default_apps_calendar => s.default_apps_calendar,
+        .default_apps_files => s.default_apps_files,
+        .default_apps_terminal => s.default_apps_terminal,
+        .default_apps_music => s.default_apps_music,
+        .default_apps_video => s.default_apps_video,
+        .default_apps_images => s.default_apps_images,
+        .default_apps_pdf => s.default_apps_pdf,
         else => "",
     };
 }
@@ -843,12 +1086,6 @@ pub fn setStr(s: *app_mod.Settings, f: Field, v: []const u8) void {
         .renderer => s.renderer = v,
         .dock_output_name => s.dock_output_name = v,
         .taskbar_output_name => s.taskbar_output_name = v,
-        .panel_output_name => s.panel_output_name = v,
-        .panel_deadzone_left => s.panel_deadzone_left = v,
-        .panel_deadzone_middle => s.panel_deadzone_middle = v,
-        .panel_deadzone_right => s.panel_deadzone_right = v,
-        .panel_icon_theme => s.panel_icon_theme = v,
-        .panel_click_through => s.panel_click_through = v,
         .icon_theme => s.icon_theme = v,
         .wallpaper_image => s.wallpaper_image = v,
         .wallpaper_folder => s.wallpaper_folder = v,
@@ -861,13 +1098,21 @@ pub fn setStr(s: *app_mod.Settings, f: Field, v: []const u8) void {
         .time_timezone => s.time_timezone = v,
         .keyboard_layout => s.keyboard_layout = v,
         .avatar_path => s.avatar_path = v,
+        .default_apps_web => s.default_apps_web = v,
+        .default_apps_mail => s.default_apps_mail = v,
+        .default_apps_calendar => s.default_apps_calendar = v,
+        .default_apps_files => s.default_apps_files = v,
+        .default_apps_terminal => s.default_apps_terminal = v,
+        .default_apps_music => s.default_apps_music = v,
+        .default_apps_video => s.default_apps_video = v,
+        .default_apps_images => s.default_apps_images = v,
+        .default_apps_pdf => s.default_apps_pdf = v,
         else => {},
     }
 }
 
 /// Combo index for a row: int fields store the index directly, string fields
-/// store the selected option text (matched, defaulting to 0 like the C++
-/// `rendererIndex()` helper in dock_tab.zig).
+/// store the selected option text (matched, defaulting to 0).
 pub fn comboIndex(s: *const app_mod.Settings, f: Field, options: []const []const u8) usize {
     if (f.kind() == .str) {
         const cur = getStr(s, f);
@@ -918,6 +1163,7 @@ test "settings-fields: get/set round-trip" {
 test "settings-fields: combo index for int and str fields" {
     const t = std.testing;
     var s = app_mod.Settings{};
+    s.renderer = "vulkan";
     const opts = [_][]const u8{ "vulkan", "cairo" };
     try t.expectEqual(@as(usize, 0), comboIndex(&s, .renderer, &opts));
     setComboIndex(&s, .renderer, &opts, 1);

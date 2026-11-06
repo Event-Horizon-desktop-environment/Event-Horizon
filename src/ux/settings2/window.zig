@@ -861,6 +861,21 @@ pub const Win = struct {
         };
     }
 
+    /// Write pending Zoolander Lua edits to disk and ask Zoolander to reload.
+    /// Toggle and combo clicks land on press (unlike slider drags, which are
+    /// committed on release at `onButton`), so they need an explicit flush.
+    fn flushZoolanderTab(self: *Win) void {
+        if (zoolander_page.ownsTab(self.content.active_tab) or
+            self.content.active_tab == app_mod.TabId.monitors)
+        {
+            if (zoolander_data.isDirty()) {
+                zoolander_data.commit(self.gpa, self.io);
+                self.content.relayout();
+                self.repaint();
+            }
+        }
+    }
+
     /// Borrow this frame's wallpaper settings into the page (its geometry
     /// and paint read `snap`, not `Settings`, to stay free of a cycle).
     /// Resolve the active palette into `common.Theme` and refresh the
@@ -2536,6 +2551,7 @@ pub const Win = struct {
             self.flushAppearanceTab();
             self.flushDefaultAppsTab();
             self.flushNightlightTab();
+            self.flushZoolanderTab();
             if (slot) |c| self.dapps.markPick(c);
             // The Default Apps page rebuilds its row tables for the new
             // stored id (no-op relayout cost on other tabs).
@@ -2777,6 +2793,7 @@ pub const Win = struct {
                 self.flushNotificationsTab();
                 self.flushAppearanceTab();
                 self.flushNightlightTab();
+                self.flushZoolanderTab();
             },
             else => {
                 _ = self.content.applyHit(ch, x);
@@ -2788,6 +2805,7 @@ pub const Win = struct {
                 self.flushNotificationsTab();
                 self.flushAppearanceTab();
                 self.flushNightlightTab();
+                self.flushZoolanderTab();
             },
         }
         self.repaint();

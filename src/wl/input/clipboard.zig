@@ -224,6 +224,7 @@ pub const Service = struct {
     current: ?usize = null,
     current_primary: ?usize = null,
     source: ?*anyopaque = null,
+    source_primary: ?*anyopaque = null,
     source_mimes: std.ArrayList([]const u8),
     /// Owned payload store: the Zig shape of `outgoingData_`
     /// (clipboard.hpp:158). Populated by `copyData` / `copyDataMulti` /
@@ -294,6 +295,13 @@ pub const Service = struct {
                 .wlr => wl.zwlr_data_control_source_v1_destroy(@ptrCast(s)),
             }
             self.source = null;
+        }
+        if (self.source_primary) |s| {
+            switch (self.backend) {
+                .ext => wl.ext_data_control_source_v1_destroy(@ptrCast(s)),
+                .wlr => wl.zwlr_data_control_source_v1_destroy(@ptrCast(s)),
+            }
+            self.source_primary = null;
         }
         for (self.source_mimes.items) |m| self.alloc.free(m);
         self.source_mimes.clearRetainingCapacity();
@@ -793,12 +801,43 @@ pub const Service = struct {
         return null;
     }
 
+    /// Attach the source listeners and offer every stored mime on `src`. The
+    /// mime strings are tracked in `source_mimes` so they can be freed when
+    /// the source is destroyed. Returns false on allocation failure, leaving
+    /// `self.source`/`self.source_primary` already cleared by the caller.
+    fn sourceOfferMimes(self: *Service, src: *anyopaque) bool {
+        switch (self.backend) {
+            .ext => _ = wl.ext_data_control_source_v1_add_listener(@ptrCast(src), &ext_source_listener, self),
+            .wlr => _ = wl.zwlr_data_control_source_v1_add_listener(@ptrCast(src), &wlr_source_listener, self),
+        }
+        for (self.owned.items) |it| {
+            const owned_mime = self.alloc.dupe(u8, it.mime) catch return false;
+            self.source_mimes.append(self.alloc, owned_mime) catch {
+                self.alloc.free(owned_mime);
+                return false;
+            };
+            var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
+            if (it.mime.len >= zbuf.len) continue;
+            @memcpy(zbuf[0..it.mime.len], it.mime);
+            switch (self.backend) {
+                .ext => wl.ext_data_control_source_v1_offer(@ptrCast(src), &zbuf),
+                .wlr => wl.zwlr_data_control_source_v1_offer(@ptrCast(src), &zbuf),
+            }
+        }
+        return true;
+    }
+
     /// C++ `build_source_and_set_selection` (clipboard.cpp:414-449): one
     /// source, every stored mime offered, then BOTH selections (clipboard
     /// and primary) pointed at it, then a flush when a display is attached,
     /// then the change notification. A failed data-source creation leaves
     /// `owned` intact — the C++ does not clear `outgoingData_` there
     /// either.
+    ///
+    /// Zoolander's compositor rejects reusing a source that is already bound
+    // to a selection (`ext_data_control_device_v1.Error.used_source`,
+    // "source already used by a selection"), so the clipboard and primary
+    // selections each get their own source instead of sharing one.
     fn buildOwnedSourceBoth(self: *Service) bool {
         const mgr = self.manager orelse return false;
         self.destroySourceOnly();
@@ -814,27 +853,28 @@ pub const Service = struct {
         };
         if (src == null) return false;
         self.source = src;
-        switch (self.backend) {
-            .ext => _ = wl.ext_data_control_source_v1_add_listener(@ptrCast(src.?), &ext_source_listener, self),
-            .wlr => _ = wl.zwlr_data_control_source_v1_add_listener(@ptrCast(src.?), &wlr_source_listener, self),
+        if (!self.sourceOfferMimes(src.?)) {
+            self.destroySourceOnly();
+            return false;
         }
-        for (self.owned.items) |it| {
-            const owned_mime = self.alloc.dupe(u8, it.mime) catch {
-                self.destroySourceOnly();
-                return false;
-            };
-            self.source_mimes.append(self.alloc, owned_mime) catch {
-                self.alloc.free(owned_mime);
-                self.destroySourceOnly();
-                return false;
-            };
-            var zbuf: [256:0]u8 = @as([256:0]u8, @splat(0));
-            if (it.mime.len >= zbuf.len) continue;
-            @memcpy(zbuf[0..it.mime.len], it.mime);
-            switch (self.backend) {
-                .ext => wl.ext_data_control_source_v1_offer(@ptrCast(src.?), &zbuf),
-                .wlr => wl.zwlr_data_control_source_v1_offer(@ptrCast(src.?), &zbuf),
-            }
+        const src2: ?*anyopaque = switch (self.backend) {
+            .ext => blk: {
+                const s = wl.ext_data_control_manager_v1_create_data_source(@ptrCast(@alignCast(mgr)));
+                break :blk if (s != null) @ptrCast(s) else null;
+            },
+            .wlr => blk: {
+                const s = wl.zwlr_data_control_manager_v1_create_data_source(@ptrCast(@alignCast(mgr)));
+                break :blk if (s != null) @ptrCast(s) else null;
+            },
+        };
+        if (src2 == null) {
+            self.destroySourceOnly();
+            return false;
+        }
+        self.source_primary = src2;
+        if (!self.sourceOfferMimes(src2.?)) {
+            self.destroySourceOnly();
+            return false;
         }
         self.provider = provideOwned;
         self.provider_ctx = self;
@@ -842,11 +882,11 @@ pub const Service = struct {
             switch (self.backend) {
                 .ext => {
                     wl.ext_data_control_device_v1_set_selection(@ptrCast(@alignCast(d)), @ptrCast(src.?));
-                    wl.ext_data_control_device_v1_set_primary_selection(@ptrCast(@alignCast(d)), @ptrCast(src.?));
+                    wl.ext_data_control_device_v1_set_primary_selection(@ptrCast(@alignCast(d)), @ptrCast(src2.?));
                 },
                 .wlr => {
                     wl.zwlr_data_control_device_v1_set_selection(@ptrCast(@alignCast(d)), @ptrCast(src.?));
-                    wl.zwlr_data_control_device_v1_set_primary_selection(@ptrCast(@alignCast(d)), @ptrCast(src.?));
+                    wl.zwlr_data_control_device_v1_set_primary_selection(@ptrCast(@alignCast(d)), @ptrCast(src2.?));
                 },
             }
         }
