@@ -106,16 +106,17 @@ pub const entries = [_]SearchEntry{
     .{ .tab = 77, .title = "Hyprland OpenGL", .section = "Hyprland", .keywords = "hyprland opengl nvidia direct overclocking", .glyph = "rocket_launch" },
     .{ .tab = 78, .title = "Hyprland Quirks", .section = "Hyprland", .keywords = "hyprland quirks middle click expand move focus", .glyph = "component" },
     .{ .tab = 20, .title = "MangoWM Decoration", .section = "MangoWM", .keywords = "mango decoration borders opacity", .glyph = "border_style" },
-    // Zoolander pages (rail subs, one page per setter group).
-    .{ .tab = 86, .title = "Zoolander Displays", .section = "Zoolander", .keywords = "zoolander displays tearing scanout vrr hdr sdr brightness luminance eotf", .glyph = "monitor" },
-    .{ .tab = 87, .title = "Zoolander Keyboard", .section = "Zoolander", .keywords = "zoolander keyboard repeat rate delay numlock", .glyph = "keyboard" },
-    .{ .tab = 88, .title = "Zoolander Mouse & Touchpad", .section = "Zoolander", .keywords = "zoolander mouse pointer touchpad left handed acceleration sensitivity follow focus raise hover", .glyph = "mouse" },
-    .{ .tab = 89, .title = "Zoolander Windows & Borders", .section = "Zoolander", .keywords = "zoolander windows borders gaps rounding opacity decoration", .glyph = "border_style" },
-    .{ .tab = 90, .title = "Zoolander Effects", .section = "Zoolander", .keywords = "zoolander effects blur dim noise contrast vibrancy brightness", .glyph = "foggy" },
-    .{ .tab = 91, .title = "Zoolander Animations", .section = "Zoolander", .keywords = "zoolander animations duration easing motion", .glyph = "play_arrow" },
-    .{ .tab = 92, .title = "Zoolander Decorations", .section = "Zoolander", .keywords = "zoolander decorations title bar tab bar ssd theme", .glyph = "palette" },
-    .{ .tab = 93, .title = "Zoolander Workspaces & Layouts", .section = "Zoolander", .keywords = "zoolander workspaces layouts default layout dwindle master grid monocle spiral scrolling floating canvas shelves islands lanes accordion workbench pairs anchors spatial overview shelf snap", .glyph = "grid_view" },
-    .{ .tab = 94, .title = "Zoolander XWayland", .section = "Zoolander", .keywords = "zoolander xwayland x11 scaling", .glyph = "desktop_windows" },
+    // Zoolander pages (rail subs, one page per setter group). Tab IDs match
+    // zoolander_page.sections: 86 Keyboard … 93 XWayland.
+    .{ .tab = 86, .title = "Zoolander Keyboard", .section = "Zoolander", .keywords = "zoolander keyboard layouts xkb repeat rate delay numlock options model rules test typing", .glyph = "keyboard" },
+    .{ .tab = 87, .title = "Zoolander Mouse & Touchpad", .section = "Zoolander", .keywords = "zoolander mouse pointer touchpad left handed acceleration sensitivity follow focus raise hover", .glyph = "mouse" },
+    .{ .tab = 88, .title = "Zoolander Windows & Borders", .section = "Zoolander", .keywords = "zoolander windows borders gaps rounding opacity shadow decoration", .glyph = "border_style" },
+    .{ .tab = 89, .title = "Zoolander Effects", .section = "Zoolander", .keywords = "zoolander effects blur dim noise contrast vibrancy brightness", .glyph = "foggy" },
+    .{ .tab = 90, .title = "Zoolander Animations", .section = "Zoolander", .keywords = "zoolander animations duration easing motion leaves windows in out move fade layers workspaces camera layout minimize", .glyph = "play_arrow" },
+    .{ .tab = 91, .title = "Zoolander Decorations", .section = "Zoolander", .keywords = "zoolander decorations title bar tab bar ssd theme buttons title font colour", .glyph = "palette" },
+    .{ .tab = 92, .title = "Zoolander Workspaces & Layouts", .section = "Zoolander", .keywords = "zoolander workspaces layouts default layout dwindle master grid monocle spiral scrolling floating canvas shelves islands lanes accordion workbench pairs anchors spatial overview shelf snap workspace rule persistent swipe gesture", .glyph = "grid_view" },
+    .{ .tab = 93, .title = "Zoolander XWayland", .section = "Zoolander", .keywords = "zoolander xwayland x11 scaling", .glyph = "desktop_windows" },
+    .{ .tab = 94, .title = "Zoolander Sound", .section = "Zoolander", .keywords = "zoolander sound bell cue chime sparkle error none", .glyph = "volume_up" },
 };
 
 fn matches(entry: SearchEntry, query_lower: []const u8) bool {

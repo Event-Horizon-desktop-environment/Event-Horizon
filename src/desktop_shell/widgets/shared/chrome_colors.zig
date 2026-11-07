@@ -11,6 +11,14 @@ const libm = @import("../../../color/mcu/libm.zig");
 
 pub const Rgb = tokens.Rgb;
 
+/// Whether a chrome palette reads as dark. Icon sets with explicit light and
+/// dark artwork use this to pick the variant that sits on the bar; the 0.4
+/// luminance cut is the same one the pear flags and the taskbar already use.
+pub fn isDark(ch: Chrome) bool {
+    const lum = 0.2126 * ch.dock_fill.r + 0.7152 * ch.dock_fill.g + 0.0722 * ch.dock_fill.b;
+    return lum <= 0.4;
+}
+
 pub const Chrome = struct {
     dock_fill: Rgb = .{ .r = 0.12, .g = 0.12, .b = 0.14 },
     panel_fill: Rgb = .{ .r = 0.08, .g = 0.10, .b = 0.13 },

@@ -335,7 +335,26 @@ fn buildRootHandle(b: *std.Build) std.Io.Dir {
     }
 }
 
+/// Raise the build runner's concurrent-step limit from its default of
+/// `ncpu - 1` to the full CPU count, so a plain `zig build` uses every core
+/// without needing `-j$(nproc)`.
+///
+/// The runner stores the concrete `std.Io.Threaded` behind `graph.io` as
+/// `userdata` (see Zig's `compiler/build_runner.zig`), which is the only
+/// handle exposed to `build()`. An explicit `-j` sets `graph.max_jobs`, so
+/// keep that as the override.
+fn useAllCores(b: *std.Build) void {
+    if (b.graph.max_jobs != null) return;
+    const count = std.Thread.getCpuCount() catch return;
+    if (count == 0) return;
+    const userdata = b.graph.io.userdata orelse return;
+    const threaded: *std.Io.Threaded = @ptrCast(@alignCast(userdata));
+    threaded.setAsyncLimit(.limited(count));
+}
+
 pub fn build(b: *std.Build) void {
+    useAllCores(b);
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 

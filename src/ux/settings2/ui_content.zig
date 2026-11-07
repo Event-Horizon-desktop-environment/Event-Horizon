@@ -22,6 +22,7 @@ const hyprland_tab = @import("hyprland_tab.zig");
 const hyprland_page = @import("hyprland_page.zig");
 const zoolander_page = @import("zoolander_page.zig");
 const zoolander_data = @import("zoolander_data.zig");
+const zoolander_anim = @import("zoolander_anim.zig");
 const bluetooth_tab = @import("bluetooth_tab.zig");
 const sound_tab = @import("sound_tab.zig");
 const network_tab = @import("network_tab.zig");
@@ -90,6 +91,18 @@ pub fn columnFor(tab: i32, content_x: i32, content_w: i32) ?Column {
 /// `*total_h` to the scrollable height below `y0`. `board_max` is the live
 /// widget-board max column (see `rowHeightFor`); pass 0 for the static lists
 /// (tests, board-less pages).
+/// Cards with a `layout_applies` list only render for one of those default
+/// layouts; the rest are always visible. A null filter keeps every card so
+/// static placement and tests can walk a whole page.
+fn cardApplies(c: rows_mod.Card, layout: ?[]const u8) bool {
+    if (c.layout_applies.len == 0) return true;
+    const l = layout orelse return true;
+    for (c.layout_applies) |name| {
+        if (std.mem.eql(u8, name, l)) return true;
+    }
+    return false;
+}
+
 pub fn placeCards(
     cards: []const rows_mod.Card,
     content_x: i32,
@@ -99,14 +112,21 @@ pub fn placeCards(
     total_h: *i32,
     board_max: usize,
     column: ?Column,
+    layout: ?[]const u8,
 ) usize {
     var n: usize = 0;
     var y: i32 = y0;
     const start_y = y;
     const card_x = if (column) |c| c.x else content_x + 8;
     const card_w = if (column) |c| c.w else content_w - 16;
+    var any = false;
     for (cards, 0..) |card_def, ci| {
-        const card_h = rows_mod.cardHeightFor(card_def, board_max);
+        if (!cardApplies(card_def, layout)) continue;
+        // Gap belongs between visible cards, so a skipped card never leaves
+        // a stray band above the next one or at the end of the page.
+        if (any) y += rows_mod.card_gap;
+        any = true;
+        const card_h = placedCardHeight(card_def, board_max);
         if (card_def.grid) {
             // 2-col tile grid — dock/panel/taskbar appearance geometry:
             // centered 68% column, cardW = (colW - 12) / 2 (min 160),
@@ -142,13 +162,12 @@ pub fn placeCards(
                 }
             }
             y += card_h;
-            if (ci + 1 < cards.len) y += rows_mod.card_gap;
             continue;
         }
         const band = cardTopBand(card_def);
         var row_y = y + band;
         for (card_def.rows, 0..) |r, ri| {
-            const rh = rows_mod.rowHeightFor(r, board_max);
+            const rh = placedRowHeight(r, board_max);
             if (n < out.len) {
                 out[n] = .{
                     .row = r,
@@ -168,7 +187,6 @@ pub fn placeCards(
             row_y += rh;
         }
         y += card_h;
-        if (ci + 1 < cards.len) y += rows_mod.card_gap;
     }
     total_h.* = y - start_y;
     return n;
@@ -195,6 +213,7 @@ pub fn place(
         total_h,
         board_max,
         columnFor(tab, content_x, content_w),
+        null,
     );
 }
 
@@ -214,11 +233,57 @@ pub const Drag = struct {
     track_w: i32,
 };
 
+/// One card of the layout picker. `options` is borrowed from the row so the
+/// hit can store the exact value its index selects.
+pub const LayoutPick = struct {
+    field: fields.Field,
+    options: []const []const u8,
+    idx: usize,
+};
+
+/// One press on the master-count stepper next to the layout picker.
+pub const LayoutMasterStep = struct {
+    field: fields.Field,
+    delta: i32,
+};
+
+/// One axis segment next to the layout picker.
+pub const LayoutAxisPick = struct {
+    field: fields.Field,
+    options: []const []const u8,
+    idx: usize,
+};
+
+/// Parse `#RRGGBB` / `#RRGGBBAA` (or without the hash) into straight RGBA.
+fn parseHexColor(s: []const u8) ?[4]f64 {
+    const h = if (s.len > 0 and s[0] == '#') s[1..] else s;
+    if (h.len != 6 and h.len != 8) return null;
+    var v: [4]u8 = .{ 0, 0, 0, 255 };
+    var i: usize = 0;
+    while (i < h.len / 2) : (i += 1) {
+        v[i] = std.fmt.parseInt(u8, h[i * 2 .. i * 2 + 2], 16) catch return null;
+    }
+    return .{
+        @as(f64, @floatFromInt(v[0])) / 255.0,
+        @as(f64, @floatFromInt(v[1])) / 255.0,
+        @as(f64, @floatFromInt(v[2])) / 255.0,
+        @as(f64, @floatFromInt(v[3])) / 255.0,
+    };
+}
+
 pub const Hit = union(enum) {
     none,
+    /// Animation-leaves subview (expand, switch, curve, presets).
+    anim_leaf: zoolander_anim.Action,
     toggle: fields.Field,
     slider: Drag,
     combo: rows_mod.ComboRow,
+    /// Layout card picked from the Workspaces & Layouts card grid.
+    layout_pick: LayoutPick,
+    /// Master-count −/+ press.
+    layout_master_step: LayoutMasterStep,
+    /// Axis segment picked on the layout argument line.
+    layout_axis_pick: LayoutAxisPick,
     /// Focus an inline text band (`Content.beginText`).
     text: fields.Field,
     /// Row picked inside an open popup (index into its options).
@@ -694,6 +759,11 @@ pub const Content = struct {
         };
     }
 
+    fn optionsForPicker(self: *const Content, lp: rows_mod.LayoutPickerRow) []const []const u8 {
+        _ = self;
+        return lp.options;
+    }
+
     /// The Desktop Widgets page when it owns this tab, else null. Same
     /// single-place tab-id check as `wallPage`/`bingPage`.
     pub fn dwtPage(self: *const Content) ?*desktop_widgets_tab.Page {
@@ -854,7 +924,16 @@ pub const Content = struct {
             &self.total_h,
             self.boardMax(),
             columnFor(self.active_tab, self.content_x, self.content_w),
+            self.layoutFilter(),
         );
+    }
+
+    /// The default layout currently selected, used to hide option cards that
+    /// the chosen layout does not read. Only the Workspaces & Layouts page
+    /// filters; every other page keeps its full card list.
+    fn layoutFilter(self: *const Content) ?[]const u8 {
+        if (self.active_tab != zoolander_page.layouts_tab_id) return null;
+        return self.getText(fields.Field.zool_layout_default);
     }
 
     /// The card list this content renders. The monitors page is the one
@@ -1250,6 +1329,18 @@ pub const Content = struct {
                     }
                     return .none;
                 },
+                .anim_leaves => {
+                    if (zoolander_anim.sliderHit(p.x, p.y, p.w, lx, ly)) |sd| {
+                        return .{ .slider = .{
+                            .field = sd.field,
+                            .min = sd.min,
+                            .max = sd.max,
+                            .track_x = sd.track_x,
+                            .track_w = sd.track_w,
+                        } };
+                    }
+                    return .{ .anim_leaf = zoolander_anim.hit(p.x, p.y, p.w, lx, ly) };
+                },
                 .anim => |an| {
                     const tgx: f64 = @floatFromInt(p.x + p.w - common.card_pad - 40 - 34);
                     const tgy: f64 = @floatFromInt(p.y + @divTrunc(rows_mod.anim_row_h - 24, 2));
@@ -1278,7 +1369,54 @@ pub const Content = struct {
                     return .none;
                 },
                 .combo => |cb| return .{ .combo = cb },
+                .layout_picker => |lp| {
+                    const n = @min(lp.options.len, k_layout_cards);
+                    for (0..n) |i| {
+                        const r = layoutCardRect(p, i);
+                        if (common.pointInRect(lx, ly, r)) {
+                            return .{ .layout_pick = .{ .field = lp.field, .options = lp.options, .idx = i } };
+                        }
+                    }
+                    return .none;
+                },
+                .layout_params => |lp| {
+                    const g = layoutParamsGeo(p, self.getText(lp.layout_field));
+                    if (g.ratio) |r| {
+                        if (common.pointInRect(lx, ly, r)) {
+                            return .{ .slider = .{
+                                .field = lp.ratio_field,
+                                .min = 1,
+                                .max = 1000,
+                                .track_x = r.x + kRailInset,
+                                .track_w = @max(0, r.w - 2 * kRailInset),
+                            } };
+                        }
+                    }
+                    if (g.master_minus) |r| {
+                        if (common.pointInRect(lx, ly, r)) {
+                            return .{ .layout_master_step = .{ .field = lp.master_field, .delta = -1 } };
+                        }
+                    }
+                    if (g.master_plus) |r| {
+                        if (common.pointInRect(lx, ly, r)) {
+                            return .{ .layout_master_step = .{ .field = lp.master_field, .delta = 1 } };
+                        }
+                    }
+                    if (g.axis) |r| {
+                        const n = @max(1, lp.axis_options.len);
+                        const labels: []const []const u8 = if (lp.axis_labels.len == lp.axis_options.len) lp.axis_labels else lp.axis_options;
+                        if (common.pointInRect(lx, ly, r)) {
+                            for (0..n) |i| {
+                                if (common.pointInRect(lx, ly, axisSegmentRect(r, labels, n, i))) {
+                                    return .{ .layout_axis_pick = .{ .field = lp.axis_field, .options = lp.axis_options, .idx = i } };
+                                }
+                            }
+                        }
+                    }
+                    return .none;
+                },
                 .text => |tr| return .{ .text = tr.field },
+                .color => |tr| return .{ .text = tr.field },
                 .button => |bt| return .{ .button = bt.label },
                 .widget_board => {
                     const lists = self.boardLists(self.active_tab);
@@ -1386,6 +1524,23 @@ pub const Content = struct {
                 return true;
             },
             .combo_pick => return false, // window calls selectComboIndex
+            .layout_pick => |lp| {
+                if (lp.idx >= lp.options.len) return false;
+                self.setComboIndex(lp.field, lp.options, lp.idx);
+                return true;
+            },
+            .layout_master_step => |st| {
+                const cur = self.getInt(st.field);
+                const next = @max(1, @min(65535, cur + st.delta));
+                if (next == cur) return false;
+                self.setInt(st.field, next);
+                return true;
+            },
+            .layout_axis_pick => |ap| {
+                if (ap.idx >= ap.options.len) return false;
+                self.setComboIndex(ap.field, ap.options, ap.idx);
+                return true;
+            },
             .color_themes => return false,
             .text => |f| {
                 self.beginText(f, 128);
@@ -1400,6 +1555,7 @@ pub const Content = struct {
                 self.relayout();
                 return true;
             },
+            .anim_leaf => |act| return zoolander_anim.apply(act),
             .anim_toggle => |ei| {
                 const meta = hyprland_data.k_anim_entries[ei];
                 hyprland_data.setAnimEnabled(meta.name, !hyprland_data.animEnabled(meta.name));
@@ -1919,6 +2075,7 @@ pub const Content = struct {
             &total,
             self.boardMax(),
             columnFor(self.active_tab, self.content_x, self.content_w),
+            self.layoutFilter(),
         );
         self.placed_len = n;
         self.total_h = total;
@@ -1978,6 +2135,129 @@ pub const Content = struct {
             self.pointer_x,
             self.pointer_y,
         );
+        self.paintLayoutHover(c);
+    }
+
+    /// Layout-card tooltip: while the pointer rests on a card, show its name
+    /// and the schema's one-line explanation beside the cursor. Drawn after
+    /// the scroll clip is released so it can float over the grid.
+    fn paintLayoutHover(self: *Content, c: anytype) void {
+        if (self.pointer_x < 0 or self.pointer_y < 0) return;
+        var hovered: ?struct { label: []const u8, desc: []const u8 } = null;
+        for (self.placed[0..self.placed_len]) |p| {
+            const lp = switch (p.row) {
+                .layout_picker => |r| r,
+                else => continue,
+            };
+            const n = @min(lp.options.len, k_layout_cards);
+            for (0..n) |i| {
+                if (common.pointInRect(self.pointer_x, self.pointer_ly, layoutCardRect(p, i))) {
+                    const label = if (i < lp.labels.len) lp.labels[i] else lp.options[i];
+                    if (i < lp.descs.len and lp.descs[i].len > 0) {
+                        hovered = .{ .label = label, .desc = lp.descs[i] };
+                    }
+                    break;
+                }
+            }
+            if (hovered != null) break;
+        }
+        const hov = hovered orelse return;
+        const t = common.Theme;
+        const pad: i32 = 10;
+        const label_w = ui_paint.textWidthPx(c, hov.label, 11, 600);
+        const desc_w = ui_paint.textWidthPx(c, hov.desc, 11, 400);
+        const max_w = self.content_w - 16;
+        const w = @min(max_w, @max(label_w, desc_w) + 2 * pad);
+        const h: i32 = 42;
+        const px: i32 = @intFromFloat(self.pointer_x);
+        const py: i32 = @intFromFloat(self.pointer_y);
+        var x: i32 = px + 16;
+        if (x + w > self.content_x + self.content_w - 8) x = px - 16 - w;
+        x = @max(self.content_x + 8, x);
+        var y: i32 = py + 20;
+        if (y + h > self.win_h - common.spacing_l - 8) y = py - 20 - h;
+        y = @max(self.clipTop() + 8, y);
+        ui_paint.glassBox(
+            c,
+            @floatFromInt(x),
+            @floatFromInt(y),
+            @floatFromInt(w),
+            @floatFromInt(h),
+            8,
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            0.10,
+        );
+        ui_paint.showText(c, @floatFromInt(x + pad), @floatFromInt(y + 17), hov.label, 11, 600, t.text_r, t.text_g, t.text_b, 0.92);
+        ui_paint.showText(c, @floatFromInt(x + pad), @floatFromInt(y + 33), hov.desc, 11, 400, t.text_r, t.text_g, t.text_b, 0.64);
+    }
+
+    /// Text band shared by `.text` and `.color`. The colour variant adds a
+    /// live swatch; both keep the same pill, focus ring and inline editor.
+    fn paintTextBand(self: *Content, c: anytype, p: PlacedRow, tr: rows_mod.TextRow, swatch: bool) void {
+        const t = common.Theme;
+        const yf: f64 = @floatFromInt(p.y);
+        ui_paint.settingLabel(
+            c,
+            @floatFromInt(p.x + common.card_pad),
+            yf + 26,
+            tr.label,
+            tr.desc,
+        );
+        const bw: i32 = @min(280, @max(160, @divTrunc(p.w, 3)));
+        const bh = common.settings_combo_h;
+        const bx = p.x + p.w - common.card_pad - bw;
+        const by = p.y + @divTrunc(p.h - bh, 2);
+        const focused = self.edit_field != null and self.edit_field.? == tr.field;
+        const hov = common.pointInRect(self.pointer_x, self.pointer_ly, .{ .x = bx, .y = by, .w = bw, .h = bh });
+        ui_paint.glassBox(
+            c,
+            @floatFromInt(bx),
+            @floatFromInt(by),
+            @floatFromInt(bw),
+            @floatFromInt(bh),
+            8,
+            if (focused) t.acc_r else t.text_r,
+            if (focused) t.acc_g else t.text_g,
+            if (focused) t.acc_b else t.text_b,
+            if (focused) 0.26 else if (hov) 0.12 else 0.07,
+        );
+        // Keep long XKB options / font stacks inside the pill.
+        cairo_save(c);
+        cairo_rectangle(c, @floatFromInt(bx + 2), @floatFromInt(by), @floatFromInt(bw - 4), @floatFromInt(bh));
+        cairo_clip(c);
+        const raw = if (focused) self.edit_buf[0..self.edit_len] else self.getText(tr.field);
+        const shown = if (raw.len > 0) raw else tr.placeholder;
+        var tx: f64 = @floatFromInt(bx + 12);
+        if (swatch) {
+            const sx: f64 = @floatFromInt(bx + 10);
+            const sy: f64 = @floatFromInt(by + 5);
+            const col = parseHexColor(if (raw.len > 0) raw else tr.placeholder);
+            ui_paint.roundRect(c, sx, sy, 18, 18, 5);
+            if (col) |cl| {
+                cairo_set_source_rgba(c, cl[0], cl[1], cl[2], cl[3]);
+            } else {
+                cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, 0.10);
+            }
+            cairo_fill(c);
+            ui_paint.roundRect(c, sx + 0.5, sy + 0.5, 17, 17, 4.5);
+            cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, 0.18);
+            cairo_set_line_width(c, 1);
+            cairo_stroke(c);
+            tx = @floatFromInt(bx + 36);
+        }
+        const baseline: f64 = @as(f64, @floatFromInt(by)) + 21;
+        ui_paint.showText(c, tx, baseline, shown, 12, 400, t.text_r, t.text_g, t.text_b, if (raw.len > 0) 0.9 else 0.38);
+        if (focused) {
+            const cw = ui_paint.textWidthPx(c, raw, 12, 400);
+            cairo_set_line_width(c, 1.5);
+            cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.9);
+            cairo_move_to(c, tx + @as(f64, @floatFromInt(cw)) + 1, baseline - 12);
+            cairo_line_to(c, tx + @as(f64, @floatFromInt(cw)) + 1, baseline + 3);
+            cairo_stroke(c);
+        }
+        cairo_restore(c);
     }
 
     fn paintRow(self: *Content, c: anytype, p: PlacedRow) void {
@@ -1993,7 +2273,7 @@ pub const Content = struct {
         if (p.row_i > 0) {
             if (is_hypr) {
                 switch (p.row) {
-                    .toggle, .slider, .combo, .text, .anim => {
+                    .toggle, .slider, .combo, .text, .color, .anim => {
                         cairo_save(c);
                         cairo_set_line_width(c, 1.0);
                         cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, 0.08);
@@ -2005,7 +2285,7 @@ pub const Content = struct {
                     else => {},
                 }
             } else switch (p.row) {
-                .toggle, .combo, .text => {
+                .toggle, .combo, .text, .color => {
                     cairo_save(c);
                     cairo_set_line_width(c, 1.0);
                     cairo_set_source_rgba(c, t.outline_r, t.outline_g, t.outline_b, 0.15);
@@ -2104,52 +2384,114 @@ pub const Content = struct {
                 const disp = comboLabel(cb, idx_opt, opts);
                 drawCombo(c, bx, by, bw, bh, disp, open or hov, comboIcon(self, cb, idx_opt), cb.icons.len > 0);
             },
-            .text => |tr| {
+            .layout_picker => |lp| {
+                const opts = self.optionsForPicker(lp);
+                const sel = self.comboIndex(lp.field, opts);
+                const n = @min(opts.len, k_layout_cards);
+                for (0..n) |i| {
+                    const r = layoutCardRect(p, i);
+                    const chosen = i == sel;
+                    const hov = common.pointInRect(self.pointer_x, self.pointer_ly, r);
+                    ui_paint.glassBox(
+                        c,
+                        @floatFromInt(r.x),
+                        @floatFromInt(r.y),
+                        @floatFromInt(r.w),
+                        @floatFromInt(r.h),
+                        8,
+                        if (chosen) t.acc_r else t.text_r,
+                        if (chosen) t.acc_g else t.text_g,
+                        if (chosen) t.acc_b else t.text_b,
+                        if (chosen) 0.18 else if (hov) 0.10 else 0.055,
+                    );
+                    if (chosen) {
+                        cairo_save(c);
+                        cairo_set_line_width(c, 1.5);
+                        cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.85);
+                        cairo_rectangle(c, @floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h));
+                        cairo_stroke(c);
+                        cairo_restore(c);
+                    }
+                    paintLayoutPreview(c, opts[i], r);
+                    const label = if (i < lp.labels.len) lp.labels[i] else opts[i];
+                    const lw = ui_paint.textWidthPx(c, label, 11, if (chosen) 600 else 400);
+                    ui_paint.showText(
+                        c,
+                        @as(f64, @floatFromInt(r.x + @divTrunc(r.w, 2))) - @as(f64, @floatFromInt(@divTrunc(lw, 2))),
+                        @as(f64, @floatFromInt(r.y + r.h - 10)),
+                        label,
+                        11,
+                        if (chosen) 600 else 400,
+                        t.text_r,
+                        t.text_g,
+                        t.text_b,
+                        if (chosen) 0.95 else 0.62,
+                    );
+                }
+            },
+            .layout_params => |lp| {
+                const layout = self.getText(lp.layout_field);
+                const g = layoutParamsGeo(p, layout);
                 const yf: f64 = @floatFromInt(p.y);
-                ui_paint.settingLabel(
-                    c,
-                    @floatFromInt(p.x + common.card_pad),
-                    yf + 26,
-                    tr.label,
-                    tr.desc,
-                );
-                const bw: i32 = @min(280, @max(160, @divTrunc(p.w, 3)));
-                const bh = common.settings_combo_h;
-                const bx = p.x + p.w - common.card_pad - bw;
-                const by = p.y + @divTrunc(p.h - bh, 2);
-                const focused = self.edit_field != null and self.edit_field.? == tr.field;
-                const hov = common.pointInRect(self.pointer_x, self.pointer_ly, .{ .x = bx, .y = by, .w = bw, .h = bh });
+                if (g.ratio == null and g.master_minus == null and g.axis == null) return;
+                // Inset panel: the layout arguments live on their own surface
+                // a clear step below the picker, never tucked under the grid.
+                // Alpha stays low so it reads as a quiet well, not a card.
                 ui_paint.glassBox(
                     c,
-                    @floatFromInt(bx),
-                    @floatFromInt(by),
-                    @floatFromInt(bw),
-                    @floatFromInt(bh),
-                    8,
-                    if (focused) t.acc_r else t.text_r,
-                    if (focused) t.acc_g else t.text_g,
-                    if (focused) t.acc_b else t.text_b,
-                    if (focused) 0.26 else if (hov) 0.12 else 0.07,
+                    @floatFromInt(p.x + common.card_pad),
+                    @floatFromInt(p.y + 20),
+                    @floatFromInt(p.w - 2 * common.card_pad),
+                    @floatFromInt(p.h - 32),
+                    10,
+                    t.text_r,
+                    t.text_g,
+                    t.text_b,
+                    0.05,
                 );
-                // Keep long XKB options / font stacks inside the pill.
-                cairo_save(c);
-                cairo_rectangle(c, @floatFromInt(bx + 2), @floatFromInt(by), @floatFromInt(bw - 4), @floatFromInt(bh));
-                cairo_clip(c);
-                const raw = if (focused) self.edit_buf[0..self.edit_len] else self.getText(tr.field);
-                const shown = if (raw.len > 0) raw else tr.placeholder;
-                const tx: f64 = @floatFromInt(bx + 12);
-                const baseline: f64 = @as(f64, @floatFromInt(by)) + 21;
-                ui_paint.showText(c, tx, baseline, shown, 12, 400, t.text_r, t.text_g, t.text_b, if (raw.len > 0) 0.9 else 0.38);
-                if (focused) {
-                    const cw = ui_paint.textWidthPx(c, raw, 12, 400);
-                    cairo_set_line_width(c, 1.5);
-                    cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.9);
-                    cairo_move_to(c, tx + @as(f64, @floatFromInt(cw)) + 1, baseline - 12);
-                    cairo_line_to(c, tx + @as(f64, @floatFromInt(cw)) + 1, baseline + 3);
-                    cairo_stroke(c);
+                if (g.ratio) |r| {
+                    ui_paint.showText(c, @floatFromInt(r.x), yf + 42, "Ratio", 11, 500, t.text_r, t.text_g, t.text_b, 0.62);
+                    var vbuf: [16]u8 = undefined;
+                    const v = self.getInt(lp.ratio_field);
+                    const pct = @as(f64, @floatFromInt(v)) / 10.0;
+                    const disp = std.fmt.bufPrint(&vbuf, "{d:.1} %", .{pct}) catch "50 %";
+                    const dw = ui_paint.textWidthPx(c, disp, 11, 500);
+                    ui_paint.showText(c, @as(f64, @floatFromInt(r.x + r.w)) - @as(f64, @floatFromInt(dw)), yf + 42, disp, 11, 500, t.text_r, t.text_g, t.text_b, 0.82);
+                    drawSlider(c, .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h }, v, 1, 1000, dragActive(self.drag, lp.ratio_field), 8.0);
                 }
-                cairo_restore(c);
+                if (g.master_minus != null and g.master_plus != null) {
+                    const minus = g.master_minus.?;
+                    ui_paint.showText(c, @floatFromInt(minus.x), yf + 42, "Masters", 11, 500, t.text_r, t.text_g, t.text_b, 0.62);
+                    for ([_]common.Rect{ minus, g.master_plus.? }) |b| {
+                        const hov = common.pointInRect(self.pointer_x, self.pointer_ly, b);
+                        ui_paint.glassBox(c, @floatFromInt(b.x), @floatFromInt(b.y), @floatFromInt(b.w), @floatFromInt(b.h), 6, t.text_r, t.text_g, t.text_b, if (hov) 0.14 else 0.08);
+                        const glyph = if (b.x == minus.x) "\u{2212}" else "+";
+                        const gw = ui_paint.textWidthPx(c, glyph, 13, 500);
+                        ui_paint.showText(c, @as(f64, @floatFromInt(b.x + @divTrunc(b.w, 2))) - @as(f64, @floatFromInt(@divTrunc(gw, 2))), @floatFromInt(b.y + b.h - 7), glyph, 13, 500, t.text_r, t.text_g, t.text_b, 0.88);
+                    }
+                    var mbuf: [16]u8 = undefined;
+                    const mv = std.fmt.bufPrint(&mbuf, "{d}", .{self.getInt(lp.master_field)}) catch "1";
+                    const mw = ui_paint.textWidthPx(c, mv, 12, 500);
+                    ui_paint.showText(c, @as(f64, @floatFromInt(minus.x + @divTrunc(g.master_plus.?.x + g.master_plus.?.w - minus.x, 2))) - @as(f64, @floatFromInt(@divTrunc(mw, 2))), @floatFromInt(minus.y + minus.h - 7), mv, 12, 500, t.text_r, t.text_g, t.text_b, 0.88);
+                }
+                if (g.axis) |r| {
+                    ui_paint.showText(c, @floatFromInt(r.x), yf + 42, "Axis", 11, 500, t.text_r, t.text_g, t.text_b, 0.62);
+                    const n: usize = @max(1, lp.axis_options.len);
+                    const sel = self.comboIndex(lp.axis_field, lp.axis_options);
+                    const labels: []const []const u8 = if (lp.axis_labels.len == lp.axis_options.len) lp.axis_labels else lp.axis_options;
+                    for (0..n) |i| {
+                        const sr = axisSegmentRect(r, labels, n, i);
+                        const chosen = i == sel;
+                        const hov = common.pointInRect(self.pointer_x, self.pointer_ly, sr);
+                        ui_paint.glassBox(c, @floatFromInt(sr.x), @floatFromInt(sr.y), @floatFromInt(sr.w), @floatFromInt(sr.h), 6, if (chosen) t.acc_r else t.text_r, if (chosen) t.acc_g else t.text_g, if (chosen) t.acc_b else t.text_b, if (chosen) 0.22 else if (hov) 0.13 else 0.07);
+                        const label = if (i < labels.len) labels[i] else lp.axis_options[i];
+                        const lw = ui_paint.textWidthPx(c, label, 10, if (chosen) 600 else 400);
+                        ui_paint.showText(c, @as(f64, @floatFromInt(sr.x + @divTrunc(sr.w, 2))) - @as(f64, @floatFromInt(@divTrunc(lw, 2))), @floatFromInt(sr.y + sr.h - 7), label, 10, if (chosen) 600 else 400, t.text_r, t.text_g, t.text_b, if (chosen) 0.95 else 0.62);
+                    }
+                }
             },
+            .text => |tr| self.paintTextBand(c, p, tr, false),
+            .color => |tr| self.paintTextBand(c, p, tr, true),
             .tile_slider => |sl| {
                 // Appearance tile: surface,
                 // 13px/500 title at +28, value pill, m3 slider on the track.
@@ -2314,6 +2656,9 @@ pub const Content = struct {
                     self.pointer_ly,
                     &acc,
                 );
+            },
+            .anim_leaves => {
+                zoolander_anim.paint(c, p.x, p.y, p.w, self.pointer_x, self.pointer_ly);
             },
             .anim => |an| {
                 // Hyprland animation entry: label + `speed, curve[, style]`
@@ -2785,6 +3130,236 @@ const cairo_line_to = cairo.cairo_line_to;
 const cairo_stroke = cairo.cairo_stroke;
 const cairo_fill = cairo.cairo_fill;
 const cairo_arc = cairo.cairo_arc;
+
+/// Number of cards the layout picker paints (the schema's 15 built-ins).
+const k_layout_cards: usize = 15;
+const k_layout_cols: usize = 5;
+
+/// Window-space box of layout card `i` in placed row `p`. Shared by paint and
+/// hit-test, like every other row geometry helper.
+fn layoutCardRect(p: PlacedRow, i: usize) common.Rect {
+    const pad = common.card_pad;
+    const gap = rows_mod.layout_card_gap;
+    const cols: i32 = @intCast(k_layout_cols);
+    const cw = @divTrunc(p.w - 2 * pad - (cols - 1) * gap, cols);
+    const col: i32 = @intCast(i % k_layout_cols);
+    const row: i32 = @intCast(i / k_layout_cols);
+    return .{
+        .x = p.x + pad + col * (cw + gap),
+        .y = p.y + 6 + row * (rows_mod.layout_card_h + gap),
+        .w = cw,
+        .h = rows_mod.layout_card_h,
+    };
+}
+
+fn layoutUsesRatio(name: []const u8) bool {
+    return std.mem.eql(u8, name, "master_stack") or std.mem.eql(u8, name, "scrolling");
+}
+
+fn layoutUsesMaster(name: []const u8) bool {
+    return std.mem.eql(u8, name, "master_stack");
+}
+
+fn layoutUsesAxis(name: []const u8) bool {
+    return std.mem.eql(u8, name, "scrolling") or
+        std.mem.eql(u8, name, "lanes") or
+        std.mem.eql(u8, name, "accordion");
+}
+
+/// The layout-arguments panel only exists for layouts that read at least one
+/// argument. Collapsing it (height 0) keeps the card tight for Dwindle, Grid,
+/// Floating and the rest, instead of leaving a dead well under the picker.
+fn layoutParamsHasControls(r: rows_mod.Row) bool {
+    const lp = switch (r) {
+        .layout_params => |lp| lp,
+        else => return false,
+    };
+    const slot = lp.layout_field.zoolSlot() orelse return false;
+    const layout = zoolander_data.getStr(slot);
+    return layoutUsesRatio(layout) or layoutUsesMaster(layout) or layoutUsesAxis(layout);
+}
+
+/// Row height with the live layout-argument panel resolved; every other row
+/// keeps its static height.
+fn placedRowHeight(r: rows_mod.Row, board_max: usize) i32 {
+    switch (r) {
+        .layout_params => if (!layoutParamsHasControls(r)) return 0,
+        else => {},
+    }
+    return rows_mod.rowHeightFor(r, board_max);
+}
+
+/// Card height summed from the rows actually placed. Mirrors
+/// `rows_mod.cardHeightFor`, which cannot know the layout arguments are
+/// hidden this frame.
+fn placedCardHeight(c: rows_mod.Card, board_max: usize) i32 {
+    if (c.grid) return rows_mod.cardHeightFor(c, board_max);
+    const titled = rows_mod.topBand(c) > 0;
+    var h: i32 = if (titled) rows_mod.card_title_band else 0;
+    for (c.rows) |r| h += placedRowHeight(r, board_max);
+    return h + (if (titled) rows_mod.card_pad_y else 16);
+}
+
+/// Geometry for the layout argument line. Shared by paint and hit-test. The
+/// three sections sit side by side in the order ratio, master count, axis;
+/// absent ones collapse so there is no dead space.
+const LayoutParamsGeo = struct {
+    ratio: ?common.Rect = null,
+    master_minus: ?common.Rect = null,
+    master_plus: ?common.Rect = null,
+    axis: ?common.Rect = null,
+};
+
+fn layoutParamsGeo(p: PlacedRow, layout: []const u8) LayoutParamsGeo {
+    var g: LayoutParamsGeo = .{};
+    // The controls sit inside the inset panel painted by `paintRow`, so the
+    // geometry insets by the card pad plus the panel's own 16px gutter.
+    const pad = common.card_pad + 16;
+    const gap = 24;
+    const left = p.x + pad;
+    const avail = @max(0, p.w - 2 * pad);
+    const has_ratio = layoutUsesRatio(layout);
+    const has_master = layoutUsesMaster(layout);
+    const has_axis = layoutUsesAxis(layout);
+    // Cast each flag to i32 first: `@intFromBool` is u1, so two of them
+    // summed wrap 1 + 1 to 0 (ReleaseFast), which hid every two-control
+    // layout (Scrolling, Master).
+    const count: i32 = @as(i32, @intFromBool(has_ratio)) +
+        @as(i32, @intFromBool(has_master)) +
+        @as(i32, @intFromBool(has_axis));
+    if (count == 0) return g;
+    const space = @max(0, avail - gap * (count - 1));
+    var x = left;
+    if (has_ratio) {
+        // With a companion control the ratio keeps the larger share: its
+        // slider needs the reach, while the axis segments size from their
+        // labels.
+        const w = if (count == 3) @divTrunc(space * 34, 100) else if (count == 2) @divTrunc(space * 40, 100) else @divTrunc(space, count);
+        g.ratio = .{ .x = x, .y = p.y + 48, .w = w, .h = 24 };
+        x += w + gap;
+    }
+    if (has_master) {
+        const w = if (count == 3) @divTrunc(space * 22, 100) else @divTrunc(space, count);
+        const bw: i32 = 24;
+        g.master_minus = .{ .x = x, .y = p.y + 48, .w = bw, .h = bw };
+        g.master_plus = .{ .x = x + w - bw, .y = p.y + 48, .w = bw, .h = bw };
+        x += w + gap;
+    }
+    if (has_axis) {
+        // A lone segmented control keeps a readable measure instead of
+        // stretching the four options across the whole card.
+        const w = if (count == 3) space - @divTrunc(space * 34, 100) - @divTrunc(space * 22, 100) else if (count == 1) @min(space, 440) else space - @divTrunc(space * 40, 100) - gap;
+        g.axis = .{ .x = x, .y = p.y + 48, .w = w, .h = 24 };
+    }
+    return g;
+}
+
+/// One segment of the axis control. Widths follow the labels (plus padding)
+/// so "Perpendicular" is never squeezed under "Vertical", with a small gap
+/// between neighbours. Shared by paint and hit-test.
+fn axisSegmentRect(r: common.Rect, labels: []const []const u8, n: usize, i: usize) common.Rect {
+    if (n == 0 or i >= n) return .{ .x = r.x, .y = r.y, .w = 0, .h = r.h };
+    const gap: i32 = 6;
+    const avail = @max(0, r.w - gap * @as(i32, @intCast(n - 1)));
+    var total: i32 = 0;
+    for (0..n) |k| {
+        const len: i32 = if (k < labels.len) @intCast(labels[k].len) else 4;
+        total += @max(4, len) + 6;
+    }
+    var x = r.x;
+    for (0..n) |k| {
+        const len: i32 = if (k < labels.len) @intCast(labels[k].len) else 4;
+        const w = if (k + 1 == n)
+            avail - (x - r.x - gap * @as(i32, @intCast(k)))
+        else
+            @divTrunc(avail * (@max(4, len) + 6), total);
+        if (k == i) return .{ .x = x, .y = r.y, .w = w, .h = r.h };
+        x += w + gap;
+    }
+    return .{ .x = r.x, .y = r.y, .w = 0, .h = r.h };
+}
+
+fn layoutBlock(c: anytype, x: f64, y: f64, w: f64, h: f64, acc: bool) void {
+    const t = common.Theme;
+    cairo_save(c);
+    cairo_rectangle(c, x, y, w, h);
+    if (acc) {
+        cairo_set_source_rgba(c, t.acc_r, t.acc_g, t.acc_b, 0.86);
+    } else {
+        cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, 0.22);
+    }
+    cairo_fill(c);
+    cairo_restore(c);
+}
+
+/// Small arrangement diagram inside a layout card. The shapes are
+/// deliberately schematic: they only need to make the 15 names recognisable
+/// at a glance, not reproduce a live window.
+fn paintLayoutPreview(c: anytype, name: []const u8, r: common.Rect) void {
+    const bw: f64 = 54;
+    const bh: f64 = 36;
+    const x: f64 = @as(f64, @floatFromInt(r.x)) + (@as(f64, @floatFromInt(r.w)) - bw) * 0.5;
+    const y: f64 = @as(f64, @floatFromInt(r.y)) + 10;
+    const g: f64 = 2;
+    const half_w = (bw - g) * 0.5;
+    const half_h = (bh - g) * 0.5;
+    if (std.mem.eql(u8, name, "dwindle") or std.mem.eql(u8, name, "master_stack")) {
+        layoutBlock(c, x, y, bw * 0.58, bh, true);
+        layoutBlock(c, x + bw * 0.58 + g, y, bw * 0.42 - g, half_h, false);
+        layoutBlock(c, x + bw * 0.58 + g, y + half_h + g, bw * 0.42 - g, bh - half_h - g, false);
+    } else if (std.mem.eql(u8, name, "grid")) {
+        layoutBlock(c, x, y, half_w, half_h, true);
+        layoutBlock(c, x + half_w + g, y, half_w, half_h, false);
+        layoutBlock(c, x, y + half_h + g, half_w, half_h, false);
+        layoutBlock(c, x + half_w + g, y + half_h + g, half_w, half_h, false);
+    } else if (std.mem.eql(u8, name, "monocle")) {
+        layoutBlock(c, x, y, bw, bh, true);
+    } else if (std.mem.eql(u8, name, "spiral")) {
+        layoutBlock(c, x, y, bw * 0.62, bh * 0.62, true);
+        layoutBlock(c, x + bw * 0.62 + g, y, bw * 0.38 - g, bh, false);
+        layoutBlock(c, x, y + bh * 0.62 + g, bw * 0.62, bh * 0.38 - g, false);
+    } else if (std.mem.eql(u8, name, "scrolling")) {
+        const cw = (bw - 2 * g) / 3;
+        layoutBlock(c, x, y, cw, bh, true);
+        layoutBlock(c, x + cw + g, y, cw, bh, false);
+        layoutBlock(c, x + 2 * (cw + g), y, cw, bh, false);
+    } else if (std.mem.eql(u8, name, "floating")) {
+        layoutBlock(c, x + 4, y + 3, bw * 0.55, bh * 0.58, true);
+        layoutBlock(c, x + bw * 0.33, y + bh * 0.36, bw * 0.55, bh * 0.58, false);
+    } else if (std.mem.eql(u8, name, "canvas")) {
+        layoutBlock(c, x + 2, y + 3, bw * 0.34, bh * 0.34, true);
+        layoutBlock(c, x + bw * 0.48, y + 6, bw * 0.32, bh * 0.28, false);
+        layoutBlock(c, x + bw * 0.18, y + bh * 0.56, bw * 0.4, bh * 0.3, false);
+    } else if (std.mem.eql(u8, name, "shelves")) {
+        layoutBlock(c, x, y + bh * 0.18, bw * 0.16, bh * 0.64, false);
+        layoutBlock(c, x + bw * 0.19, y + bh * 0.08, bw * 0.62, bh * 0.84, true);
+        layoutBlock(c, x + bw * 0.84, y + bh * 0.18, bw * 0.16, bh * 0.64, false);
+    } else if (std.mem.eql(u8, name, "islands")) {
+        layoutBlock(c, x, y + 5, bw * 0.3, bh - 10, false);
+        layoutBlock(c, x + bw * 0.34, y + 2, bw * 0.32, bh - 4, true);
+        layoutBlock(c, x + bw * 0.7, y + 5, bw * 0.3, bh - 10, false);
+    } else if (std.mem.eql(u8, name, "lanes")) {
+        layoutBlock(c, x, y, bw, half_h, true);
+        layoutBlock(c, x, y + half_h + g, bw, half_h, false);
+    } else if (std.mem.eql(u8, name, "accordion")) {
+        layoutBlock(c, x, y, bw * 0.62, bh, true);
+        layoutBlock(c, x + bw * 0.62 + g, y, bw * 0.38 - g, bh, false);
+    } else if (std.mem.eql(u8, name, "workbench")) {
+        layoutBlock(c, x, y + bh * 0.08, bw * 0.58, bh * 0.84, true);
+        layoutBlock(c, x + bw * 0.58 + g, y, bw * 0.42 - g, bh * 0.46, false);
+        layoutBlock(c, x + bw * 0.58 + g, y + bh * 0.54, bw * 0.42 - g, bh * 0.46, false);
+    } else if (std.mem.eql(u8, name, "pairs")) {
+        const cw = (bw - g) * 0.5;
+        layoutBlock(c, x, y, cw, bh, true);
+        layoutBlock(c, x + cw + g, y, cw, bh, false);
+        layoutBlock(c, x + 4, y + bh * 0.38, cw - 8, bh * 0.24, false);
+        layoutBlock(c, x + cw + g + 4, y + bh * 0.38, cw - 8, bh * 0.24, false);
+    } else {
+        // anchors (and any future name): a large view with a pinned corner.
+        layoutBlock(c, x, y, bw, bh, false);
+        layoutBlock(c, x + bw * 0.64, y + 3, bw * 0.33, bh * 0.34, true);
+    }
+}
 
 test "settings-ui-content: place mirrors the card tables" {
     const t = std.testing;

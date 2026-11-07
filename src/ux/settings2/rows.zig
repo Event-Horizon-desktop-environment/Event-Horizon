@@ -4,6 +4,7 @@ const sound_tab = @import("sound_tab.zig");
 const templates_tab = @import("templates_tab.zig");
 const time_tab = @import("time_tab.zig");
 const rows_zoolander = @import("rows_zoolander.zig");
+const zoolander_anim = @import("zoolander_anim.zig");
 
 // Declarative content rows — one table per tab describing its cards and rows. Each
 // tab describes its cards/rows once, here; the generic renderer in
@@ -77,6 +78,29 @@ pub const ComboRow = struct {
     icons: []const []const u8 = &.{},
 };
 
+/// Selectable layout-card grid (Workspaces & Layouts). The selected value is
+/// stored in `field`; each card paints a small arrangement diagram, its
+/// label, and the selected layout's description line underneath.
+pub const LayoutPickerRow = struct {
+    field: Field,
+    options: []const []const u8,
+    labels: []const []const u8 = &.{},
+    descs: []const []const u8 = &.{},
+};
+
+/// The arguments after a layout, shown on one line under the picker. Which
+/// controls appear depends on the layout stored in `layout_field`:
+/// Master reads ratio + master count, Scrolling reads ratio + axis, Lanes
+/// and Accordion read axis only, everything else reads none.
+pub const LayoutParamsRow = struct {
+    layout_field: Field,
+    ratio_field: Field,
+    master_field: Field,
+    axis_field: Field,
+    axis_options: []const []const u8 = &.{ "auto", "horizontal", "vertical", "perpendicular" },
+    axis_labels: []const []const u8 = &.{ "Auto", "Horizontal", "Vertical", "Perpendicular" },
+};
+
 pub const ButtonRow = struct {
     label: []const u8,
     glyph: []const u8 = "",
@@ -129,8 +153,14 @@ pub const Row = union(enum) {
     toggle: ToggleRow,
     slider: SliderRow,
     combo: ComboRow,
+    /// Selectable layout-card grid (Workspaces & Layouts).
+    layout_picker: LayoutPickerRow,
+    /// Layout arguments (ratio / master count / axis) under the picker.
+    layout_params: LayoutParamsRow,
     /// Editable single-line text (Zoolander XKB / colour / font keys).
     text: TextRow,
+    /// Same band as `.text` with a live colour swatch beside the hex value.
+    color: TextRow,
     /// Appearance-grid slider tile (Dock/Panel/Taskbar Appearance child tab).
     tile_slider: SliderRow,
     /// Appearance-grid toggle tile.
@@ -145,6 +175,9 @@ pub const Row = union(enum) {
     pills: PillsRow,
     /// Hyprland animation entry (toggle + info + 3-dot editor menu).
     anim: AnimRow,
+    /// Zoolander animation leaves: the compact list and its in-place curve
+    /// editor. Painted and hit-tested by `zoolander_anim`.
+    anim_leaves: void,
 };
 
 pub const Card = struct {
@@ -157,6 +190,11 @@ pub const Card = struct {
     /// is its own 92px card laid out col = i%2, row = i/2 in a centered 68%
     /// column. Grid cards carry no title band of their own.
     grid: bool = false,
+    /// Layout values this card's options apply to (Workspaces & Layouts).
+    /// Empty means always visible; otherwise the card is skipped unless the
+    /// selected default layout is one of these names, so Dwindle's controls
+    /// do not sit under a Scrolling picker.
+    layout_applies: []const []const u8 = &.{},
 };
 
 pub const rows_panels = @import("rows_panels.zig");
@@ -261,6 +299,7 @@ pub fn cardsFor(tab: i32, sub: i32) []const Card {
         91 => &rows_zoolander.decorations,
         92 => &rows_zoolander.layouts,
         93 => &rows_zoolander.xwayland,
+        94 => &rows_zoolander.sound,
         else => &.{},
     };
 }
@@ -279,6 +318,14 @@ pub const toolbar_h: i32 = 48;
 /// 60px toggle pitch — and `hyprland_paint_anim_card`/`hitDot` paint and hit
 /// them there too. This is that pitch.
 pub const anim_row_h: i32 = 60;
+/// Workspaces & Layouts card picker: 3 rows of 84px cards, 8px gaps, plus
+/// the selected layout's 22px description line.
+pub const layout_card_h: i32 = 84;
+pub const layout_card_gap: i32 = 8;
+pub const layout_picker_h: i32 = 3 * layout_card_h + 2 * layout_card_gap;
+/// The layout-arguments panel under the picker: its own inset surface so the
+/// chosen layout's controls read as a separate area, with room to breathe.
+pub const layout_params_h: i32 = 92;
 pub const pills_h: i32 = 44;
 pub const canvas_h: i32 = 340;
 pub const card_title_band: i32 = 52;
@@ -350,7 +397,9 @@ pub fn rowHeightFor(r: Row, board_max: usize) i32 {
         .toggle => toggle_row_h,
         .slider => slider_row_h,
         .combo => combo_row_h,
-        .text => toggle_row_h,
+        .layout_picker => layout_picker_h,
+        .layout_params => layout_params_h,
+        .text, .color => toggle_row_h,
         .tile_slider, .tile_toggle => tile_h,
         .info => info_row_h,
         .button => button_row_h,
@@ -359,6 +408,7 @@ pub fn rowHeightFor(r: Row, board_max: usize) i32 {
         .canvas => canvas_h,
         .pills => pills_h,
         .anim => anim_row_h,
+        .anim_leaves => zoolander_anim.height(),
     };
 }
 

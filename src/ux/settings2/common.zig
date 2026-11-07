@@ -26,6 +26,15 @@ pub const Theme = struct {
     pub var outline_b: f64 = 0.60;
 };
 
+/// True when the active settings background reads as dark. The Settings
+/// artwork ships one file per variant, so painters pick the light or dark
+/// SVG from this. Relative luminance, same 0.5 split M3 uses for on-colour
+/// selection.
+pub fn isDarkTheme() bool {
+    const lum = 0.2126 * Theme.bg_r + 0.7152 * Theme.bg_g + 0.0722 * Theme.bg_b;
+    return lum <= 0.5;
+}
+
 pub const spacing_xs: i32 = 4;
 pub const spacing_s: i32 = 8;
 pub const spacing_m: i32 = 12;

@@ -66,6 +66,7 @@ Options:
   --skip-deps        Do not install missing system packages.
   --deps-only        Install dependencies and exit.
   --jobs N           Limit parallel build jobs (passed to zig build -jN).
+                     Default: every CPU core.
   --zig PATH         Use a specific Zig executable.
   -h, --help         Show this help.
 
@@ -217,28 +218,28 @@ distro_packages() {
         arch)
             PKGS=(
                 pkgconf wayland wayland-protocols libxkbcommon cairo pango
-                librsvg libwebp pipewire curl xz
+                librsvg libwebp pipewire curl xz zenity
             )
             ;;
         fedora)
             PKGS=(
                 pkgconf-pkg-config wayland-devel wayland-protocols-devel
                 libxkbcommon-devel cairo-devel pango-devel librsvg2-devel
-                libwebp-devel pipewire-devel curl xz
+                libwebp-devel pipewire-devel curl xz zenity
             )
             ;;
         debian)
             PKGS=(
                 pkg-config libwayland-dev libwayland-bin wayland-protocols
                 libxkbcommon-dev libcairo2-dev libpango1.0-dev librsvg2-dev
-                libwebp-dev libpipewire-0.3-dev curl xz-utils
+                libwebp-dev libpipewire-0.3-dev curl xz-utils zenity
             )
             ;;
         suse)
             PKGS=(
                 pkg-config wayland-devel wayland-protocols-devel
                 libxkbcommon-devel cairo-devel pango-devel librsvg-devel
-                libwebp-devel pipewire-devel curl xz
+                libwebp-devel pipewire-devel curl xz zenity
             )
             ;;
         *)
@@ -493,30 +494,41 @@ build_shell() {
 install_system() {
     local stage
     log "Installing ${#INSTALL_BINARIES[@]} binaries to $PREFIX/bin"
-    run_privileged sh -c '
-        set -e
-        repo=$1
-        prefix=$2
-        shift 2
-        install -d "$prefix/bin"
-        for name in "$@"; do
-            install -m755 "$repo/zig-out/bin/$name" "$prefix/bin/$name"
-        done
-    ' sh "$SCRIPT_DIR" "$PREFIX" "${INSTALL_BINARIES[@]}"
 
-    # Stage icons without root, then copy the tree in one privileged step.
+    # Stage assets without root first, then do the whole install in one
+    # privileged invocation. Each `run_privileged` call is a separate
+    # pkexec prompt, so splitting binaries/icons/templates/license/cache
+    # made the user authenticate four or five times for one install.
     stage="$(mktemp -d)"
-    # Remove the unprivileged icon staging tree on exit.
+    # Remove the unprivileged staging tree on exit.
     cleanup_stage() { rm -rf "$stage"; }
     trap cleanup_stage EXIT
     "$ZIG_BIN" build install-icons --prefix "$stage" >/dev/null
     if [[ -d "$stage/icons" ]]; then
         log "Installing icon theme to $PREFIX/share/icons"
-        run_privileged sh -c '
-            set -e
-            stage=$1
-            prefix=$2
+    fi
+    if [[ -d "$SCRIPT_DIR/zig-out/share/event-horizon" ]]; then
+        log "Installing matugen templates to $PREFIX/share/event-horizon"
+    fi
+
+    run_privileged sh -c '
+        set -e
+        repo=$1
+        prefix=$2
+        stage=$3
+        shift 3
+
+        # Reject a symlinked share prefix before writing binaries or assets.
+        if [ -d "$stage/icons" ] || [ -d "$repo/zig-out/share/event-horizon" ]; then
             test ! -L "$prefix/share"
+        fi
+
+        install -d "$prefix/bin"
+        for name in "$@"; do
+            install -m755 "$repo/zig-out/bin/$name" "$prefix/bin/$name"
+        done
+
+        if [ -d "$stage/icons" ]; then
             # Repair only the shared directories and files used by our icons.
             # install replaces existing files instead of preserving their owner.
             for dir in "$prefix/share/icons" "$prefix/share/icons/hicolor" \
@@ -526,16 +538,9 @@ install_system() {
             done
             find "$stage/icons/hicolor/scalable/apps" -type f -exec \
                 install -o 0 -g 0 -m644 -t "$prefix/share/icons/hicolor/scalable/apps" {} +
-        ' sh "$stage" "$PREFIX"
-    fi
+        fi
 
-    if [[ -d "$SCRIPT_DIR/zig-out/share/event-horizon" ]]; then
-        log "Installing matugen templates to $PREFIX/share/event-horizon"
-        run_privileged sh -c '
-            set -e
-            source_dir=$1
-            prefix=$2
-            test ! -L "$prefix/share"
+        if [ -d "$repo/zig-out/share/event-horizon" ]; then
             # Prepare a root-owned tree privately, then replace the old tree.
             # This also repairs installs whose directories belonged to the builder.
             install -d "$prefix/share"
@@ -544,25 +549,26 @@ install_system() {
             # Remove a staging tree left behind by a failed installation.
             cleanup_staging() { rm -rf "$staging"; }
             trap cleanup_staging EXIT
-            cp -R --no-preserve=ownership,mode "$source_dir/." "$staging/"
+            cp -R --no-preserve=ownership,mode "$repo/zig-out/share/event-horizon/." "$staging/"
             test -z "$(find "$staging" -type l -print -quit)"
             chown -R 0:0 "$staging"
             find "$staging" -type d -exec chmod 755 {} +
             find "$staging" -type f -exec chmod 644 {} +
             rm -rf "$dest"
             mv "$staging" "$dest"
-        ' sh "$SCRIPT_DIR/zig-out/share/event-horizon" "$PREFIX"
-    fi
+            trap - EXIT
+        fi
 
-    if [[ -f "$SCRIPT_DIR/zig-out/share/licenses/event-horizon/LICENSE" ]]; then
-        run_privileged install -Dm644 \
-            "$SCRIPT_DIR/zig-out/share/licenses/event-horizon/LICENSE" \
-            "$PREFIX/share/licenses/event-horizon/LICENSE"
-    fi
+        if [ -f "$repo/zig-out/share/licenses/event-horizon/LICENSE" ]; then
+            install -Dm644 \
+                "$repo/zig-out/share/licenses/event-horizon/LICENSE" \
+                "$prefix/share/licenses/event-horizon/LICENSE"
+        fi
 
-    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-        run_privileged gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true
-    fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
+        fi
+    ' sh "$SCRIPT_DIR" "$PREFIX" "$stage" "${INSTALL_BINARIES[@]}"
 
     rm -rf "$stage"
     trap - EXIT

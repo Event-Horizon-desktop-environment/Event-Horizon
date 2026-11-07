@@ -653,10 +653,12 @@ const Taskbar = struct {
     fn iconFingerprint(self: *Taskbar, icon_px: i32) u64 {
         const cfg = &self.app.loaded.cfg;
         var h = std.hash.Wyhash.init(0x7461736b626172);
-        var ib: [9]u8 = undefined;
+        var ib: [10]u8 = undefined;
         std.mem.writeInt(i32, ib[0..4], icon_px, .little);
         std.mem.writeInt(i32, ib[4..8], @intFromFloat(@round(self.uiScale() * 1000.0)), .little);
         ib[8] = if (self.trash_full) 1 else 0;
+        // Settings ships light and dark artwork; a theme flip must reload it.
+        ib[9] = if (chrome.isDark(chrome.of(cfg))) 1 else 0;
         h.update(&ib);
         h.update(cfg.taskbar.icon_theme);
         for (self.pins) |p| h.update(p.norm);
@@ -1462,6 +1464,16 @@ const Taskbar = struct {
                 // the dock uses for the settings gear.
                 const tpx: i32 = @intFromFloat(@round(@max(16.0, icon * 2.0)));
                 self.icons[i] = self.resolveAppIcon("event-horizon-audio-center", tpx);
+            } else if (sl.kind == .settings) {
+                // Settings ships light and dark slider artwork; walk the
+                // candidates so an older install without the variant still
+                // lands on the generic themed gear.
+                const tpx: i32 = @intFromFloat(@round(@max(16.0, icon * 2.0)));
+                const cands = dwp.iconCandidates(.settings, chrome.isDark(chrome.of(&self.app.loaded.cfg)));
+                for (cands) |name| {
+                    self.icons[i] = self.resolveAppIcon(name, tpx);
+                    if (self.icons[i].pixels.len > 0) break;
+                }
             }
         }
         // Workspace cells copy from these pixels; refresh the per-cell
@@ -2296,8 +2308,12 @@ const Taskbar = struct {
             },
             .settings => {
                 d.kind = .settings;
-                d.icon = null;
-                d.lucide = if (std.mem.eql(u8, slot.key, "rail_settings")) "view_sidebar" else "settings";
+                // Custom light/dark slider art owns the slot; the Lucide
+                // glyph is only the pre-install fallback.
+                d.icon = if (idx < self.icons.len) self.icons[idx] else null;
+                if (d.icon == null or d.icon.?.pixels.len == 0) {
+                    d.lucide = if (std.mem.eql(u8, slot.key, "rail_settings")) "view_sidebar" else "settings";
+                }
                 dwp.paintSlot(cr, x, y, w, h, icon_px, d);
             },
             .audio_center => {
@@ -2613,7 +2629,7 @@ const Taskbar = struct {
                     .text_rgb = mc.text,
                     .accent_rgb = mc.accent,
                 };
-                const cands = dwp.iconCandidates(kind);
+                const cands = dwp.iconCandidates(kind, chrome.isDark(chrome.of(cfg)));
                 d.lucide = if (cands.len > 0) cands[0] else "circle";
                 dwp.paintSlot(c, x, y, w, h, icon_px, d);
             },

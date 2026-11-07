@@ -11,6 +11,27 @@ const cairo = @import("../../wl/buffer/shm.zig").cairo;
 const m3_button = @import("../../m3/controls/containers/button.zig");
 const m3_box = @import("../../m3/core/primitives/box.zig");
 const island_specs = @import("../../desktop_shell/dock/island_specs.zig");
+const svg_icons = @import("svg_icons.zig");
+
+/// True for the widget-board ids that stand for the Settings app. Both the
+/// dock button and the desktop rail variant wear the same artwork.
+pub fn isSettingsWidget(id: []const u8) bool {
+    return std.mem.eql(u8, id, "settings_button") or std.mem.eql(u8, id, "rail_settings");
+}
+
+/// Draw the shipped Settings slider artwork. The plate contrasts with the
+/// active theme: the light artwork on a dark background and the dark
+/// artwork on a light background. Returns false when the id is not a
+/// Settings widget or rasterization failed, so callers keep the Lucide
+/// glyph path as the fallback (same rule as the dock and taskbar).
+pub fn drawSettingsArtwork(c: ?*cairo.cairo_t, id: []const u8, cx: f64, cy: f64, px: f64) bool {
+    if (!isSettingsWidget(id)) return false;
+    const svg = if (common.isDarkTheme())
+        @embedFile("../../resources/icons/settings-1-sliders-light.svg")
+    else
+        @embedFile("../../resources/icons/settings-1-sliders-dark.svg");
+    return svg_icons.drawArtwork(c, svg, cx, cy, px);
+}
 
 /// "2560x1440 @144Hz" from the row's own strings — the canvas subtitle.
 fn modeLine(row: *const mon_state.MonitorRow, buf: []u8) []const u8 {
@@ -604,32 +625,36 @@ pub fn paintWidgetBoard(
                 }
             }
             // Icon box: accent-tinted glassy square + centred material glyph.
+            // Settings cards wear the shipped slider artwork instead — it
+            // carries its own square, so the glass box is skipped for them.
             const icon_x = rx + 34.0;
             const icon_y = ry + (rh - 30.0) * 0.5;
-            {
-                var ibox: m3_box.Box = .{};
-                ibox.setColor(
-                    @floatCast(@min(1.0, accent[0] * 0.4 + 0.4)),
-                    @floatCast(@min(1.0, accent[1] * 0.4 + 0.4)),
-                    @floatCast(@min(1.0, accent[2] * 0.4 + 0.4)),
-                    0.85,
+            if (!drawSettingsArtwork(c, id, icon_x + 15.0, icon_y + 15.0, 30.0)) {
+                {
+                    var ibox: m3_box.Box = .{};
+                    ibox.setColor(
+                        @floatCast(@min(1.0, accent[0] * 0.4 + 0.4)),
+                        @floatCast(@min(1.0, accent[1] * 0.4 + 0.4)),
+                        @floatCast(@min(1.0, accent[2] * 0.4 + 0.4)),
+                        0.85,
+                    );
+                    ibox.setRadius(8.0);
+                    ibox.setGeometry(@floatCast(icon_x), @floatCast(icon_y), 30.0, 30.0);
+                    ibox.setGlassy(true);
+                    ibox.paint(c);
+                }
+                ui_paint.glyph(
+                    c,
+                    icon_x + 15.0,
+                    icon_y + 15.5,
+                    20.0,
+                    meta.glyph,
+                    t.text_r,
+                    t.text_g,
+                    t.text_b,
+                    0.95,
                 );
-                ibox.setRadius(8.0);
-                ibox.setGeometry(@floatCast(icon_x), @floatCast(icon_y), 30.0, 30.0);
-                ibox.setGlassy(true);
-                ibox.paint(c);
             }
-            ui_paint.glyph(
-                c,
-                icon_x + 15.0,
-                icon_y + 15.5,
-                20.0,
-                meta.glyph,
-                t.text_r,
-                t.text_g,
-                t.text_b,
-                0.95,
-            );
             // Widget name: 13px/600, clipped to the gap between the icon
             // box and the island chip (or the enable switch when the board
             // offers no chip), `colW - 8 - 84 - nameX` in the C++ reference.
@@ -833,30 +858,32 @@ fn paintBoardDrag(c: anytype, p_x: i32, p_y: i32, p_w: i32, accent: []const f64,
     }
     const icon_x = d.lift_x + 34.0;
     const icon_y = d.lift_y + (lh - 30.0) * 0.5;
-    {
-        var ibox: m3_box.Box = .{};
-        ibox.setColor(
-            @floatCast(@min(1.0, accent[0] * 0.4 + 0.4)),
-            @floatCast(@min(1.0, accent[1] * 0.4 + 0.4)),
-            @floatCast(@min(1.0, accent[2] * 0.4 + 0.4)),
-            0.85,
+    if (!drawSettingsArtwork(c, d.id, icon_x + 15.0, icon_y + 15.0, 30.0)) {
+        {
+            var ibox: m3_box.Box = .{};
+            ibox.setColor(
+                @floatCast(@min(1.0, accent[0] * 0.4 + 0.4)),
+                @floatCast(@min(1.0, accent[1] * 0.4 + 0.4)),
+                @floatCast(@min(1.0, accent[2] * 0.4 + 0.4)),
+                0.85,
+            );
+            ibox.setRadius(8.0);
+            ibox.setGeometry(@floatCast(icon_x), @floatCast(icon_y), 30.0, 30.0);
+            ibox.setGlassy(true);
+            ibox.paint(c);
+        }
+        ui_paint.glyph(
+            c,
+            icon_x + 15.0,
+            icon_y + 15.5,
+            20.0,
+            meta.glyph,
+            t.text_r,
+            t.text_g,
+            t.text_b,
+            0.95,
         );
-        ibox.setRadius(8.0);
-        ibox.setGeometry(@floatCast(icon_x), @floatCast(icon_y), 30.0, 30.0);
-        ibox.setGlassy(true);
-        ibox.paint(c);
     }
-    ui_paint.glyph(
-        c,
-        icon_x + 15.0,
-        icon_y + 15.5,
-        20.0,
-        meta.glyph,
-        t.text_r,
-        t.text_g,
-        t.text_b,
-        0.95,
-    );
     ui_paint.showText(
         c,
         icon_x + 30.0 + 6.0,
@@ -1313,4 +1340,20 @@ test "settings-ui-widgets: board geometry" {
     try t.expectEqualStrings("Clock", m.title);
     const fb = widgetMeta("mystery");
     try t.expectEqualStrings("mystery", fb.title);
+}
+
+test "settings-ui-widgets: settings cards draw the sliders artwork" {
+    const t = std.testing;
+    try t.expect(isSettingsWidget("settings_button"));
+    try t.expect(isSettingsWidget("rail_settings"));
+    try t.expect(!isSettingsWidget("clock"));
+    // Both dock and rail ids resolve to real art; every other widget falls
+    // through to the glyph path.
+    const surf = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, 32, 32);
+    defer cairo.cairo_surface_destroy(surf);
+    const cr = cairo.cairo_create(surf);
+    defer cairo.cairo_destroy(cr);
+    try t.expect(drawSettingsArtwork(cr, "settings_button", 16, 16, 30));
+    try t.expect(drawSettingsArtwork(cr, "rail_settings", 16, 16, 30));
+    try t.expect(!drawSettingsArtwork(cr, "clock", 16, 16, 30));
 }

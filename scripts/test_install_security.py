@@ -8,21 +8,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    """Exercise real and dangling links against the actual privileged snippets."""
+    """Exercise real and dangling links against the actual privileged snippet."""
     blocks = (ROOT / 'build.sh').read_text().split("run_privileged sh -c '\n")
-    branches = {
-        'icons': next(b for b in blocks if 'stage=$1' in b).split("\n        ' sh")[0],
-        'templates': next(b for b in blocks if 'source_dir=$1' in b).split("\n        ' sh")[0],
-    }
-    for name, script in branches.items():
+    script = next(
+        b for b in blocks if 'repo=$1' in b and 'stage=$3' in b
+    ).split("\n    ' sh")[0]
+    for name in ('icons', 'templates'):
         for dangling in (False, True):
             with tempfile.TemporaryDirectory(prefix='eh-install-security-') as directory:
                 work = Path(directory)
-                source = work / 'source'
-                icons = source / 'icons/hicolor/scalable/apps'
-                icons.mkdir(parents=True)
-                (icons / 'horizon.svg').write_text('icon')
-                (source / 'config.toml').write_text('template')
+                repo = work / 'repo'
+                stage = work / 'stage'
+                repo.mkdir()
+                stage.mkdir()
+                if name == 'icons':
+                    icons = stage / 'icons/hicolor/scalable/apps'
+                    icons.mkdir(parents=True)
+                    (icons / 'horizon.svg').write_text('icon')
+                else:
+                    source = repo / 'zig-out/share/event-horizon'
+                    source.mkdir(parents=True)
+                    (source / 'config.toml').write_text('template')
                 prefix = work / 'prefix'
                 prefix.mkdir()
                 target = work / 'target'
@@ -35,12 +41,14 @@ def main():
                 # command. Trace assertions ensure permission failures cannot mask
                 # a missing guard when this test is run by an ordinary user.
                 result = subprocess.run(
-                    ['sh', '-ex', '-c', script, 'sh', str(source), str(prefix)],
+                    ['sh', '-ex', '-c', script, 'sh',
+                     str(repo), str(prefix), str(stage)],
                     cwd=work, capture_output=True, text=True,
                 )
                 assert result.returncode != 0, result.stderr
                 commands = result.stderr.splitlines()
-                assert commands[-1] == f'+ test ! -L {prefix}/share', result.stderr
+                last = commands[-1]
+                assert last.startswith('+ test ') and last.endswith(f'-L {prefix}/share'), result.stderr
                 assert (prefix / 'share').is_symlink()
                 if dangling:
                     assert not target.exists()

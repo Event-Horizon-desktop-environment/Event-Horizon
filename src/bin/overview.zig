@@ -342,6 +342,21 @@ const Ov = struct {
                 fn f(p: *anyopaque, addr: []const u8) void {
                     if (addr.len == 0) return;
                     const s: *Self = @ptrCast(@alignCast(p));
+                    // Zoolander has no focus-by-address action: get as close
+                    // as the workspace holding the window.
+                    if (s.isZoolander()) {
+                        if (s.snap) |snap| {
+                            for (snap.ws) |w| {
+                                for (w.wins) |win| {
+                                    if (std.mem.eql(u8, win.addr, addr)) {
+                                        s.wsJump(w.target);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        return;
+                    }
                     var buf: [128]u8 = undefined;
                     const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.focus({{window = \"address:{s}\"}})", .{addr}) catch return;
                     _ = s.hyprSend(cmd);
@@ -635,6 +650,10 @@ const Ov = struct {
                 self.quit();
             },
             .close_win => |flat| {
+                if (self.isZoolander()) {
+                    logz.log("overview: Zoolander has no close-by-address action", .{});
+                    return;
+                }
                 if (self.host.flatLoc(flat)) |loc| {
                     const win = self.host.cards[loc[0]].wins[loc[1]];
                     if (win.addr.len > 0) {
@@ -689,25 +708,37 @@ const Ov = struct {
                 self.quit();
             },
             .move_win => |m| {
-                const addr = self.winAddr(m.flat) orelse {
-                    logz.log("overview: move needs a window address", .{});
+                const loc = self.host.flatLoc(m.flat) orelse {
+                    logz.log("overview: move needs a window", .{});
                     return;
                 };
-                const ws_id = self.wsIdForCard(m.ws);
-                var buf: [160]u8 = undefined;
-                const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.window.move({{workspace = {d}, window = \"address:{s}\"}})", .{ ws_id, addr }) catch return;
-                if (self.hyprSend(cmd)) {
-                    logz.log("overview: moved '{s}' to ws {d}", .{ addr, ws_id });
+                if (m.ws < 0 or m.ws >= self.host.cards.len) return;
+                const win = self.host.cards[loc[0]].wins[loc[1]];
+                const card = self.host.cards[@intCast(m.ws)];
+                var tbuf: [64]u8 = undefined;
+                var sbuf: [64]u8 = undefined;
+                // Hyprland dispatches by numeric id even for a named
+                // workspace; Zoolander moves by name.
+                const target = if (self.isZoolander())
+                    self.wsTargetForId(card.id, &tbuf)
+                else
+                    std.fmt.bufPrint(&tbuf, "{d}", .{card.id}) catch return;
+                const from = self.wsTargetForId(self.host.cards[loc[0]].id, &sbuf);
+                var env = self.hyprEnv();
+                defer env.deinit();
+                if (ov_ws.moveWindow(self.gpa, self.io, &env, target, .{ .addr = win.addr, .app_id = win.app_id, .title = win.title }, from, false)) {
+                    logz.log("overview: moved '{s}' to ws '{s}'", .{ win.title, target });
                     if (self.cfg) |cfg_ref| self.reloadOverview(cfg_ref);
                     self.pushCards();
                 }
                 self.refresh();
             },
             .move_win_new => |flat| {
-                const addr = self.winAddr(flat) orelse {
-                    logz.log("overview: move needs a window address", .{});
+                const loc = self.host.flatLoc(flat) orelse {
+                    logz.log("overview: move needs a window", .{});
                     return;
                 };
+                const win = self.host.cards[loc[0]].wins[loc[1]];
                 // Always a brand-new id past the highest known one; the
                 // compositor creates it on demand. Reusing an empty
                 // placeholder would address a workspace that may not
@@ -716,31 +747,42 @@ const Ov = struct {
                 for (self.host.cards) |card| {
                     top = @max(top, card.id);
                 }
-                const target = top + 1;
-                var buf: [160]u8 = undefined;
-                const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.window.move({{workspace = {d}, window = \"address:{s}\"}})", .{ target, addr }) catch return;
-                if (self.hyprSend(cmd)) {
-                    logz.log("overview: moved '{s}' to new ws {d}", .{ addr, target });
+                var tbuf: [32]u8 = undefined;
+                var sbuf: [64]u8 = undefined;
+                const target = std.fmt.bufPrint(&tbuf, "{d}", .{top + 1}) catch return;
+                const from = self.wsTargetForId(self.host.cards[loc[0]].id, &sbuf);
+                var env = self.hyprEnv();
+                defer env.deinit();
+                if (ov_ws.moveWindow(self.gpa, self.io, &env, target, .{ .addr = win.addr, .app_id = win.app_id, .title = win.title }, from, false)) {
+                    logz.log("overview: moved '{s}' to new ws '{s}'", .{ win.title, target });
                     if (self.cfg) |cfg_ref| self.reloadOverview(cfg_ref);
                     self.pushCards();
                 }
                 self.refresh();
             },
             .swap_wins => |sw| {
-                const win_a = self.winAddr(sw.a) orelse {
-                    logz.log("overview: swap needs window addresses", .{});
+                const loc_a = self.host.flatLoc(sw.a) orelse {
+                    logz.log("overview: swap needs two windows", .{});
                     return;
                 };
-                const win_b = self.winAddr(sw.b) orelse {
-                    logz.log("overview: swap needs window addresses", .{});
+                const loc_b = self.host.flatLoc(sw.b) orelse {
+                    logz.log("overview: swap needs two windows", .{});
                     return;
                 };
-                var buf: [256]u8 = undefined;
-                const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.window.swap({{window = \"address:{s}\", target = \"address:{s}\"}})", .{ win_a, win_b }) catch return;
-                if (self.hyprSend(cmd)) {
-                    logz.log("overview: swapped '{s}' <-> '{s}'", .{ win_a, win_b });
+                const win_a = self.host.cards[loc_a[0]].wins[loc_a[1]];
+                const win_b = self.host.cards[loc_b[0]].wins[loc_b[1]];
+                var abuf: [64]u8 = undefined;
+                var bbuf: [64]u8 = undefined;
+                const ws_a = self.wsTargetForId(self.host.cards[loc_a[0]].id, &abuf);
+                const ws_b = self.wsTargetForId(self.host.cards[loc_b[0]].id, &bbuf);
+                var env = self.hyprEnv();
+                defer env.deinit();
+                if (ov_ws.swapWindows(self.gpa, self.io, &env, .{ .addr = win_a.addr, .app_id = win_a.app_id, .title = win_a.title }, ws_a, .{ .addr = win_b.addr, .app_id = win_b.app_id, .title = win_b.title }, ws_b)) {
+                    logz.log("overview: swapped '{s}' <-> '{s}'", .{ win_a.title, win_b.title });
                     if (self.cfg) |cfg_ref| self.reloadOverview(cfg_ref);
                     self.pushCards();
+                } else if (self.isZoolander()) {
+                    logz.log("overview: Zoolander can only swap windows between workspaces", .{});
                 }
                 self.refresh();
             },
@@ -759,21 +801,6 @@ const Ov = struct {
                 self.refresh();
             },
         }
-    }
-
-    fn winAddr(self: *Self, flat: usize) ?[]const u8 {
-        if (self.host.flatLoc(flat)) |loc| {
-            return self.host.cards[loc[0]].wins[loc[1]].addr;
-        }
-        return null;
-    }
-
-    /// Workspace id for a card index (the drop target the strip picked).
-    fn wsIdForCard(self: *Self, card_idx: i32) i32 {
-        if (card_idx >= 0 and card_idx < self.host.cards.len) {
-            return self.host.cards[@intCast(card_idx)].id;
-        }
-        return card_idx + 1;
     }
 
     fn dockPinned(self: *Self, path: []const u8) bool {

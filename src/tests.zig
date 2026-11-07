@@ -530,5 +530,6 @@ test {
     _ = @import("ux/settings2/workspaces_tab.zig");
     _ = @import("ux/settings2/world_clock_popup.zig");
     _ = @import("ux/settings2/zoolander_data.zig");
+    _ = @import("ux/settings2/zoolander_anim.zig");
     _ = @import("ux/settings2/zoolander_page.zig");
 }

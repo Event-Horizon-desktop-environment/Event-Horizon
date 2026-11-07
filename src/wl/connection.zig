@@ -1,4 +1,5 @@
 const std = @import("std");
+const logz = @import("../logz.zig");
 
 pub const wl = @import("c.zig").wl;
 
@@ -64,6 +65,10 @@ pub const Connection = struct {
         return self.display_name orelse fallback;
     }
 
+    /// The registry listener stores `self` as its callback data, so this must
+    /// run only once the Connection is at its final address. Connecting on a
+    /// stack local that is then returned or copied by value leaves the listener
+    /// pointing at freed stack memory, and `global_remove` will crash.
     pub fn connect(self: *Connection, name: ?[*:0]const u8) bool {
         if (self.display != null) self.disconnect();
         self.state = .connecting;
@@ -137,7 +142,30 @@ pub const Connection = struct {
     /// roundtrip, which flushes as a side effect) those commits sit in the
     /// client buffer — the surface never changes on screen.
     pub fn flush(self: *Connection) bool {
-        if (self.display) |d| return wl.wl_display_flush(d) >= 0;
+        if (self.display) |d| {
+            if (wl.wl_display_flush(d) >= 0) return true;
+            // EAGAIN is not fatal: the socket is full and the caller retries
+            // when it becomes writable. Anything `wl_display_get_error` reports
+            // is fatal (protocol error or a dead connection), and letting the
+            // component carry on would leave it alive but silent. Exit so the
+            // supervisor respawns it with a fresh connection.
+            const code = wl.wl_display_get_error(d);
+            if (code != 0) {
+                var iface: [*c]const wl.struct_wl_interface = null;
+                var id: u32 = 0;
+                const perr = wl.wl_display_get_protocol_error(d, &iface, &id);
+                const name: []const u8 = if (iface != null and iface.*.name != null)
+                    std.mem.span(@as([*:0]const u8, @ptrCast(iface.*.name)))
+                else
+                    "?";
+                logz.err(
+                    "display connection lost: errno={d} protocol_error={d} on {s}#{d}; exiting for supervisor respawn",
+                    .{ code, perr, name, id },
+                );
+                std.process.exit(1);
+            }
+            return false;
+        }
         return false;
     }
 

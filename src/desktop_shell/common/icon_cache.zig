@@ -118,6 +118,14 @@ pub const DirIndex = struct {
         return null;
     }
 
+    /// Bare-name lookup only: no `-symbolic` fallback. A desktop file's
+    /// declared `Icon=` names real artwork, and a symbolic glyph in a
+    /// higher-priority theme must not shadow it.
+    fn lookupBare(self: *Self, name: []const u8, px: i64) ?Candidate {
+        const list = self.map.get(name) orelse return null;
+        return bestOf(list.items, px);
+    }
+
     fn bestOf(cands: []const Candidate, px: i64) ?Candidate {
         var best: ?Candidate = null;
         var best_rank: i64 = std.math.maxInt(i64);
@@ -214,6 +222,23 @@ pub const Index = struct {
         var best_total: i64 = std.math.maxInt(i64);
         for (self.indexes.items, 0..) |*ix, i| {
             const cand = ix.lookup(name, px) orelse continue;
+            const total = DirIndex.rankOf(cand, px) + @as(i64, @intCast(i)) * k_prio_span;
+            if (best == null or total < best_total) {
+                best = cand;
+                best_total = total;
+            }
+        }
+        return best;
+    }
+
+    /// Bare-name-only search, for a name taken from a desktop file's
+    /// `Icon=`. Skips the `-symbolic` fallback so the declared colourful
+    /// artwork wins even when a higher-priority theme only ships a symbolic.
+    fn findExact(self: *Self, name: []const u8, px: i64) ?Candidate {
+        var best: ?Candidate = null;
+        var best_total: i64 = std.math.maxInt(i64);
+        for (self.indexes.items, 0..) |*ix, i| {
+            const cand = ix.lookupBare(name, px) orelse continue;
             const total = DirIndex.rankOf(cand, px) + @as(i64, @intCast(i)) * k_prio_span;
             if (best == null or total < best_total) {
                 best = cand;
@@ -734,7 +759,22 @@ pub const IconCache = struct {
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const resolved = desktopIconName(self, a, name) orelse name;
+        const declared: ?[]u8 = desktopIconName(self, a, name);
+        const resolved: []const u8 = declared orelse name;
+
+        // A desktop file may set `Icon=` to an absolute path. The check above
+        // only covers an app id that is itself a path, so a declared one has
+        // to be used here — no index contains it as a name.
+        if (std.fs.path.isAbsolute(resolved)) {
+            return .{ .path = resolved, .dir_size = 0, .svg = std.mem.endsWith(u8, resolved, ".svg") };
+        }
+
+        // An `Icon=` is authoritative: try its bare name before the
+        // priority/`-symbolic` ladder, so declared colour art is not shadowed
+        // by a higher-priority theme that only ships a symbolic glyph.
+        if (declared != null) {
+            if (self.indexFindExact(resolved, px)) |c| return c;
+        }
 
         // Strict: the name itself (its `-symbolic` spelling is the index's
         // own fallback), the lowercased form, and the alias table.
@@ -762,6 +802,14 @@ pub const IconCache = struct {
         return self.index.find(name, px);
     }
 
+    /// `Index.findExact` (bare names only) under the cache lock.
+    fn indexFindExact(self: *Self, name: []const u8, px: i64) ?Candidate {
+        if (name.len == 0) return null;
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        return self.index.findExact(name, px);
+    }
+
     /// The icon name the application directories advertise for `app_id`:
     /// first by desktop-id candidates, then through the StartupWMClass index,
     /// using the file's `Icon=` value. Owned by `gpa` (the caller's arena).
@@ -780,6 +828,17 @@ pub const IconCache = struct {
                 if (dir.len + b.len + 10 > pbuf.len) continue;
                 const p = std.fmt.bufPrint(&pbuf, "{s}/{s}.desktop", .{ dir, b }) catch continue;
                 if (!fileExists(self.io, p)) continue;
+                if (readDesktopEntryKey(gpa, self.io, p, "Icon=")) |ic| return ic;
+            }
+        }
+        // Compositor ids are not guaranteed to preserve the desktop file's
+        // case (`org.gnome.Console` arrives as `org.gnome.console` after
+        // normalisation), while the filesystem is case-sensitive. Match the
+        // stem ignoring case before giving up.
+        for (dirs.items) |dir| {
+            for (bases.items) |b| {
+                const p = desktopPathIgnoreCase(self.io, gpa, dir, b) orelse continue;
+                defer gpa.free(p);
                 if (readDesktopEntryKey(gpa, self.io, p, "Icon=")) |ic| return ic;
             }
         }
@@ -1724,6 +1783,26 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+/// The desktop file in `dir_path` whose stem matches `stem` ignoring case,
+/// or null. Compositor app ids are normalised to lower case while the files
+/// they name are not (`org.gnome.console` → `org.gnome.Console.desktop`).
+fn desktopPathIgnoreCase(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8, stem: []const u8) ?[]u8 {
+    var base = stem;
+    if (std.mem.endsWith(u8, base, ".desktop")) base = base[0 .. base.len - 8];
+    if (base.len == 0) return null;
+    const cwd = std.Io.Dir.cwd();
+    var dir = cwd.openDir(io, dir_path, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .file and e.kind != .sym_link) continue;
+        if (e.name.len <= 8 or !std.mem.endsWith(u8, e.name, ".desktop")) continue;
+        if (!std.ascii.eqlIgnoreCase(e.name[0 .. e.name.len - 8], base)) continue;
+        return std.fs.path.join(gpa, &.{ dir_path, e.name }) catch null;
+    }
+    return null;
+}
+
 fn nowMs() u64 {
     var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
     if (std.os.linux.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
@@ -1987,6 +2066,67 @@ test "icon-cache: a miss is rejected in O(1) the second time" {
 }
 
 // -- tiny filesystem helpers for the tests ---------------------------------
+
+test "icon-cache: a declared Icon= bare name beats a higher theme's symbolic" {
+    const t = std.testing;
+    var threaded: std.Io.Threaded = .init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // The high-priority theme only has a symbolic; the lower one has the
+    // declared colour artwork. `find` prefers the theme chain, `findExact`
+    // (what a desktop file's Icon= uses) prefers the real bare name.
+    const base = "/tmp/eh-icc-test-declared";
+    try makeTree(io, &.{
+        base ++ "/icons/H/scalable/apps",
+        base ++ "/icons/L/scalable/apps",
+    });
+    defer removeTree(io, &.{
+        base ++ "/icons/H/scalable/apps/gear-symbolic.svg",
+        base ++ "/icons/L/scalable/apps/gear.svg",
+        base ++ "/icons/H/scalable/apps",
+        base ++ "/icons/L/scalable/apps",
+        base ++ "/icons/H/scalable",
+        base ++ "/icons/L/scalable",
+        base ++ "/icons/H",
+        base ++ "/icons/L",
+        base ++ "/icons",
+        base,
+    });
+    try touch(io, base ++ "/icons/H/scalable/apps/gear-symbolic.svg");
+    try touch(io, base ++ "/icons/L/scalable/apps/gear.svg");
+
+    var ix = Index.init(t.allocator);
+    defer ix.deinit();
+    try ix.addDir(io, base ++ "/icons/H");
+    try ix.addDir(io, base ++ "/icons/L");
+
+    const ranked = ix.find("gear", 44) orelse return error.TestUnexpectedResult;
+    try t.expectEqualStrings(base ++ "/icons/H/scalable/apps/gear-symbolic.svg", ranked.path);
+    const exact = ix.findExact("gear", 44) orelse return error.TestUnexpectedResult;
+    try t.expectEqualStrings(base ++ "/icons/L/scalable/apps/gear.svg", exact.path);
+}
+
+test "icon-cache: a lowercased app id finds its mixed-case desktop file" {
+    const t = std.testing;
+    var threaded: std.Io.Threaded = .init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "/tmp/eh-icc-test-case/applications";
+    try makeTree(io, &.{dir});
+    defer removeTree(io, &.{
+        dir ++ "/org.gnome.Console.desktop",
+        dir,
+        "/tmp/eh-icc-test-case",
+    });
+    try touch(io, dir ++ "/org.gnome.Console.desktop");
+
+    const p = desktopPathIgnoreCase(io, t.allocator, dir, "org.gnome.console") orelse
+        return error.TestUnexpectedResult;
+    defer t.allocator.free(p);
+    try t.expectEqualStrings(dir ++ "/org.gnome.Console.desktop", p);
+}
 
 fn makeTree(io: std.Io, dirs: []const []const u8) !void {
     const cwd = std.Io.Dir.cwd();

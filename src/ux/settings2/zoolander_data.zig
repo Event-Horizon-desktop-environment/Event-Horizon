@@ -33,9 +33,19 @@ pub const Meta = struct {
     /// UI integer = round(value * scale). Floats use 10/100/1000 so the
     /// integer slider keeps their hundredths without a new row type.
     scale: i32 = 1,
-    /// The literal is the setter's first positional argument
-    /// (`zl.set_layout("scrolling")`) rather than a table key.
+    /// The literal is one of the setter's positional arguments
+    /// (`zl.set_layout("scrolling", 0.6, 2, "vertical")`) rather than a
+    /// table key.
     positional: bool = false,
+    /// Which positional argument `positional` addresses (0 = first).
+    arg_index: u8 = 0,
+    /// For setters whose first argument names a record and whose second is a
+    /// table (`set_animation_leaf("fade", { ... })`), the record name this
+    /// entry belongs to. Empty for every other setter.
+    leaf: []const u8 = "",
+    /// Index of the animation leaf within the leaf table (0..8), used to
+    /// track per-leaf curve state and one-shot rewrites.
+    lnum: u8 = 0,
 };
 
 /// One entry per `Field.zool_*` variant, in the same order.
@@ -126,9 +136,13 @@ pub const k_meta = [_]Meta{
     .{ .setter = "set_animations", .key = "easing", .kind = .text, .text_default = "ease_out_cubic" },
 
     // -- Default layout (`set_layout`) --
-    // The layout name is the first positional argument; the optional ratio
-    // and master count after it stay untouched.
+    // `zl.set_layout(layout, ratio?, master_count?, axis?)`; each argument
+    // is its own field so the layout card can edit them independently and
+    // preserve the trailing ones.
     .{ .setter = "set_layout", .key = "layout", .kind = .text, .text_default = "master_stack", .positional = true },
+    .{ .setter = "set_layout", .key = "ratio", .kind = .number, .num_default = 0.6, .scale = 1000, .positional = true, .arg_index = 1 },
+    .{ .setter = "set_layout", .key = "master_count", .kind = .integer, .int_default = 1, .positional = true, .arg_index = 2 },
+    .{ .setter = "set_layout", .key = "axis", .kind = .text, .text_default = "auto", .positional = true, .arg_index = 3 },
 
     // -- Dwindle --
     .{ .setter = "set_dwindle", .key = "preserve_split", .kind = .boolean },
@@ -209,6 +223,68 @@ pub const k_meta = [_]Meta{
     // -- Scrolling layouts (`set_scrolling`) --
     // Comma-separated floats in the UI; the writer emits a Lua list.
     .{ .setter = "set_scrolling", .key = "width_presets", .kind = .list, .text_default = "0.333, 0.667, 1" },
+
+    // -- Workspace swipe (`set_workspace_gesture`) --
+    .{ .setter = "set_workspace_gesture", .key = "enabled", .kind = .boolean, .positional = true },
+    .{ .setter = "set_workspace_gesture", .key = "fingers", .kind = .integer, .int_default = 3, .positional = true, .arg_index = 1 },
+
+    // -- Bell sound (`set_bell_sound`) --
+    .{ .setter = "set_bell_sound", .key = "sound", .kind = .text, .text_default = "error", .positional = true },
+
+    // -- Animation leaf: Windows in --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "windows_in", .bool_default = false, .lnum = 0 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "windows_in", .lnum = 0 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "windows_in", .lnum = 0 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "windows_in", .lnum = 0 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "windows_in", .lnum = 0 },
+    // -- Animation leaf: Windows out --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "windows_out", .bool_default = false, .lnum = 1 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "windows_out", .lnum = 1 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "windows_out", .lnum = 1 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "windows_out", .lnum = 1 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "windows_out", .lnum = 1 },
+    // -- Animation leaf: Windows move --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "windows_move", .bool_default = true, .lnum = 2 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "windows_move", .lnum = 2 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "windows_move", .lnum = 2 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "windows_move", .lnum = 2 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "windows_move", .lnum = 2 },
+    // -- Animation leaf: Fade --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "fade", .bool_default = false, .lnum = 3 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "fade", .lnum = 3 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "fade", .lnum = 3 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "fade", .lnum = 3 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "fade", .lnum = 3 },
+    // -- Animation leaf: Layers --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "layers", .bool_default = false, .lnum = 4 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "layers", .lnum = 4 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "layers", .lnum = 4 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "layers", .lnum = 4 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "layers", .lnum = 4 },
+    // -- Animation leaf: Workspaces --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "workspaces", .bool_default = true, .lnum = 5 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "workspaces", .lnum = 5 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "workspaces", .lnum = 5 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "workspaces", .lnum = 5 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "workspaces", .lnum = 5 },
+    // -- Animation leaf: Camera --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "camera", .bool_default = true, .lnum = 6 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 170, .leaf = "camera", .lnum = 6 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "camera", .lnum = 6 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "camera", .lnum = 6 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "camera", .lnum = 6 },
+    // -- Animation leaf: Layout --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "layout", .bool_default = true, .lnum = 7 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 180, .leaf = "layout", .lnum = 7 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "layout", .lnum = 7 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "slide", .leaf = "layout", .lnum = 7 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "layout", .lnum = 7 },
+    // -- Animation leaf: Windows minimize --
+    .{ .setter = "set_animation_leaf", .key = "enabled", .kind = .boolean, .leaf = "windows_minimize", .bool_default = true, .lnum = 8 },
+    .{ .setter = "set_animation_leaf", .key = "duration", .kind = .integer, .int_default = 250, .leaf = "windows_minimize", .lnum = 8 },
+    .{ .setter = "set_animation_leaf", .key = "easing", .kind = .text, .text_default = "ease_out_cubic", .leaf = "windows_minimize", .lnum = 8 },
+    .{ .setter = "set_animation_leaf", .key = "style", .kind = .text, .text_default = "minimize", .leaf = "windows_minimize", .lnum = 8 },
+    .{ .setter = "set_animation_leaf", .key = "percent", .kind = .integer, .int_default = 20, .leaf = "windows_minimize", .lnum = 8 },
 };
 
 pub const slot_count: u16 = k_meta.len;
@@ -224,6 +300,12 @@ pub const Value = union(enum) {
 
 var g_values: [k_meta.len]Value = initValues();
 var g_edits: [k_meta.len]?Value = @splat(null);
+/// Per-animation-leaf custom curve state. `g_leaf_curve` records whether the
+/// leaf call carries a `curve` table; the four points are the editor's.
+pub const anim_leaf_count: usize = 9;
+var g_leaf_curve: [anim_leaf_count]bool = @splat(false);
+var g_curve: [anim_leaf_count][4]f64 = @splat(.{ 0.25, 0.1, 0.25, 1.0 });
+var g_leaf_dirty: [anim_leaf_count]bool = @splat(false);
 var g_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 var g_files: std.ArrayListUnmanaged(File) = .empty;
 var g_dirty = false;
@@ -430,6 +512,33 @@ pub fn configDir(a: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(a, "{s}/zoolander", .{base});
 }
 
+/// Pick the module file that owns `setter` when appending a brand-new call.
+/// Animation leaves go to `animations.lua`, layout to `layout.lua`, and so on,
+/// so a split config keeps its setters beside their siblings instead of dumping
+/// everything into `init.lua`. Falls back to `init.lua` when no module matches.
+fn moduleForSetter(setter: []const u8) []const u8 {
+    if (std.mem.eql(u8, setter, "set_animation_leaf")) return "animations.lua";
+    if (std.mem.eql(u8, setter, "set_animations_enabled")) return "animations.lua";
+    if (std.mem.eql(u8, setter, "set_reduced_motion")) return "animations.lua";
+    if (std.mem.eql(u8, setter, "set_layout")) return "layout.lua";
+    if (std.mem.eql(u8, setter, "set_keyboard")) return "keyboard.lua";
+    if (std.mem.eql(u8, setter, "set_pointer")) return "pointer.lua";
+    if (std.mem.eql(u8, setter, "set_presentation")) return "presentation.lua";
+    if (std.mem.eql(u8, setter, "set_xwayland")) return "xwayland.lua";
+    if (std.mem.eql(u8, setter, "set_window_style")) return "window_style.lua";
+    if (std.mem.eql(u8, setter, "set_ssd")) return "ssd.lua";
+    if (std.mem.eql(u8, setter, "set_blur")) return "blur.lua";
+    if (std.mem.eql(u8, setter, "set_dim")) return "dim.lua";
+    if (std.mem.eql(u8, setter, "set_floating")) return "floating.lua";
+    if (std.mem.eql(u8, setter, "set_tab_bar")) return "tab_bar.lua";
+    if (std.mem.eql(u8, setter, "set_spatial")) return "spatial.lua";
+    if (std.mem.eql(u8, setter, "set_scrolling")) return "scrolling.lua";
+    if (std.mem.eql(u8, setter, "set_overview")) return "overview.lua";
+    if (std.mem.eql(u8, setter, "set_bell_sound")) return "bell.lua";
+    if (std.mem.eql(u8, setter, "set_workspace_gesture")) return "workspace_gesture.lua";
+    return "init.lua";
+}
+
 fn readFile(a: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(4 << 20)) catch null;
 }
@@ -454,6 +563,8 @@ const Call = struct {
     object: ?*Object = null,
     arg_start: usize = 0,
     arg_end: usize = 0,
+    /// Offset of the `zl` identifier, for replacing a whole call.
+    start: usize = 0,
 };
 
 fn isIdent(c: u8) bool {
@@ -668,6 +779,125 @@ fn scanCalls(a: std.mem.Allocator, text: []const u8) ![]Call {
     return out.toOwnedSlice(a);
 }
 
+/// A top-level argument span inside a call's parentheses.
+const ArgSpan = struct { start: usize, end: usize };
+
+/// The span of argument `idx` of `c` (`start..end` excludes the argument's
+/// surrounding whitespace). Null when the call has fewer arguments.
+fn argSpan(text: []const u8, c: Call, idx: usize) ?ArgSpan {
+    if (c.arg_start >= c.arg_end) return null;
+    var i = c.arg_start;
+    var depth: usize = 0;
+    var arg: usize = 0;
+    var start = i;
+    while (i < text.len) {
+        const ch = text[i];
+        if (ch == '"' or ch == '\'') {
+            i = skipString(text, i);
+            continue;
+        }
+        if (ch == '[') {
+            if (skipLongBracket(text, i)) |end| {
+                i = end;
+                continue;
+            }
+        }
+        if (ch == '-' and i + 1 < text.len and text[i + 1] == '-') {
+            i = skipWsComments(text, i);
+            continue;
+        }
+        switch (ch) {
+            '{', '(', '[' => depth += 1,
+            '}', ']' => if (depth > 0) {
+                depth -= 1;
+            },
+            ')' => {
+                if (depth == 0) {
+                    if (arg == idx) return trimSpan(text, start, i);
+                    return null;
+                }
+                depth -= 1;
+            },
+            ',' => if (depth == 0) {
+                if (arg == idx) return trimSpan(text, start, i);
+                arg += 1;
+                start = i + 1;
+            },
+            else => {},
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn trimSpan(text: []const u8, start: usize, end: usize) ArgSpan {
+    var s = start;
+    var e = end;
+    while (s < e and std.ascii.isWhitespace(text[s])) s += 1;
+    while (e > s and std.ascii.isWhitespace(text[e - 1])) e -= 1;
+    return .{ .start = s, .end = e };
+}
+
+/// Index of the call's closing `)`.
+fn callClose(text: []const u8, c: Call) ?usize {
+    var i = c.arg_start;
+    var depth: usize = 0;
+    while (i < text.len) {
+        const ch = text[i];
+        if (ch == '"' or ch == '\'') {
+            i = skipString(text, i);
+            continue;
+        }
+        if (ch == '[') {
+            if (skipLongBracket(text, i)) |end| {
+                i = end;
+                continue;
+            }
+        }
+        if (ch == '-' and i + 1 < text.len and text[i + 1] == '-') {
+            i = skipWsComments(text, i);
+            continue;
+        }
+        switch (ch) {
+            '{', '(', '[' => depth += 1,
+            '}', ']' => if (depth > 0) {
+                depth -= 1;
+            },
+            ')' => {
+                if (depth == 0) return i;
+                depth -= 1;
+            },
+            else => {},
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn argCount(text: []const u8, c: Call) usize {
+    var n: usize = 0;
+    while (argSpan(text, c, n) != null) n += 1;
+    return n;
+}
+
+/// Default literal for positional argument `idx` of `setter`, from the
+/// matching `k_meta` entry. Used as a placeholder when the UI sets a later
+/// argument (e.g. master count) on a call that stops earlier.
+fn defaultArgLiteral(setter: []const u8, idx: u8, buf: []u8) ?[]const u8 {
+    for (k_meta) |m| {
+        if (!m.positional or m.arg_index != idx) continue;
+        if (!std.mem.eql(u8, m.setter, setter)) continue;
+        const v: Value = switch (m.kind) {
+            .boolean, .flag => .{ .boolean = m.bool_default },
+            .integer => .{ .integer = m.int_default },
+            .number => .{ .number = m.num_default },
+            .text, .list => .{ .text = m.text_default },
+        };
+        return formatLiteral(buf, v);
+    }
+    return null;
+}
+
 fn findDirect(obj: *const Object, key: []const u8) ?*const Entry {
     var i = obj.entries.items.len;
     while (i > 0) {
@@ -840,6 +1070,66 @@ fn editText(a: std.mem.Allocator, text: []const u8, setter: []const u8, key: []c
     return try insertSnippet(a, text, target, snippet);
 }
 
+/// True when `raw` is a quoted string literal equal to `want`.
+fn argStringEq(raw: []const u8, want: []const u8) bool {
+    const s = std.mem.trim(u8, raw, " \t\r\n");
+    if (s.len < 2) return false;
+    if (!((s[0] == '"' and s[s.len - 1] == '"') or (s[0] == '\'' and s[s.len - 1] == '\''))) return false;
+    return std.mem.eql(u8, s[1 .. s.len - 1], want);
+}
+
+/// Rewrite one key in the options table of `set_animation_leaf(leaf, { ... })`.
+/// Returns null when that leaf has no call, so the writer appends one.
+fn editLeaf(a: std.mem.Allocator, text: []const u8, leaf: []const u8, key: []const u8, lit: []const u8) !?[]u8 {
+    const calls = try scanCalls(a, text);
+    var target: ?Call = null;
+    for (calls) |c| {
+        if (!std.mem.eql(u8, c.name, "set_animation_leaf")) continue;
+        const s0 = argSpan(text, c, 0) orelse continue;
+        if (!argStringEq(text[s0.start..s0.end], leaf)) continue;
+        target = c;
+    }
+    const c = target orelse return null;
+    if (argSpan(text, c, 1)) |s1| {
+        const start = skipWsComments(text, s1.start);
+        if (start >= text.len or text[start] != '{') return null;
+        const obj = try parseObject(a, text, start);
+        if (findEntry(obj, key)) |e| {
+            return try replaceSpan(a, text, e.value_start, e.value_end, lit);
+        }
+        const snippet = try nestedLiteral(a, key, lit);
+        defer a.free(snippet);
+        return try insertSnippet(a, text, obj, snippet);
+    }
+    // Call exists but has no options table yet: add it as the second argument.
+    const close = callClose(text, c) orelse return null;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, text[0..close]);
+    try out.appendSlice(a, ", { ");
+    try out.appendSlice(a, key);
+    try out.appendSlice(a, " = ");
+    try out.appendSlice(a, lit);
+    try out.appendSlice(a, " }");
+    try out.appendSlice(a, text[close..]);
+    return try out.toOwnedSlice(a);
+}
+
+fn appendLeafCall(a: std.mem.Allocator, text: []const u8, leaf: []const u8, key: []const u8, lit: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, text);
+    if (text.len > 0 and text[text.len - 1] != '\n') try out.append(a, '\n');
+    try out.appendSlice(a, "\nzl.set_animation_leaf(\"");
+    try out.appendSlice(a, leaf);
+    try out.appendSlice(a, "\", { ");
+    try out.appendSlice(a, key);
+    try out.appendSlice(a, " = ");
+    try out.appendSlice(a, lit);
+    try out.appendSlice(a, " })\n");
+    return out.toOwnedSlice(a);
+}
+
 /// Rewrite the boolean argument of a bare-call setter (`zl.set_reduced_motion
 /// (true)`). Returns null when the call is absent, so the writer appends one.
 fn editFlag(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit: []const u8) !?[]u8 {
@@ -852,10 +1142,12 @@ fn editFlag(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit: []c
     return try replaceSpan(a, text, c.arg_start, c.arg_end, lit);
 }
 
-/// Rewrite the first positional argument of a setter call
-/// (`zl.set_layout("dwindle", 0.62)`), leaving the arguments after it alone.
+/// Rewrite one positional argument of a setter call
+/// (`zl.set_layout("dwindle", 0.62)`), leaving the other arguments alone.
+/// Missing intermediate arguments are filled from their schema defaults so
+/// setting, say, `master_count` on a one-argument call stays valid Lua.
 /// Returns null when the call is absent, so the writer appends one.
-fn editArgText(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit: []const u8) !?[]u8 {
+fn editArgAt(a: std.mem.Allocator, text: []const u8, setter: []const u8, idx: u8, lit: []const u8) !?[]u8 {
     const calls = try scanCalls(a, text);
     var last: ?Call = null;
     for (calls) |c| {
@@ -863,10 +1155,35 @@ fn editArgText(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit: 
     }
     const c = last orelse return null;
     if (c.arg_start >= c.arg_end) return null;
-    return try replaceSpan(a, text, c.arg_start, c.arg_end, lit);
+    if (argSpan(text, c, idx)) |span| {
+        return try replaceSpan(a, text, span.start, span.end, lit);
+    }
+    const close = callClose(text, c) orelse return null;
+    const have = argCount(text, c);
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, text[0..close]);
+    var k: usize = have;
+    while (k <= idx) : (k += 1) {
+        var buf: [256]u8 = undefined;
+        const value = if (k == idx) lit else defaultArgLiteral(setter, @intCast(k), &buf) orelse return null;
+        try out.appendSlice(a, ", ");
+        try out.appendSlice(a, value);
+    }
+    try out.appendSlice(a, text[close..]);
+    return try out.toOwnedSlice(a);
+}
+
+/// Backwards-compatible first-argument form used by the existing tests.
+fn editArgText(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit: []const u8) !?[]u8 {
+    return editArgAt(a, text, setter, 0, lit);
 }
 
 fn appendArgCall(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit: []const u8) ![]u8 {
+    return appendArgAtCall(a, text, setter, 0, lit);
+}
+
+fn appendArgAtCall(a: std.mem.Allocator, text: []const u8, setter: []const u8, idx: u8, lit: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(a);
     try out.appendSlice(a, text);
@@ -874,7 +1191,13 @@ fn appendArgCall(a: std.mem.Allocator, text: []const u8, setter: []const u8, lit
     try out.appendSlice(a, "\nzl.");
     try out.appendSlice(a, setter);
     try out.append(a, '(');
-    try out.appendSlice(a, lit);
+    var k: usize = 0;
+    while (k <= idx) : (k += 1) {
+        if (k > 0) try out.appendSlice(a, ", ");
+        var buf: [256]u8 = undefined;
+        const value = if (k == idx) lit else defaultArgLiteral(setter, @intCast(k), &buf) orelse "";
+        try out.appendSlice(a, value);
+    }
     try out.appendSlice(a, ")\n");
     return out.toOwnedSlice(a);
 }
@@ -918,6 +1241,9 @@ pub fn load(io: std.Io) void {
     g_files = .empty;
     g_values = initValues();
     g_edits = @splat(null);
+    g_leaf_curve = @splat(false);
+    g_curve = @splat(.{ 0.25, 0.1, 0.25, 1.0 });
+    g_leaf_dirty = @splat(false);
     g_dirty = false;
 
     const a = g_arena.allocator();
@@ -945,16 +1271,46 @@ pub fn load(io: std.Io) void {
         for (calls) |c| {
             for (k_meta, 0..) |m, i| {
                 if (!std.mem.eql(u8, m.setter, c.name)) continue;
+                if (m.leaf.len > 0) {
+                    const s0 = argSpan(f.text, c, 0) orelse continue;
+                    if (!argStringEq(f.text[s0.start..s0.end], m.leaf)) continue;
+                    const s1 = argSpan(f.text, c, 1) orelse continue;
+                    const start = skipWsComments(f.text, s1.start);
+                    if (start >= f.text.len or f.text[start] != '{') continue;
+                    const obj = parseObject(a, f.text, start) catch continue;
+                    // Pull the optional custom curve once per leaf, then the
+                    // scalar option this entry owns.
+                    if (m.lnum < anim_leaf_count and std.mem.eql(u8, m.key, "enabled")) {
+                        if (findEntry(obj, "curve")) |ce| {
+                            if (ce.child) |co| {
+                                g_leaf_curve[m.lnum] = true;
+                                const curve_keys = [_][]const u8{ "x1", "y1", "x2", "y2" };
+                                for (curve_keys, 0..) |n, k| {
+                                    if (findDirect(co, n)) |pe| {
+                                        const praw = std.mem.trim(u8, f.text[pe.value_start..pe.value_end], " \t\r\n");
+                                        g_curve[m.lnum][k] = std.fmt.parseFloat(f64, praw) catch g_curve[m.lnum][k];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    const e = findEntry(obj, m.key) orelse continue;
+                    const raw = std.mem.trim(u8, f.text[e.value_start..e.value_end], " \t\r\n");
+                    g_values[i] = parseValue(a, m, raw);
+                    continue;
+                }
                 if (m.kind == .flag) {
                     const raw = std.mem.trim(u8, f.text[c.arg_start..c.arg_end], " \t\r\n");
                     g_values[i] = parseValue(a, m, raw);
                     continue;
                 }
                 if (m.positional) {
-                    const raw = std.mem.trim(u8, f.text[c.arg_start..c.arg_end], " \t\r\n");
-                    // A computed first argument (a Lua function that places
+                    const span = argSpan(f.text, c, m.arg_index) orelse continue;
+                    const raw = f.text[span.start..span.end];
+                    // A computed layout argument (a Lua function that places
                     // windows) is not ours to interpret; keep the default.
-                    if (raw.len < 2 or (raw[0] != '"' and raw[0] != '\'')) continue;
+                    if (m.arg_index == 0 and (raw.len < 2 or (raw[0] != '"' and raw[0] != '\''))) continue;
+                    if (raw.len == 0) continue;
                     g_values[i] = parseValue(a, m, raw);
                     continue;
                 }
@@ -1036,6 +1392,7 @@ pub fn getBool(slot: u16) bool {
 pub fn setBool(slot: u16, v: bool) void {
     g_values[slot] = .{ .boolean = v };
     g_edits[slot] = .{ .boolean = v };
+    if (k_meta[slot].leaf.len > 0) g_leaf_dirty[k_meta[slot].lnum] = true;
     g_dirty = true;
 }
 
@@ -1059,6 +1416,7 @@ pub fn setInt(slot: u16, v: i32) void {
     const value = uiToValue(m, v);
     g_values[slot] = value;
     g_edits[slot] = value;
+    if (m.leaf.len > 0) g_leaf_dirty[m.lnum] = true;
     g_dirty = true;
 }
 
@@ -1072,7 +1430,19 @@ pub fn getStr(slot: u16) []const u8 {
 pub fn setStr(slot: u16, v: []const u8) void {
     g_values[slot] = .{ .text = v };
     g_edits[slot] = .{ .text = v };
+    if (k_meta[slot].leaf.len > 0) g_leaf_dirty[k_meta[slot].lnum] = true;
     g_dirty = true;
+}
+
+/// Restore a slot to its schema default (the reference's "Default" buttons).
+pub fn resetSlot(slot: u16) void {
+    const m = k_meta[slot];
+    switch (m.kind) {
+        .boolean, .flag => setBool(slot, m.bool_default),
+        .integer => setInt(slot, m.int_default),
+        .number => setInt(slot, @intFromFloat(@round(m.num_default * @as(f64, @floatFromInt(m.scale))))),
+        .text, .list => setStr(slot, m.text_default),
+    }
 }
 
 pub fn comboIndex(slot: u16, options: []const []const u8) usize {
@@ -1108,11 +1478,144 @@ pub fn valueText(slot: u16, v: i32, unit: []const u8, buf: []u8) []const u8 {
     }
 }
 
+// Animation leaf curve state.
+
+pub fn leafCurveSet(lnum: u8) bool {
+    return lnum < anim_leaf_count and g_leaf_curve[lnum];
+}
+
+pub fn leafCurvePoint(lnum: u8, k: usize) f64 {
+    if (lnum >= anim_leaf_count or k >= 4) return 0;
+    return g_curve[lnum][k];
+}
+
+pub fn setLeafCurvePoint(lnum: u8, k: usize, v: f64) void {
+    if (lnum >= anim_leaf_count or k >= 4) return;
+    g_curve[lnum][k] = std.math.clamp(v, -1.0, 2.0);
+    g_leaf_curve[lnum] = true;
+    g_leaf_dirty[lnum] = true;
+    g_dirty = true;
+}
+
+/// Seed the stored curve from the easing the leaf is showing right now, so
+/// the first drag of a handle moves just that handle instead of snapping the
+/// other three to the schema default.
+pub fn beginLeafCurve(lnum: u8, p: [4]f64) void {
+    if (lnum >= anim_leaf_count or g_leaf_curve[lnum]) return;
+    g_curve[lnum] = p;
+    g_leaf_curve[lnum] = true;
+}
+
+pub fn clearLeafCurve(lnum: u8) void {
+    if (lnum >= anim_leaf_count) return;
+    g_leaf_curve[lnum] = false;
+    g_leaf_dirty[lnum] = true;
+    g_dirty = true;
+}
+
+fn leafSlot(lnum: u8, key: []const u8) ?u16 {
+    for (k_meta, 0..) |m, i| {
+        if (m.leaf.len == 0 or m.lnum != lnum) continue;
+        if (std.mem.eql(u8, m.key, key)) return @intCast(i);
+    }
+    return null;
+}
+
+/// Rebuild the whole `set_animation_leaf` call for one leaf from the current
+/// values. Rewriting the call keeps the editor simple (a curve can appear or
+/// disappear) and still preserves every option the schema knows about.
+fn buildLeafCall(a: std.mem.Allocator, lnum: u8) ![]u8 {
+    const leaf = blk: {
+        for (k_meta) |m| {
+            if (m.leaf.len > 0 and m.lnum == lnum) break :blk m.leaf;
+        }
+        return error.NoLeaf;
+    };
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, "zl.set_animation_leaf(\"");
+    try out.appendSlice(a, leaf);
+    try out.appendSlice(a, "\", { ");
+    const keys = [_][]const u8{ "enabled", "duration", "easing", "style", "percent" };
+    for (keys, 0..) |key, k| {
+        const slot = leafSlot(lnum, key) orelse continue;
+        if (k > 0) try out.appendSlice(a, ", ");
+        try out.appendSlice(a, key);
+        try out.appendSlice(a, " = ");
+        var buf: [512]u8 = undefined;
+        const lit = if (k_meta[slot].kind == .list) formatList(&buf, g_values[slot].text) else formatLiteral(&buf, g_values[slot]);
+        try out.appendSlice(a, lit);
+    }
+    if (g_leaf_curve[lnum]) {
+        var cb: [256]u8 = undefined;
+        const nums = [_]f64{ g_curve[lnum][0], g_curve[lnum][1], g_curve[lnum][2], g_curve[lnum][3] };
+        var nb: [32]u8 = undefined;
+        const n0 = formatNumber(&nb, nums[0]);
+        var n1b: [32]u8 = undefined;
+        const n1 = formatNumber(&n1b, nums[1]);
+        var n2b: [32]u8 = undefined;
+        const n2 = formatNumber(&n2b, nums[2]);
+        var n3b: [32]u8 = undefined;
+        const n3 = formatNumber(&n3b, nums[3]);
+        const curve = std.fmt.bufPrint(&cb, ", curve = {{ x1 = {s}, y1 = {s}, x2 = {s}, y2 = {s} }}", .{ n0, n1, n2, n3 }) catch "";
+        try out.appendSlice(a, curve);
+    }
+    try out.appendSlice(a, " })\n");
+    return out.toOwnedSlice(a);
+}
+
+fn hasLeafCall(text: []const u8, lnum: u8) bool {
+    const a = std.heap.page_allocator;
+    const calls = scanCalls(a, text) catch return false;
+    defer a.free(calls);
+    for (calls) |c| {
+        if (!std.mem.eql(u8, c.name, "set_animation_leaf")) continue;
+        const s0 = argSpan(text, c, 0) orelse continue;
+        if (argStringEq(text[s0.start..s0.end], leafKey(lnum))) return true;
+    }
+    return false;
+}
+
+/// Replace the last call for `leaf`, or append one when absent.
+fn rewriteLeafCall(a: std.mem.Allocator, text: []const u8, lnum: u8, call: []const u8) ![]u8 {
+    const calls = try scanCalls(a, text);
+    var last: ?Call = null;
+    for (calls) |c| {
+        if (!std.mem.eql(u8, c.name, "set_animation_leaf")) continue;
+        const s0 = argSpan(text, c, 0) orelse continue;
+        if (!argStringEq(text[s0.start..s0.end], leafKey(lnum))) continue;
+        last = c;
+    }
+    if (last) |c| {
+        const close = callClose(text, c) orelse return try appendLeafLine(a, text, call);
+        return try replaceSpan(a, text, c.start, close + 1, std.mem.trimEnd(u8, call, "\n"));
+    }
+    return try appendLeafLine(a, text, call);
+}
+
+fn leafKey(lnum: u8) []const u8 {
+    for (k_meta) |m| {
+        if (m.leaf.len > 0 and m.lnum == lnum) return m.leaf;
+    }
+    return "";
+}
+
+fn appendLeafLine(a: std.mem.Allocator, text: []const u8, call: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, text);
+    if (text.len > 0 and text[text.len - 1] != '\n') try out.append(a, '\n');
+    if (text.len > 0) try out.append(a, '\n');
+    try out.appendSlice(a, call);
+    return out.toOwnedSlice(a);
+}
+
 // Write.
 
 /// Write every pending edit back to its Lua file, then ask Zoolander to
-/// reload. A field with no setter call gets a new call appended to
-/// `init.lua`, creating the config directory when needed.
+/// reload. A field with no setter call gets a new call appended to the module
+/// that owns the setter (e.g. `set_animation_leaf` → `animations.lua`), falling
+/// back to `init.lua` when no module matches.
 pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
     if (!g_dirty) return;
 
@@ -1142,6 +1645,9 @@ pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
     for (g_edits, 0..) |maybe, i| {
         const value = maybe orelse continue;
         const m = k_meta[i];
+        // Leaf slots are written once per leaf below, rebuilding the whole
+        // call so a curve table can appear or disappear cleanly.
+        if (m.leaf.len > 0) continue;
         var lit_buf: [512]u8 = undefined;
         const lit = if (m.kind == .list) formatList(&lit_buf, value.text) else formatLiteral(&lit_buf, value);
         var applied = false;
@@ -1149,8 +1655,10 @@ pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
         for (texts.items, 0..) |old, ti| {
             const edited = if (is_flag)
                 editFlag(a, old, m.setter, lit) catch null
+            else if (m.leaf.len > 0)
+                editLeaf(a, old, m.leaf, m.key, lit) catch null
             else if (m.positional)
-                editArgText(a, old, m.setter, lit) catch null
+                editArgAt(a, old, m.setter, m.arg_index, lit) catch null
             else
                 editText(a, old, m.setter, m.key, lit) catch null;
             if (edited) |new| {
@@ -1160,27 +1668,31 @@ pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
             }
         }
         if (!applied) {
-            // No call anywhere: append to init.lua (or create it).
+            // No call anywhere: append to the module that owns this setter,
+            // falling back to init.lua when no module matches.
             const dir_path = configDir(a) catch continue;
             std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+            const target = moduleForSetter(m.setter);
             var found: ?usize = null;
             for (paths.items, 0..) |p, pi| {
-                if (std.mem.endsWith(u8, p, "/init.lua")) found = pi;
+                if (std.mem.endsWith(u8, p, target)) found = pi;
             }
             if (found) |fi| {
                 const new = if (is_flag)
                     appendFlagCall(a, texts.items[fi], m.setter, lit) catch continue
+                else if (m.leaf.len > 0)
+                    appendLeafCall(a, texts.items[fi], m.leaf, m.key, lit) catch continue
                 else if (m.positional)
-                    appendArgCall(a, texts.items[fi], m.setter, lit) catch continue
+                    appendArgAtCall(a, texts.items[fi], m.setter, m.arg_index, lit) catch continue
                 else
                     appendCall(a, texts.items[fi], m.setter, m.key, lit) catch continue;
                 texts.items[fi] = new;
             } else {
-                const path = std.fmt.allocPrint(a, "{s}/init.lua", .{dir_path}) catch continue;
+                const path = std.fmt.allocPrint(a, "{s}/{s}", .{ dir_path, target }) catch continue;
                 const new = if (is_flag)
                     appendFlagCall(a, "", m.setter, lit) catch continue
                 else if (m.positional)
-                    appendArgCall(a, "", m.setter, lit) catch continue
+                    appendArgAtCall(a, "", m.setter, m.arg_index, lit) catch continue
                 else
                     appendCall(a, "", m.setter, m.key, lit) catch continue;
                 paths.append(a, path) catch continue;
@@ -1189,6 +1701,36 @@ pub fn commit(alloc: std.mem.Allocator, io: std.Io) void {
             applied = true;
         }
         if (applied) any = true;
+    }
+
+    // Animation leaves: one rebuilt call per dirty leaf.
+    for (g_leaf_dirty, 0..) |dirty, lnum| {
+        if (!dirty) continue;
+        const call = buildLeafCall(a, @intCast(lnum)) catch continue;
+        var applied = false;
+        for (texts.items, 0..) |old, ti| {
+            if (!hasLeafCall(old, @intCast(lnum))) continue;
+            texts.items[ti] = rewriteLeafCall(a, old, @intCast(lnum), call) catch continue;
+            applied = true;
+            break;
+        }
+        if (!applied) {
+            const dir_path = configDir(a) catch continue;
+            std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+            const target = moduleForSetter("set_animation_leaf");
+            var found: ?usize = null;
+            for (paths.items, 0..) |p, pi| {
+                if (std.mem.endsWith(u8, p, target)) found = pi;
+            }
+            if (found) |fi| {
+                texts.items[fi] = appendLeafLine(a, texts.items[fi], call) catch continue;
+            } else {
+                const path = std.fmt.allocPrint(a, "{s}/{s}", .{ dir_path, target }) catch continue;
+                paths.append(a, path) catch continue;
+                texts.append(a, call) catch continue;
+            }
+        }
+        any = true;
     }
 
     if (any) {
@@ -1428,6 +1970,37 @@ test "zoolander-data: positional setters rewrite only their first argument" {
     try t.expectEqualStrings("zl.set_layout(\"scrolling\", 0.62)", out);
     try t.expect(try editArgText(a, out, "set_missing_layout", "\"grid\"") == null);
     try t.expectEqualStrings("\nzl.set_layout(\"grid\")\n", try appendArgCall(a, "", "set_layout", "\"grid\""));
+}
+
+test "zoolander-data: positional setters edit later arguments and fill gaps" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Editing an existing later argument keeps the others untouched.
+    const src = "zl.set_layout(\"dwindle\", 0.6, 1, \"vertical\")\n";
+    const ratio = (try editArgAt(a, src, "set_layout", 1, "0.5")).?;
+    try t.expectEqualStrings("zl.set_layout(\"dwindle\", 0.5, 1, \"vertical\")\n", ratio);
+    const axis = (try editArgAt(a, ratio, "set_layout", 3, "\"horizontal\"")).?;
+    try t.expectEqualStrings("zl.set_layout(\"dwindle\", 0.5, 1, \"horizontal\")\n", axis);
+
+    // Appending a missing argument uses schema defaults for the gaps.
+    const one = "zl.set_layout(\"dwindle\")";
+    try t.expectEqualStrings(
+        "zl.set_layout(\"dwindle\", 0.5)",
+        (try editArgAt(a, one, "set_layout", 1, "0.5")).?,
+    );
+    try t.expectEqualStrings(
+        "zl.set_layout(\"dwindle\", 0.6, 1, \"vertical\")",
+        (try editArgAt(a, one, "set_layout", 3, "\"vertical\"")).?,
+    );
+
+    // A brand-new call also fills the preceding arguments.
+    try t.expectEqualStrings(
+        "\nzl.set_layout(\"master_stack\", 0.6, 2)\n",
+        try appendArgAtCall(a, "", "set_layout", 2, "2"),
+    );
 }
 
 test "zoolander-data: list values bridge Lua tables and comma text" {

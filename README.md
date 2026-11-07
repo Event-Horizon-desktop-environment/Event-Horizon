@@ -65,14 +65,16 @@ What the script does:
    packages are installed with `pacman`, `dnf`, `apt`, or `zypper`.
 2. Uses Zig 0.16.0 or newer. If the system Zig is missing or too old, the
    official 0.16.0 tarball is downloaded to
-   `~/.cache/event-horizon/zig-0.16.0/`.
+   `~/.cache/event-horizon/zig-0.16.0/`; `curl` (or `wget`), `tar`, and `xz`
+   are installed first when they are missing.
 3. Detects the best x86-64 level from `/proc/cpuinfo` (`x86_64_v2`,
    `x86_64_v3`, or `x86_64_v4`) and builds with
    `zig build -Doptimize=ReleaseFast -Dcpu=...`.
 4. Installs the shell binaries to `/usr/bin`, the icon theme to
    `/usr/share/icons/hicolor`, matugen templates to
    `/usr/share/event-horizon/matugen`, and the license to
-   `/usr/share/licenses/event-horizon`.
+   `/usr/share/licenses/event-horizon`. Everything is installed in one
+   privileged step, so `pkexec`/`sudo` prompts once.
 
 The install step requests privilege with `pkexec` (or `sudo` when `pkexec` is
 not available). `horizon-panel` is not part of the build or install.
@@ -128,23 +130,30 @@ The manual build expects these development packages:
 | `librsvg` | SVG icon rendering |
 | `libwebp` | Wallpaper thumbnails |
 | `libpipewire-0.3` | Audio Center and tests |
+| `curl` or `wget`, `tar`, `xz` | Downloading the bundled Zig toolchain when the system Zig is missing or too old |
+| `zenity` (runtime; `kdialog` or `yad` also work) | Wallpaper folder picker and file dialogs |
 
 Representative install commands (package names vary by release):
 
 ```bash
 # Arch Linux
 sudo pacman -S --needed zig pkgconf wayland wayland-protocols libxkbcommon \
-  cairo pango librsvg libwebp pipewire
+  cairo pango librsvg libwebp pipewire curl xz zenity
 
 # Fedora
 sudo dnf install zig pkgconf-pkg-config wayland-devel wayland-protocols-devel \
   libxkbcommon-devel cairo-devel pango-devel librsvg2-devel libwebp-devel \
-  pipewire-devel
+  pipewire-devel curl xz zenity
 
 # Debian / Ubuntu
-sudo apt install pkg-config libwayland-dev wayland-protocols libxkbcommon-dev \
-  libcairo2-dev libpango1.0-dev librsvg2-dev libwebp-dev libpipewire-0.3-dev
+sudo apt install pkg-config libwayland-dev libwayland-bin wayland-protocols \
+  libxkbcommon-dev libcairo2-dev libpango1.0-dev librsvg2-dev libwebp-dev \
+  libpipewire-0.3-dev curl xz-utils zenity
 ```
+
+On Debian and Ubuntu, `wayland-scanner` comes from `libwayland-bin`. Without
+`zenity` (or `kdialog`/`yad`) the wallpaper folder picker has no dialog, so no
+wallpaper image can be selected and the palette is never generated.
 
 Debian and Ubuntu usually lag behind on Zig. `build.sh` downloads Zig 0.16.0
 automatically when needed; for a manual build, install a newer release from

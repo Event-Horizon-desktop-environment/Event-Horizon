@@ -112,31 +112,36 @@ pub const Page = struct {
         // Global presentation (`set_presentation`). These used to live on the
         // Zoolander Displays page; the Monitors tab is the single display
         // surface now. They write init.lua and share the keep/revert window.
-        r = self.rows_len;
-        self.pushRow(.{ .toggle = .{ .label = "Allow tearing", .desc = "Allow clients to request tearing", .field = .zool_presentation_allow_tearing } });
-        self.pushRow(.{ .toggle = .{ .label = "Immediate fullscreen", .desc = "Scan out fullscreen windows without a copy", .field = .zool_presentation_immediate_fullscreen } });
-        self.pushRow(.{ .toggle = .{ .label = "Direct scanout", .desc = "Let fullscreen surfaces bypass the render pass", .field = .zool_presentation_direct_scanout } });
-        self.pushRow(.{ .toggle = .{ .label = "Partial repaints", .desc = "Damage only the regions that changed", .field = .zool_presentation_partial_damage } });
-        self.pushRow(.{ .combo = .{
-            .label = "Variable refresh rate",
-            .desc = "When outputs may change refresh rate",
-            .field = .zool_presentation_vrr,
-            .options = &vrr_labels_zoolander,
-            .labels = &vrr_labels_zoolander,
-        } });
-        self.pushRow(.{ .combo = .{
-            .label = "HDR policy",
-            .desc = "Global HDR output policy",
-            .field = .zool_presentation_hdr,
-            .options = &hdr_labels,
-            .labels = &hdr_labels,
-        } });
-        self.pushRow(.{ .slider = .{ .label = "SDR brightness", .field = .zool_presentation_sdr_brightness, .min = 10, .max = 400, .unit = "×" } });
-        self.pushRow(.{ .slider = .{ .label = "SDR saturation", .field = .zool_presentation_sdr_saturation, .min = 0, .max = 200, .unit = "×" } });
-        self.pushRow(.{ .slider = .{ .label = "SDR black level", .field = .zool_presentation_sdr_min_luminance, .min = 0, .max = 10000, .unit = "nits" } });
-        self.pushRow(.{ .slider = .{ .label = "SDR white level", .field = .zool_presentation_sdr_max_luminance, .min = 40, .max = 1000, .unit = "nits" } });
-        self.pushRow(.{ .combo = .{ .label = "SDR transfer", .field = .zool_presentation_sdr_eotf, .options = &.{ "srgb", "gamma22", "gamma24" }, .labels = &.{ "sRGB", "Gamma 2.2", "Gamma 2.4" } } });
-        self.pushCard("Global presentation", "Tearing, scanout, HDR and SDR mastering for every output.", r);
+        // The Zoolander config schema owns these keys, so keep the card off
+        // other compositors entirely — Hyprland and Mango have their own
+        // presentation controls above/below and must not see dead options.
+        if (s.kind == .zoolander) {
+            r = self.rows_len;
+            self.pushRow(.{ .toggle = .{ .label = "Allow tearing", .desc = "Allow clients to request tearing", .field = .zool_presentation_allow_tearing } });
+            self.pushRow(.{ .toggle = .{ .label = "Immediate fullscreen", .desc = "Scan out fullscreen windows without a copy", .field = .zool_presentation_immediate_fullscreen } });
+            self.pushRow(.{ .toggle = .{ .label = "Direct scanout", .desc = "Let fullscreen surfaces bypass the render pass", .field = .zool_presentation_direct_scanout } });
+            self.pushRow(.{ .toggle = .{ .label = "Partial repaints", .desc = "Damage only the regions that changed", .field = .zool_presentation_partial_damage } });
+            self.pushRow(.{ .combo = .{
+                .label = "Variable refresh rate",
+                .desc = "When outputs may change refresh rate",
+                .field = .zool_presentation_vrr,
+                .options = &vrr_labels_zoolander,
+                .labels = &vrr_labels_zoolander,
+            } });
+            self.pushRow(.{ .combo = .{
+                .label = "HDR policy",
+                .desc = "Global HDR output policy",
+                .field = .zool_presentation_hdr,
+                .options = &hdr_labels,
+                .labels = &hdr_labels,
+            } });
+            self.pushRow(.{ .slider = .{ .label = "SDR brightness", .field = .zool_presentation_sdr_brightness, .min = 10, .max = 400, .unit = "×" } });
+            self.pushRow(.{ .slider = .{ .label = "SDR saturation", .field = .zool_presentation_sdr_saturation, .min = 0, .max = 200, .unit = "×" } });
+            self.pushRow(.{ .slider = .{ .label = "SDR black level", .field = .zool_presentation_sdr_min_luminance, .min = 0, .max = 10000, .unit = "nits" } });
+            self.pushRow(.{ .slider = .{ .label = "SDR white level", .field = .zool_presentation_sdr_max_luminance, .min = 40, .max = 1000, .unit = "nits" } });
+            self.pushRow(.{ .combo = .{ .label = "SDR transfer", .field = .zool_presentation_sdr_eotf, .options = &.{ "srgb", "gamma22", "gamma24" }, .labels = &.{ "sRGB", "Gamma 2.2", "Gamma 2.4" } } });
+            self.pushCard("Global presentation", "Tearing, scanout, HDR and SDR mastering for every output.", r);
+        }
 
         const sel: usize = @min(s.selected, s.outputs_len -| 1);
         if (s.outputs_len == 0) {
@@ -921,23 +926,22 @@ test "settings-monitors-page: builds cards from the state" {
     var page = Page{};
     page.build(&s);
     const cards = page.cardsSlice();
-    // Toolbar/canvas/pills, Global presentation, header, Display, Scale &
-    // transform, status.
-    try t.expectEqual(@as(usize, 6), cards.len);
+    // Toolbar/canvas/pills, header, Display, Scale & transform, status. The
+    // Zoolander-only Global presentation card is absent on unknown/hyprland.
+    try t.expectEqual(@as(usize, 5), cards.len);
     // Untitled card: rows plus the 16px embedded-widget pad.
     try t.expectEqual(
         rows_mod.toolbar_h + rows_mod.info_row_h + rows_mod.canvas_h + rows_mod.pills_h + 16,
         rows_mod.cardHeight(cards[0]),
     );
-    try t.expectEqualStrings("Global presentation", cards[1].title);
-    try t.expectEqualStrings("DP-1", cards[2].title);
-    try t.expectEqual(@as(usize, 1), cards[2].rows.len);
-    try t.expect(cards[2].rows[0] == .toggle);
-    try t.expectEqualStrings("Display", cards[3].title);
+    try t.expectEqualStrings("DP-1", cards[1].title);
+    try t.expectEqual(@as(usize, 1), cards[1].rows.len);
+    try t.expect(cards[1].rows[0] == .toggle);
+    try t.expectEqualStrings("Display", cards[2].title);
     // No caps and no VRR (unknown compositor) -> resolution + refresh only.
+    try t.expectEqual(@as(usize, 2), cards[2].rows.len);
     try t.expectEqual(@as(usize, 2), cards[3].rows.len);
-    try t.expectEqual(@as(usize, 2), cards[4].rows.len);
-    try t.expectEqualStrings("Scale & transform", cards[4].title);
+    try t.expectEqualStrings("Scale & transform", cards[3].title);
     // Scroll height matches the shared card walk.
     try t.expectEqual(rows_mod.contentHeightOf(cards, 0), pageHeight(&page));
     try t.expect(pageHeight(&page) > rows_mod.canvas_h);
@@ -961,11 +965,29 @@ test "settings-monitors-page: no outputs falls back to a status card" {
     var page = Page{};
     page.build(&s);
     const cards = page.cardsSlice();
-    try t.expectEqual(@as(usize, 3), cards.len);
-    try t.expectEqualStrings("Global presentation", cards[1].title);
-    try t.expectEqualStrings("Monitors", cards[2].title);
-    try t.expectEqual(@as(usize, 1), cards[2].rows.len);
-    try t.expectEqualStrings("Compositor not supported", cards[2].rows[0].info);
+    try t.expectEqual(@as(usize, 2), cards.len);
+    try t.expectEqualStrings("Monitors", cards[1].title);
+    try t.expectEqual(@as(usize, 1), cards[1].rows.len);
+    try t.expectEqualStrings("Compositor not supported", cards[1].rows[0].info);
+}
+
+test "settings-monitors-page: Global presentation is Zoolander-only" {
+    const t = std.testing;
+    var s = testState(1);
+    var page = Page{};
+    page.build(&s);
+    // Hyprland and Mango never see the Zoolander config keys.
+    for ([_]@TypeOf(s.kind){ .unknown, .hyprland, .mango, .niri, .sway, .labwc }) |k| {
+        s.kind = k;
+        page.build(&s);
+        for (page.cardsSlice()) |card| {
+            try t.expect(!std.mem.eql(u8, card.title, "Global presentation"));
+        }
+    }
+    // Zoolander shows the card again.
+    s.kind = .zoolander;
+    page.build(&s);
+    try t.expectEqualStrings("Global presentation", page.cardsSlice()[1].title);
 }
 
 test "settings-monitors-page: pills carry the output names" {
@@ -1084,7 +1106,7 @@ test "settings-monitors-page: resolution pick snaps the refresh rate" {
     var page = Page{};
     page.build(&s);
     // 2 resolutions, descending by pixel area.
-    const res = page.cardsSlice()[3].rows[0].combo;
+    const res = page.cardsSlice()[2].rows[0].combo;
     try t.expectEqual(@as(usize, 2), res.options.len);
     try t.expectEqualStrings("2560x1440", res.options[0]);
 
@@ -1095,7 +1117,7 @@ test "settings-monitors-page: resolution pick snaps the refresh rate" {
     try t.expect(s.dirty);
 
     page.build(&s);
-    const hz = page.cardsSlice()[3].rows[1].combo;
+    const hz = page.cardsSlice()[2].rows[1].combo;
     try t.expectEqual(@as(usize, 2), hz.options.len);
     try t.expectEqualStrings("240 Hz", hz.labels[0]);
     try t.expectEqual(@as(usize, 0), fieldComboIndex(&s, .monitor_refresh_idx, hz.options));
@@ -1116,7 +1138,7 @@ test "settings-monitors-page: HDR panels follow the specified visibility rules" 
     var page = Page{};
     page.build(&s);
     try t.expect(!hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
-    try t.expectEqual(@as(usize, 6), page.cardsSlice().len);
+    try t.expectEqual(@as(usize, 5), page.cardsSlice().len);
 
     // Hyprland + a caps table that hints HDR → the full form.
     s.kind = .hyprland;
@@ -1124,17 +1146,17 @@ test "settings-monitors-page: HDR panels follow the specified visibility rules" 
     try t.expect(hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     page.build(&s);
     // Toolbar, header, Display (now with VRR), Scale, Color, HDR, Luminance,
-    // status — the full Hyprland form.
-    try t.expectEqual(@as(usize, 9), page.cardsSlice().len);
-    try t.expectEqualStrings("HDR", page.cardsSlice()[6].title);
-    try t.expectEqualStrings("Luminance", page.cardsSlice()[7].title);
-    try t.expectEqual(@as(usize, 5), page.cardsSlice()[7].rows.len);
+    // status — the full Hyprland form. No Global presentation card.
+    try t.expectEqual(@as(usize, 8), page.cardsSlice().len);
+    try t.expectEqualStrings("HDR", page.cardsSlice()[5].title);
+    try t.expectEqualStrings("Luminance", page.cardsSlice()[6].title);
+    try t.expectEqual(@as(usize, 5), page.cardsSlice()[6].rows.len);
 
     // A disabled output hides the HDR panel entirely.
     s.outputs[0].disabled = true;
     try t.expect(!hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     page.build(&s);
-    try t.expectEqual(@as(usize, 7), page.cardsSlice().len);
+    try t.expectEqual(@as(usize, 6), page.cardsSlice().len);
 
     // cm=srgb with no HDR hint falls back to the wide/EOTF strip.
     s.outputs[0].disabled = false;
@@ -1144,6 +1166,6 @@ test "settings-monitors-page: HDR panels follow the specified visibility rules" 
     try t.expect(!hdrPanelVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     try t.expect(wideEotfStripVisible(&s, &s.outputs[0], s.capsFor("DP-1")));
     page.build(&s);
-    try t.expectEqual(@as(usize, 8), page.cardsSlice().len);
-    try t.expectEqual(@as(usize, 2), page.cardsSlice()[6].rows.len);
+    try t.expectEqual(@as(usize, 7), page.cardsSlice().len);
+    try t.expectEqual(@as(usize, 2), page.cardsSlice()[5].rows.len);
 }

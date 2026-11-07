@@ -47,6 +47,7 @@ const display_picker = @import("display_picker.zig");
 const dw_data = @import("desktop_widgets_data.zig");
 const hyprland_data = @import("hyprland_data.zig");
 const zoolander_data = @import("zoolander_data.zig");
+const zoolander_anim = @import("zoolander_anim.zig");
 const display_confirm = @import("display_confirm.zig");
 const zoolander_page = @import("zoolander_page.zig");
 const hyprland_tab = @import("hyprland_tab.zig");
@@ -284,6 +285,14 @@ pub const Win = struct {
         // paint.
         self.seedFromConfig(init);
         self.content = .{ .settings = &self.settings };
+        // Development convenience: `EH_SETTINGS_TAB=86 horizon-settings`
+        // opens the window straight on a page instead of tab 0.
+        if (init.environ_map.get("EH_SETTINGS_TAB")) |v| {
+            if (std.fmt.parseInt(i32, v, 10)) |tab| {
+                self.sidebar.active_tab = tab;
+                self.content.active_tab = tab;
+            } else |_| {}
+        }
         self.monitors = .{};
         self.monitors.gpa = self.gpa;
         self.monitors.io = self.io;
@@ -1784,6 +1793,7 @@ pub const Win = struct {
         }
         self.sidebar.active_tab = t;
         self.content.active_tab = t;
+        zoolander_anim.reset();
         self.content.open_combo = null;
         self.scroll.snapTo(0);
         // First entry to the Monitors tab pulls the live output list.
@@ -2371,6 +2381,12 @@ pub const Win = struct {
             self.repaint();
             return;
         }
+        // Animation curve handle drag: follow the pointer inside the open
+        // leaf's graph; the value lands on release with the rest of the page.
+        if (zoolander_anim.motion(self.content.pointer_x, self.content.pointer_ly)) {
+            self.repaint();
+            return;
+        }
         if (self.content.drag) |d| {
             if (self.content.applyHit(.{ .slider = d }, x)) {
                 self.flushDockLive();
@@ -2485,6 +2501,9 @@ pub const Win = struct {
                     self.repaint();
                 }
             }
+            // A finished curve-handle drag needs no special commit here: the
+            // leaf is already marked dirty and the block below writes it.
+            if (zoolander_anim.isDragging()) zoolander_anim.endDrag();
             // Zoolander pages batch slider drags the same way: the release
             // writes pending Lua edits and asks Zoolander to reload. The
             // Monitors tab carries the global `set_presentation` rows, so it
@@ -2916,6 +2935,19 @@ pub const Win = struct {
                 self.flushAppearanceTab();
                 self.flushNightlightTab();
                 self.flushZoolanderTab();
+            },
+            // The leaf editor expands in place, changing the card height;
+            // every other leaf action just moves a value.
+            .anim_leaf => {
+                if (self.content.applyHit(ch, x)) self.content.relayout();
+                self.flushZoolanderTab();
+            },
+            // Picking a layout can add or remove the arguments panel under
+            // the picker, so the card height changes with the pick.
+            .layout_pick => {
+                _ = self.content.applyHit(ch, x);
+                self.flushZoolanderTab();
+                self.content.relayout();
             },
             else => {
                 _ = self.content.applyHit(ch, x);

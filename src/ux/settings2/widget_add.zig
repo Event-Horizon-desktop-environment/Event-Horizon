@@ -316,8 +316,13 @@ pub fn collectInto(
 
 /// Accent-tinted rounded icon box with a centred Material ligature —
 /// used for the header and every card.
-fn iconBox(c: ?*cairo.cairo_t, x: i32, y: i32, sz: i32, ligature: []const u8) void {
+fn iconBox(c: ?*cairo.cairo_t, x: i32, y: i32, sz: i32, id: []const u8, ligature: []const u8) void {
     const t = common.Theme;
+    const cx = @as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(sz)) * 0.5;
+    const cy = @as(f64, @floatFromInt(y)) + @as(f64, @floatFromInt(sz)) * 0.5;
+    // Settings cards wear the shipped slider artwork (its own square), so
+    // the glass box and glyph below are the pre-install fallback only.
+    if (ui_widgets.drawSettingsArtwork(c, id, cx, cy, @floatFromInt(sz))) return;
     const ir: f32 = @floatCast(@min(1.0, t.acc_r * 0.45 + 0.42));
     const ig: f32 = @floatCast(@min(1.0, t.acc_g * 0.45 + 0.42));
     const ib: f32 = @floatCast(@min(1.0, t.acc_b * 0.45 + 0.42));
@@ -329,8 +334,8 @@ fn iconBox(c: ?*cairo.cairo_t, x: i32, y: i32, sz: i32, ligature: []const u8) vo
     b.paint(c);
     ui_paint.glyph(
         c,
-        @as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(sz)) * 0.5,
-        @as(f64, @floatFromInt(y)) + @as(f64, @floatFromInt(sz)) * 0.5 + 0.5,
+        cx,
+        cy + 0.5,
         @as(f64, @floatFromInt(sz)) * 0.6,
         ligature,
         t.text_r,
@@ -385,7 +390,7 @@ pub fn paint(
     // Header: icon box + "Add widget" + count.
     const hx = lay.px + pad;
     const hy = lay.py + pad;
-    iconBox(c, hx, hy + 3, icon_box, "widgets");
+    iconBox(c, hx, hy + 3, icon_box, "", "widgets");
     ui_paint.showText(
         c,
         @floatFromInt(hx + icon_box + 12),
@@ -623,7 +628,7 @@ pub fn paint(
         }
 
         // Icon box.
-        iconBox(c, cx + card_pad, cy_top + @divTrunc(lay.card_h - icon_box, 2), icon_box, meta.glyph);
+        iconBox(c, cx + card_pad, cy_top + @divTrunc(lay.card_h - icon_box, 2), icon_box, wid, meta.glyph);
 
         // Title (wrapped, ellipsised) — clipped to its column.
         const tx = cx + card_pad + icon_box + 12;

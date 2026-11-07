@@ -134,12 +134,18 @@ fn detect() Kind {
     return if (zoolanderSocketPresent()) .zoolander else .unknown;
 }
 
+/// Temporary development switch: show the Zoolander pages on every
+/// compositor so the parity work can be previewed outside a Zoolander session.
+/// Set back to false (and restore the `kind() == .zoolander` gates) when the
+/// pages are ready to ship.
+pub const unlock_zoolander_pages = true;
+
 /// Sidebar category visibility — skipping `def.id == 16`
 /// unless Mango and `def.id == 33` unless Hyprland.
 pub fn visibleCategory(cat_id: i32) bool {
     if (cat_id == 16) return kind() == .mango;
     if (cat_id == 33) return kind() == .hyprland;
-    if (cat_id == app_mod.zoolander_category_id) return kind() == .zoolander;
+    if (cat_id == app_mod.zoolander_category_id) return unlock_zoolander_pages or kind() == .zoolander;
     return true;
 }
 
@@ -149,7 +155,7 @@ pub fn visibleCategory(cat_id: i32) bool {
 pub fn visibleTab(tab: i32) bool {
     if (tab >= 20 and tab <= 26) return kind() == .mango;
     if (tab >= 64 and tab <= 78) return kind() == .hyprland;
-    if (zoolander_page.ownsTab(tab)) return kind() == .zoolander;
+    if (zoolander_page.ownsTab(tab)) return unlock_zoolander_pages or kind() == .zoolander;
     return true;
 }
 
@@ -168,7 +174,7 @@ test "settings-compositor: category and tab gates behave as specified" {
     const k = kind();
     try t.expectEqual(k == .mango, visibleCategory(16));
     try t.expectEqual(k == .hyprland, visibleCategory(33));
-    try t.expectEqual(k == .zoolander, visibleCategory(app_mod.zoolander_category_id));
+    try t.expectEqual(unlock_zoolander_pages or k == .zoolander, visibleCategory(app_mod.zoolander_category_id));
     // Other categories always visible.
     try t.expect(visibleCategory(12));
     try t.expect(visibleCategory(13));
@@ -181,7 +187,7 @@ test "settings-compositor: category and tab gates behave as specified" {
         try t.expectEqual(k == .hyprland, visibleTab(tab));
     }
     for ([_]i32{ zoolander_page.first_tab_id, zoolander_page.first_tab_id + 2, zoolander_page.first_tab_id + 4, zoolander_page.last_tab_id }) |tab| {
-        try t.expectEqual(k == .zoolander, visibleTab(tab));
+        try t.expectEqual(unlock_zoolander_pages or k == .zoolander, visibleTab(tab));
     }
     try t.expect(visibleTab(0));
     try t.expect(visibleTab(7));

@@ -79,7 +79,7 @@ fn realNowSec() i64 {
 /// only write `[nightlight] enabled`; this is what pushes it onto the display,
 /// so a toggle reaches the backlight without any of them owning gamma.
 const NightHost = struct {
-    conn: wl_conn.Connection,
+    conn: *wl_conn.Connection,
     bound: wl_conn.Connection.Bound = .{},
     gamma: nightlight.GammaService,
     /// The display connection came up, so `deinit` owes it a teardown.
@@ -87,12 +87,17 @@ const NightHost = struct {
     /// Last schedule decision, so the debug log only prints flips.
     last_want_on: bool = false,
 
-    fn init(gpa: std.mem.Allocator) NightHost {
+    fn init(gpa: std.mem.Allocator) !NightHost {
+        // Heap-backed for the same reason as `App.conn`: `connect` stores the
+        // Connection's address in the registry listener, and this host is
+        // returned by value into `Shell`.
+        const conn = try gpa.create(wl_conn.Connection);
+        conn.* = wl_conn.Connection.init(gpa);
         var host = NightHost{
-            .conn = wl_conn.Connection.init(gpa),
+            .conn = conn,
             .gamma = nightlight.GammaService.init(gpa),
         };
-        if (!host.conn.connect(null)) {
+        if (!conn.connect(null)) {
             logz.log("nightlight: no display connection, gamma off", .{});
             return host;
         }
@@ -111,9 +116,11 @@ const NightHost = struct {
     fn deinit(self: *NightHost) void {
         if (self.connected) {
             self.conn.freeBound(&self.bound);
-            self.conn.deinit();
             self.connected = false;
         }
+        const alloc = self.conn.alloc;
+        self.conn.deinit();
+        alloc.destroy(self.conn);
         self.gamma.deinit();
     }
 
@@ -206,7 +213,10 @@ pub fn run(io: std.Io, eh_ipc_socket: ?[]const u8, xdg_runtime: ?[]const u8, xdg
         .watcher = &config_watcher,
         .ticks = 0,
         .kbd = &kbd,
-        .night = NightHost.init(gpa),
+        .night = NightHost.init(gpa) catch |e| {
+            logz.err("nightlight: init failed: {s}", .{@errorName(e)});
+            return 1;
+        },
     };
     defer sh.night.deinit();
 

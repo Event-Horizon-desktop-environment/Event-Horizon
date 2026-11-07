@@ -13,7 +13,9 @@ const common = @import("common.zig");
 /// `output_rule` + `set_presentation` keys with the confirm flow.
 pub const first_tab_id: i32 = 86;
 /// Last sidebar tab of the range.
-pub const last_tab_id: i32 = 93;
+pub const last_tab_id: i32 = 94;
+/// Workspaces & Layouts — the page whose cards depend on the chosen layout.
+pub const layouts_tab_id: i32 = first_tab_id + 6;
 
 /// One Zoolander page: a list-column row and a sidebar tab in one.
 pub const Section = struct {
@@ -31,6 +33,7 @@ pub const sections = [_]Section{
     .{ .label = "Decorations", .glyph = "palette", .tab_id = first_tab_id + 5 },
     .{ .label = "Workspaces & Layouts", .glyph = "grid_view", .tab_id = first_tab_id + 6 },
     .{ .label = "XWayland", .glyph = "desktop_windows", .tab_id = first_tab_id + 7 },
+    .{ .label = "Sound", .glyph = "volume_up", .tab_id = first_tab_id + 8 },
 };
 
 /// True when `tab` selects a Zoolander page.
@@ -61,7 +64,7 @@ pub fn pageTop() i32 {
 
 test "settings2-zoolander-page: sections cover the range" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 8), sections.len);
+    try t.expectEqual(@as(usize, 9), sections.len);
     for (sections, 0..) |s, i| {
         try t.expectEqual(first_tab_id + @as(i32, @intCast(i)), s.tab_id);
         try t.expect(ownsTab(s.tab_id));

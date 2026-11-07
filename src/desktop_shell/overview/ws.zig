@@ -8,7 +8,10 @@
 //! pads/truncates to the widget's `max_workspaces` the way the strip does,
 //! keeping real workspaces past the cap when they hold windows or focus;
 //! name-keyed Zoolander sessions are left alone because they have no dense
-//! numeric range to fill.
+//! numeric range to fill. Workspace jumps and window moves/swaps dispatch
+//! through the same detection: Hyprland commands, or Zoolander Lua `eval`
+//! with windows re-found by app id, title and workspace since the control
+//! socket's window id is not the Lua address.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -37,6 +40,14 @@ pub const Window = struct {
     /// will not copy it until it is parked on-monitor, which is the
     /// reveal pass's job.
     overflow: bool = false,
+};
+
+/// The subset of `Window` a compositor action needs; the overview's cards
+/// carry the same fields in `host.Win`.
+pub const WindowRef = struct {
+    addr: []const u8 = "",
+    app_id: []const u8 = "",
+    title: []const u8 = "",
 };
 
 pub const Workspace = struct {
@@ -731,12 +742,92 @@ fn hyprCommand(
 }
 
 fn zoolanderEval(alloc: std.mem.Allocator, env: *const std.process.Environ.Map, code: []const u8) bool {
+    // The server caps a command line at 2048 bytes and `eval ` plus the
+    // newline are part of it.
+    if (code.len + 6 > 2048) return false;
     const cmd = std.fmt.allocPrint(alloc, "eval {s}", .{code}) catch return false;
     defer alloc.free(cmd);
     const out = zCtl(alloc, env, cmd) orelse return false;
     defer alloc.free(out);
     const t = std.mem.trim(u8, out, " \t\r\n");
-    return std.mem.eql(u8, t, "OK") or std.mem.startsWith(u8, t, "OK ");
+    if (std.mem.eql(u8, t, "OK")) return true;
+    if (!std.mem.startsWith(u8, t, "OK ")) return false;
+    // `eval` returns the chunk's first result, so a chunk that found nothing
+    // answers `OK false`/`OK nil`; those are failures for the caller.
+    const body = std.mem.trim(u8, t[3..], " \t\r\n");
+    return !std.mem.eql(u8, body, "false") and !std.mem.eql(u8, body, "nil");
+}
+
+/// The window fields `clients-json` and `zl.get_windows()` share. The control
+/// socket's `id` is a foreign-toplevel handle, not the Lua address, so actions
+/// re-find the window inside the `eval` chunk by these fields.
+const ZWindowKey = struct {
+    app_id: []const u8 = "",
+    title: []const u8 = "",
+    ws: []const u8 = "",
+};
+
+/// Quote `s` as a Lua string literal on one line. Bytes below 0x20 and DEL use
+/// three-digit decimal escapes so a control byte next to a digit cannot merge
+/// into one escape.
+fn luaQuote(out: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
+    try out.append(alloc, '"');
+    for (s) |ch| {
+        switch (ch) {
+            '"' => try out.appendSlice(alloc, "\\\""),
+            '\\' => try out.appendSlice(alloc, "\\\\"),
+            '\n' => try out.appendSlice(alloc, "\\n"),
+            '\r' => try out.appendSlice(alloc, "\\r"),
+            0...8, 11...12, 14...0x1f, 0x7f => {
+                const esc = [_]u8{ '\\', '0' + ch / 100, '0' + (ch / 10) % 10, '0' + ch % 10 };
+                try out.appendSlice(alloc, &esc);
+            },
+            else => try out.append(alloc, ch),
+        }
+    }
+    try out.append(alloc, '"');
+}
+
+/// A Lua condition matching one `zl.get_windows()` entry. Workspace always
+/// participates; `app_id` and a non-empty title narrow it down when present.
+fn appendZWindowMatch(out: *std.ArrayList(u8), alloc: std.mem.Allocator, key: ZWindowKey) !void {
+    try out.appendSlice(alloc, "(w.workspace and w.workspace.name==");
+    try luaQuote(out, alloc, key.ws);
+    if (key.app_id.len > 0) {
+        try out.appendSlice(alloc, " and w.app_id==");
+        try luaQuote(out, alloc, key.app_id);
+    }
+    if (key.title.len > 0) {
+        try out.appendSlice(alloc, " and w.title==");
+        try luaQuote(out, alloc, key.title);
+    }
+    try out.append(alloc, ')');
+}
+
+fn zoolanderMoveLua(alloc: std.mem.Allocator, target: []const u8, key: ZWindowKey, follow: bool) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.appendSlice(alloc, "return (function() for _,w in ipairs(zl.get_windows()) do if ");
+    try appendZWindowMatch(&out, alloc, key);
+    try out.appendSlice(alloc, " then return zl.move_window_workspace(");
+    try luaQuote(&out, alloc, target);
+    try out.appendSlice(alloc, if (follow) ",true,w.address) end end return false end)()" else ",false,w.address) end end return false end)()");
+    return out.toOwnedSlice(alloc);
+}
+
+/// Zoolander has no swap-by-address action. Two moves between the windows'
+/// current workspaces express the same result as long as they differ.
+fn zoolanderSwapLua(alloc: std.mem.Allocator, a: ZWindowKey, b: ZWindowKey) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.appendSlice(alloc, "return (function() local a,b for _,w in ipairs(zl.get_windows()) do if ");
+    try appendZWindowMatch(&out, alloc, a);
+    try out.appendSlice(alloc, " then a=a or w end if ");
+    try appendZWindowMatch(&out, alloc, b);
+    try out.appendSlice(alloc, " then b=b or w end end if not a or not b or a==b then return false end " ++
+        "local aw,bw=a.workspace.name,b.workspace.name if aw==bw then return false end " ++
+        "return zl.move_window_workspace(bw,false,a.address) and zl.move_window_workspace(aw,false,b.address) end)()");
+    return out.toOwnedSlice(alloc);
 }
 
 /// `return zl.workspace("<name>")`, with the name quoted for Lua.
@@ -798,6 +889,58 @@ pub fn repliedOk(reply: ?[]const u8) bool {
     return std.mem.startsWith(u8, std.mem.trim(u8, r, " \t\r\n"), "ok");
 }
 
+/// Move a window to a workspace on whichever compositor the environment
+/// names. `from_ws` is the source's compositor workspace name (Zoolander)
+/// and `target` the destination name; Hyprland uses decimal ids instead.
+pub fn moveWindow(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    target: []const u8,
+    win: WindowRef,
+    from_ws: []const u8,
+    follow: bool,
+) bool {
+    if (target.len == 0) return false;
+    if (compositor.detect(io, env) == .zoolander) {
+        const key = ZWindowKey{ .app_id = win.app_id, .title = win.title, .ws = from_ws };
+        const code = zoolanderMoveLua(alloc, target, key, follow) catch return false;
+        defer alloc.free(code);
+        return zoolanderEval(alloc, env, code);
+    }
+    const ws_id = std.fmt.parseInt(i32, target, 10) catch return false;
+    var buf: [160]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.window.move({{workspace = {d}, window = \"address:{s}\"}})", .{ ws_id, win.addr }) catch return false;
+    return hyprCommand(alloc, io, env, cmd);
+}
+
+/// Swap two windows between their workspaces. Zoolander cannot reorder inside
+/// one workspace, so a same-workspace swap reports false.
+pub fn swapWindows(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    a: WindowRef,
+    a_ws: []const u8,
+    b: WindowRef,
+    b_ws: []const u8,
+) bool {
+    if (compositor.detect(io, env) == .zoolander) {
+        if (std.mem.eql(u8, a_ws, b_ws)) return false;
+        const code = zoolanderSwapLua(
+            alloc,
+            .{ .app_id = a.app_id, .title = a.title, .ws = a_ws },
+            .{ .app_id = b.app_id, .title = b.title, .ws = b_ws },
+        ) catch return false;
+        defer alloc.free(code);
+        return zoolanderEval(alloc, env, code);
+    }
+    if (a.addr.len == 0 or b.addr.len == 0) return false;
+    var buf: [256]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&buf, "dispatch hl.dsp.window.swap({{window = \"address:{s}\", target = \"address:{s}\"}})", .{ a.addr, b.addr }) catch return false;
+    return hyprCommand(alloc, io, env, cmd);
+}
+
 test "overview-ws: workspaces parse with labels and flags" {
     const t = std.testing;
     const doc =
@@ -823,9 +966,11 @@ test "overview-ws: workspaces parse with labels and flags" {
 
 test "overview-ws: clients attach with normalized geometry" {
     const t = std.testing;
-    const ws_doc = \\[{"id":1,"name":"1","monitor":"DP-1","focused":true,"windows":2}]
+    const ws_doc =
+        \\[{"id":1,"name":"1","monitor":"DP-1","focused":true,"windows":2}]
     ;
-    const mon_doc = \\[{"id":0,"x":0.0,"y":0.0,"width":1920.0,"height":1080.0}]
+    const mon_doc =
+        \\[{"id":0,"x":0.0,"y":0.0,"width":1920.0,"height":1080.0}]
     ;
     const cl_doc =
         \\[{"address":"0xabc","class":"kitty","title":"sh","mapped":true,"floating":false,
@@ -858,7 +1003,8 @@ test "overview-ws: max slots pads, keeps real overflow" {
         \\[{"id":1,"name":"1","monitor":"DP-1","focused":false,"windows":0},
         \\ {"id":7,"name":"7","monitor":"DP-1","focused":true,"windows":1}]
     ;
-    const mon_doc = \\[]
+    const mon_doc =
+        \\[]
     ;
     const cl_doc =
         \\[{"address":"0xa","class":"x","title":"t","mapped":true,"workspace":{"id":7},
@@ -941,6 +1087,29 @@ test "overview-ws: zoolander lua workspace names are quoted" {
     var buf: [128]u8 = undefined;
     const code = luaWorkspaceCode(&buf, "we\"ird\\name").?;
     try t.expectEqualStrings("return zl.workspace(\"we\\\"ird\\\\name\")", code);
+}
+
+test "overview-ws: zoolander window actions build one-line lua" {
+    const t = std.testing;
+    const key = ZWindowKey{ .app_id = "we\"ird", .title = "a\nb", .ws = "x\x01y" };
+    const move = try zoolanderMoveLua(t.allocator, "tar\"get", key, false);
+    defer t.allocator.free(move);
+    try t.expect(std.mem.indexOfScalar(u8, move, '\n') == null);
+    try t.expect(std.mem.indexOf(u8, move, "w.app_id==\"we\\\"ird\"") != null);
+    try t.expect(std.mem.indexOf(u8, move, "w.title==\"a\\nb\"") != null);
+    try t.expect(std.mem.indexOf(u8, move, "w.workspace.name==\"x\\001y\"") != null);
+    try t.expect(std.mem.indexOf(u8, move, "move_window_workspace(\"tar\\\"get\",false,w.address)") != null);
+
+    const follow = try zoolanderMoveLua(t.allocator, "2", key, true);
+    defer t.allocator.free(follow);
+    try t.expect(std.mem.indexOf(u8, follow, ",true,w.address)") != null);
+
+    const swap = try zoolanderSwapLua(t.allocator, key, .{ .app_id = "other", .title = "", .ws = "2" });
+    defer t.allocator.free(swap);
+    try t.expect(std.mem.indexOfScalar(u8, swap, '\n') == null);
+    try t.expect(std.mem.indexOf(u8, swap, "local aw,bw=a.workspace.name,b.workspace.name") != null);
+    try t.expect(std.mem.indexOf(u8, swap, "move_window_workspace(bw,false,a.address)") != null);
+    try t.expect(std.mem.indexOf(u8, swap, "move_window_workspace(aw,false,b.address)") != null);
 }
 
 test "overview-ws: zoolander control round trip assembles a snapshot" {

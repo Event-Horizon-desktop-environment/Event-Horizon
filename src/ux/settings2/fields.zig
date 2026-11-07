@@ -489,6 +489,9 @@ pub const Field = enum {
     zool_animations_duration, // set_animations.duration
     zool_animations_easing, // set_animations.easing
     zool_layout_default, // set_layout(layout)
+    zool_layout_ratio, // set_layout(nil, ratio)
+    zool_layout_master_count, // set_layout(nil, nil, master_count)
+    zool_layout_axis, // set_layout(nil, nil, nil, axis)
     zool_dwindle_preserve_split, // set_dwindle.preserve_split
     zool_dwindle_smart_split, // set_dwindle.smart_split
     zool_dwindle_smart_resizing, // set_dwindle.smart_resizing
@@ -546,6 +549,56 @@ pub const Field = enum {
     zool_window_style_shadow_color, // set_window_style.shadow.color
     zool_window_style_shadow_color_inactive, // set_window_style.shadow.color_inactive
     zool_scrolling_width_presets, // set_scrolling.width_presets
+    // -- Workspace swipe (`set_workspace_gesture`) --
+    zool_workspace_gesture_enabled, // set_workspace_gesture(enabled)
+    zool_workspace_gesture_fingers, // set_workspace_gesture(_, fingers)
+    // -- Bell sound (`set_bell_sound`) --
+    zool_bell_sound, // set_bell_sound(sound)
+    zool_anim_leaf_windows_in_enabled, // set_animation_leaf("windows_in").enabled
+    zool_anim_leaf_windows_in_duration, // set_animation_leaf("windows_in").duration
+    zool_anim_leaf_windows_in_easing, // set_animation_leaf("windows_in").easing
+    zool_anim_leaf_windows_in_style, // set_animation_leaf("windows_in").style
+    zool_anim_leaf_windows_in_percent, // set_animation_leaf("windows_in").percent
+    zool_anim_leaf_windows_out_enabled, // set_animation_leaf("windows_out").enabled
+    zool_anim_leaf_windows_out_duration, // set_animation_leaf("windows_out").duration
+    zool_anim_leaf_windows_out_easing, // set_animation_leaf("windows_out").easing
+    zool_anim_leaf_windows_out_style, // set_animation_leaf("windows_out").style
+    zool_anim_leaf_windows_out_percent, // set_animation_leaf("windows_out").percent
+    zool_anim_leaf_windows_move_enabled, // set_animation_leaf("windows_move").enabled
+    zool_anim_leaf_windows_move_duration, // set_animation_leaf("windows_move").duration
+    zool_anim_leaf_windows_move_easing, // set_animation_leaf("windows_move").easing
+    zool_anim_leaf_windows_move_style, // set_animation_leaf("windows_move").style
+    zool_anim_leaf_windows_move_percent, // set_animation_leaf("windows_move").percent
+    zool_anim_leaf_fade_enabled, // set_animation_leaf("fade").enabled
+    zool_anim_leaf_fade_duration, // set_animation_leaf("fade").duration
+    zool_anim_leaf_fade_easing, // set_animation_leaf("fade").easing
+    zool_anim_leaf_fade_style, // set_animation_leaf("fade").style
+    zool_anim_leaf_fade_percent, // set_animation_leaf("fade").percent
+    zool_anim_leaf_layers_enabled, // set_animation_leaf("layers").enabled
+    zool_anim_leaf_layers_duration, // set_animation_leaf("layers").duration
+    zool_anim_leaf_layers_easing, // set_animation_leaf("layers").easing
+    zool_anim_leaf_layers_style, // set_animation_leaf("layers").style
+    zool_anim_leaf_layers_percent, // set_animation_leaf("layers").percent
+    zool_anim_leaf_workspaces_enabled, // set_animation_leaf("workspaces").enabled
+    zool_anim_leaf_workspaces_duration, // set_animation_leaf("workspaces").duration
+    zool_anim_leaf_workspaces_easing, // set_animation_leaf("workspaces").easing
+    zool_anim_leaf_workspaces_style, // set_animation_leaf("workspaces").style
+    zool_anim_leaf_workspaces_percent, // set_animation_leaf("workspaces").percent
+    zool_anim_leaf_camera_enabled, // set_animation_leaf("camera").enabled
+    zool_anim_leaf_camera_duration, // set_animation_leaf("camera").duration
+    zool_anim_leaf_camera_easing, // set_animation_leaf("camera").easing
+    zool_anim_leaf_camera_style, // set_animation_leaf("camera").style
+    zool_anim_leaf_camera_percent, // set_animation_leaf("camera").percent
+    zool_anim_leaf_layout_enabled, // set_animation_leaf("layout").enabled
+    zool_anim_leaf_layout_duration, // set_animation_leaf("layout").duration
+    zool_anim_leaf_layout_easing, // set_animation_leaf("layout").easing
+    zool_anim_leaf_layout_style, // set_animation_leaf("layout").style
+    zool_anim_leaf_layout_percent, // set_animation_leaf("layout").percent
+    zool_anim_leaf_windows_minimize_enabled, // set_animation_leaf("windows_minimize").enabled
+    zool_anim_leaf_windows_minimize_duration, // set_animation_leaf("windows_minimize").duration
+    zool_anim_leaf_windows_minimize_easing, // set_animation_leaf("windows_minimize").easing
+    zool_anim_leaf_windows_minimize_style, // set_animation_leaf("windows_minimize").style
+    zool_anim_leaf_windows_minimize_percent, // set_animation_leaf("windows_minimize").percent
 
     // -- matugen external-template toggles (`settings_tab_appearance`) --
     // One variant per entry of `Settings.matugen_templates` (a [37]bool
@@ -613,14 +666,14 @@ pub const Field = enum {
     pub fn zoolSlot(self: Field) ?u16 {
         const n: u16 = @intFromEnum(self);
         const first: u16 = @intFromEnum(Field.zool_presentation_allow_tearing);
-        const last: u16 = @intFromEnum(Field.zool_scrolling_width_presets);
+        const last: u16 = @intFromEnum(Field.zool_anim_leaf_windows_minimize_percent);
         if (n < first or n > last) return null;
         return n - first;
     }
 
     pub fn isZool(self: Field) bool {
         return @intFromEnum(self) >= @intFromEnum(Field.zool_presentation_allow_tearing) and
-            @intFromEnum(self) <= @intFromEnum(Field.zool_scrolling_width_presets);
+            @intFromEnum(self) <= @intFromEnum(Field.zool_anim_leaf_windows_minimize_percent);
     }
 
     /// Index into `Settings.matugen_templates` for the template toggles, or

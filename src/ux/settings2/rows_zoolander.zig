@@ -53,11 +53,11 @@ pub const windows = [_]Card{
         .{ .slider = .{ .label = "Border width", .field = Field.zool_window_style_border_size, .min = 0, .max = 64, .unit = "px" } },
     } },
     .{ .title = "Border colours", .subtitle = "#RRGGBBAA gradients, angles in degrees", .rows = &.{
-        .{ .text = .{ .label = "Active border", .desc = "Start colour of the focused border", .field = Field.zool_window_style_active_border, .placeholder = "#598cf2ff" } },
-        .{ .text = .{ .label = "Active border end", .desc = "End colour of the focused border", .field = Field.zool_window_style_active_border_end, .placeholder = "#598cf2ff" } },
+        .{ .color = .{ .label = "Active border", .desc = "Start colour of the focused border", .field = Field.zool_window_style_active_border, .placeholder = "#598cf2ff" } },
+        .{ .color = .{ .label = "Active border end", .desc = "End colour of the focused border", .field = Field.zool_window_style_active_border_end, .placeholder = "#598cf2ff" } },
         .{ .slider = .{ .label = "Active border angle", .field = Field.zool_window_style_active_border_angle, .min = -3600, .max = 3600, .unit = "°" } },
-        .{ .text = .{ .label = "Inactive border", .desc = "Start colour of the unfocused border", .field = Field.zool_window_style_inactive_border, .placeholder = "#40404dff" } },
-        .{ .text = .{ .label = "Inactive border end", .desc = "End colour of the unfocused border", .field = Field.zool_window_style_inactive_border_end, .placeholder = "#40404dff" } },
+        .{ .color = .{ .label = "Inactive border", .desc = "Start colour of the unfocused border", .field = Field.zool_window_style_inactive_border, .placeholder = "#40404dff" } },
+        .{ .color = .{ .label = "Inactive border end", .desc = "End colour of the unfocused border", .field = Field.zool_window_style_inactive_border_end, .placeholder = "#40404dff" } },
         .{ .slider = .{ .label = "Inactive border angle", .field = Field.zool_window_style_inactive_border_angle, .min = -3600, .max = 3600, .unit = "°" } },
     } },
     .{ .title = "Corners", .subtitle = "Rounded corners", .rows = &.{
@@ -72,8 +72,8 @@ pub const windows = [_]Card{
         .{ .slider = .{ .label = "Offset X", .field = Field.zool_window_style_shadow_offset_x, .min = -256, .max = 256, .unit = "px" } },
         .{ .slider = .{ .label = "Offset Y", .field = Field.zool_window_style_shadow_offset_y, .min = -256, .max = 256, .unit = "px" } },
         .{ .slider = .{ .label = "Scale", .field = Field.zool_window_style_shadow_scale, .min = 50, .max = 200, .unit = "×" } },
-        .{ .text = .{ .label = "Colour", .field = Field.zool_window_style_shadow_color, .placeholder = "#00000066" } },
-        .{ .text = .{ .label = "Inactive colour", .field = Field.zool_window_style_shadow_color_inactive, .placeholder = "#00000066" } },
+        .{ .color = .{ .label = "Colour", .field = Field.zool_window_style_shadow_color, .placeholder = "#00000066" } },
+        .{ .color = .{ .label = "Inactive colour", .field = Field.zool_window_style_shadow_color_inactive, .placeholder = "#00000066" } },
     } },
     .{ .title = "Opacity", .subtitle = "Window transparency", .rows = &.{
         .{ .slider = .{ .label = "Active opacity", .field = Field.zool_window_style_active_opacity, .min = 0, .max = 100, .unit = "%" } },
@@ -119,6 +119,11 @@ pub const animations = [_]Card{
         .{ .slider = .{ .label = "Duration", .field = Field.zool_animations_duration, .min = 1, .max = 5000, .unit = "ms" } },
         .{ .combo = .{ .label = "Easing", .field = Field.zool_animations_easing, .options = &.{ "linear", "ease_out_cubic", "ease_in_out_cubic" }, .labels = &.{ "Linear", "Ease out", "Ease in-out" } } },
     } },
+    .{
+        .title = "Animation leaves",
+        .subtitle = "Per-transition timing, easing and curve",
+        .rows = &.{.{ .anim_leaves = {} }},
+    },
 };
 
 /// --- Decorations (`set_ssd`, `set_tab_bar`) ---
@@ -137,16 +142,16 @@ pub const decorations = [_]Card{
         .{ .combo = .{ .label = "Title alignment", .field = Field.zool_ssd_title_align, .options = &.{ "left", "center", "right" }, .labels = &.{ "Left", "Centre", "Right" } } },
     } },
     .{ .title = "Title bar colours", .subtitle = "Borders, title bars and title text (#RRGGBBAA)", .rows = &.{
-        .{ .text = .{ .label = "Active border", .field = Field.zool_ssd_active_border, .placeholder = "#598cf2ff" } },
-        .{ .text = .{ .label = "Active border end", .field = Field.zool_ssd_active_border_end, .placeholder = "#598cf2ff" } },
+        .{ .color = .{ .label = "Active border", .field = Field.zool_ssd_active_border, .placeholder = "#598cf2ff" } },
+        .{ .color = .{ .label = "Active border end", .field = Field.zool_ssd_active_border_end, .placeholder = "#598cf2ff" } },
         .{ .slider = .{ .label = "Active border angle", .field = Field.zool_ssd_active_border_angle, .min = -3600, .max = 3600, .unit = "°" } },
-        .{ .text = .{ .label = "Inactive border", .field = Field.zool_ssd_inactive_border, .placeholder = "#40404dff" } },
-        .{ .text = .{ .label = "Inactive border end", .field = Field.zool_ssd_inactive_border_end, .placeholder = "#40404dff" } },
+        .{ .color = .{ .label = "Inactive border", .field = Field.zool_ssd_inactive_border, .placeholder = "#40404dff" } },
+        .{ .color = .{ .label = "Inactive border end", .field = Field.zool_ssd_inactive_border_end, .placeholder = "#40404dff" } },
         .{ .slider = .{ .label = "Inactive border angle", .field = Field.zool_ssd_inactive_border_angle, .min = -3600, .max = 3600, .unit = "°" } },
-        .{ .text = .{ .label = "Active title bar", .field = Field.zool_ssd_active_titlebar, .placeholder = "#292e3dff" } },
-        .{ .text = .{ .label = "Inactive title bar", .field = Field.zool_ssd_inactive_titlebar, .placeholder = "#1a1a21ff" } },
-        .{ .text = .{ .label = "Title colour", .field = Field.zool_ssd_title_color, .placeholder = "#ebf0faff" } },
-        .{ .text = .{ .label = "Inactive title colour", .field = Field.zool_ssd_inactive_title_color, .placeholder = "#ebf0faff" } },
+        .{ .color = .{ .label = "Active title bar", .field = Field.zool_ssd_active_titlebar, .placeholder = "#292e3dff" } },
+        .{ .color = .{ .label = "Inactive title bar", .field = Field.zool_ssd_inactive_titlebar, .placeholder = "#1a1a21ff" } },
+        .{ .color = .{ .label = "Title colour", .field = Field.zool_ssd_title_color, .placeholder = "#ebf0faff" } },
+        .{ .color = .{ .label = "Inactive title colour", .field = Field.zool_ssd_inactive_title_color, .placeholder = "#ebf0faff" } },
         .{ .text = .{ .label = "Title font", .desc = "Font family for window titles", .field = Field.zool_ssd_title_font, .placeholder = "Sans" } },
     } },
     .{ .title = "Tab Bars", .subtitle = "The window tab bar", .rows = &.{
@@ -160,32 +165,53 @@ pub const decorations = [_]Card{
     } },
     .{ .title = "Tab Bar Theme", .subtitle = "Font and colours (#RRGGBBAA)", .rows = &.{
         .{ .text = .{ .label = "Font", .desc = "Font family for tab titles", .field = Field.zool_tab_bar_font, .placeholder = "Sans" } },
-        .{ .text = .{ .label = "Background", .field = Field.zool_tab_bar_bg, .placeholder = "#1a1a21ff" } },
-        .{ .text = .{ .label = "Foreground", .field = Field.zool_tab_bar_fg, .placeholder = "#ebf0faff" } },
-        .{ .text = .{ .label = "Focused background", .field = Field.zool_tab_bar_focus_bg, .placeholder = "#292e3dff" } },
-        .{ .text = .{ .label = "Focused foreground", .field = Field.zool_tab_bar_focus_fg, .placeholder = "#ebf0faff" } },
+        .{ .color = .{ .label = "Background", .field = Field.zool_tab_bar_bg, .placeholder = "#1a1a21ff" } },
+        .{ .color = .{ .label = "Foreground", .field = Field.zool_tab_bar_fg, .placeholder = "#ebf0faff" } },
+        .{ .color = .{ .label = "Focused background", .field = Field.zool_tab_bar_focus_bg, .placeholder = "#292e3dff" } },
+        .{ .color = .{ .label = "Focused foreground", .field = Field.zool_tab_bar_focus_fg, .placeholder = "#ebf0faff" } },
     } },
 };
 
 /// --- Workspaces & Layouts (`set_layout`, `set_dwindle`, `set_spatial`, `set_scrolling`, `set_overview`) ---
 pub const layouts = [_]Card{
     .{ .title = "Default layout", .subtitle = "The arrangement workspaces without a rule use", .rows = &.{
-        .{ .combo = .{
-            .label = "Layout",
-            .desc = "Built-in arrangement for workspaces without their own layout",
+        .{ .layout_picker = .{
             .field = Field.zool_layout_default,
             .options = &.{ "dwindle", "master_stack", "grid", "monocle", "spiral", "scrolling", "floating", "canvas", "shelves", "islands", "lanes", "accordion", "workbench", "pairs", "anchors" },
             .labels = &.{ "Dwindle", "Master", "Grid", "Monocle", "Spiral", "Scrolling", "Floating", "Canvas", "Side Shelves", "Islands", "Lanes", "Accordion", "Workbench", "Pairs", "Anchors" },
+            .descs = &.{
+                "Each new window splits the focused tile in two.",
+                "A master area beside a stack of the other windows.",
+                "Every window an equal cell of a grid.",
+                "One window fills the screen; the others wait behind it.",
+                "Each window takes half of the last one's space, turning inward.",
+                "Columns on a strip that scrolls past the screen edge.",
+                "Windows keep the size and place you give them.",
+                "A desk larger than the screen: windows keep their place and the view pans.",
+                "Floating windows in the middle, live app shelves on both edges.",
+                "Canvas with its windows in a named island, which the first window makes.",
+                "Rows that each scroll sideways, with a camera moving between them.",
+                "One window expanded, the others live previews in side trays.",
+                "A primary window with tools attached to its edges as tabs.",
+                "Two panes side by side, each with its own list of windows.",
+                "Canvas with a window anchored to a corner while the view moves; the first window is anchored.",
+            },
+        } },
+        .{ .layout_params = .{
+            .layout_field = Field.zool_layout_default,
+            .ratio_field = Field.zool_layout_ratio,
+            .master_field = Field.zool_layout_master_count,
+            .axis_field = Field.zool_layout_axis,
         } },
     } },
-    .{ .title = "Dwindle", .subtitle = "Split direction and resizing", .rows = &.{
+    .{ .title = "Dwindle", .subtitle = "Split direction and resizing", .layout_applies = &.{"dwindle"}, .rows = &.{
         .{ .toggle = .{ .label = "Preserve split", .desc = "Keep the split direction when reopening", .field = Field.zool_dwindle_preserve_split } },
         .{ .toggle = .{ .label = "Smart split", .desc = "Split towards the larger half", .field = Field.zool_dwindle_smart_split } },
         .{ .toggle = .{ .label = "Smart resizing", .desc = "Resize the neighbouring window when splitting", .field = Field.zool_dwindle_smart_resizing } },
         .{ .slider = .{ .label = "Force split", .field = Field.zool_dwindle_force_split, .min = 0, .max = 2, .unit = "" } },
         .{ .slider = .{ .label = "Split width bias", .field = Field.zool_dwindle_split_width_multiplier, .min = 1, .max = 40, .unit = "×" } },
     } },
-    .{ .title = "Spatial Layouts", .subtitle = "Floating canvas, shelves and snapping", .rows = &.{
+    .{ .title = "Spatial Layouts", .subtitle = "Floating canvas, shelves and snapping", .layout_applies = &.{ "canvas", "shelves", "islands", "lanes", "accordion", "workbench", "pairs", "anchors" }, .rows = &.{
         .{ .slider = .{ .label = "Fallback width", .field = Field.zool_spatial_fallback_width, .min = 200, .max = 1000, .unit = "" } },
         .{ .slider = .{ .label = "Fallback height", .field = Field.zool_spatial_fallback_height, .min = 200, .max = 1000, .unit = "" } },
         .{ .slider = .{ .label = "Width cap", .field = Field.zool_spatial_width_cap, .min = 0, .max = 16384, .unit = "px" } },
@@ -195,13 +221,30 @@ pub const layouts = [_]Card{
         .{ .slider = .{ .label = "Reveal margin", .field = Field.zool_spatial_reveal_margin, .min = 0, .max = 200, .unit = "px" } },
         .{ .slider = .{ .label = "Pan fingers", .field = Field.zool_spatial_pan_fingers, .min = 0, .max = 5, .unit = "" } },
     } },
-    .{ .title = "Scrolling", .subtitle = "Column widths cycled by the scrolling layout", .rows = &.{
+    .{ .title = "Scrolling", .subtitle = "Column widths cycled by the scrolling layout", .layout_applies = &.{"scrolling"}, .rows = &.{
         .{ .text = .{ .label = "Column width presets", .desc = "Screen shares, comma separated, rising", .field = Field.zool_scrolling_width_presets, .placeholder = "0.333, 0.667, 1" } },
     } },
     .{ .title = "Overview", .subtitle = "Workspace overview direction and size", .rows = &.{
         .{ .combo = .{ .label = "Axis", .field = Field.zool_overview_axis, .options = &.{ "vertical", "horizontal" }, .labels = &.{ "Vertical", "Horizontal" } } },
         .{ .combo = .{ .label = "Rail", .field = Field.zool_overview_rail, .options = &.{ "bottom", "top" }, .labels = &.{ "Bottom", "Top" } } },
         .{ .slider = .{ .label = "Size", .field = Field.zool_overview_scale, .min = 20, .max = 125, .unit = "%" } },
+    } },
+    .{ .title = "Workspace Gestures", .subtitle = "Touchpad swipes between workspaces", .rows = &.{
+        .{ .toggle = .{ .label = "Workspace swipe", .desc = "Three-finger swipes move between workspaces", .field = Field.zool_workspace_gesture_enabled } },
+        .{ .slider = .{ .label = "Swipe fingers", .desc = "How many fingers a workspace swipe needs", .field = Field.zool_workspace_gesture_fingers, .min = 2, .max = 10, .unit = "" } },
+    } },
+};
+
+/// --- Sound (`set_bell_sound`) ---
+pub const sound = [_]Card{
+    .{ .title = "Bell", .subtitle = "The cue the system bell plays", .rows = &.{
+        .{ .combo = .{
+            .label = "Sound",
+            .desc = "Empty and default are read as none and error",
+            .field = Field.zool_bell_sound,
+            .options = &.{ "chime", "sparkle", "droplet", "bloom", "whisper", "tick", "press", "release", "toggle", "success", "error", "page", "loading", "ready", "pulse", "scan", "arrival", "none" },
+            .labels = &.{ "Chime", "Sparkle", "Droplet", "Bloom", "Whisper", "Tick", "Press", "Release", "Toggle", "Success", "Error", "Page", "Loading", "Ready", "Pulse", "Scan", "Arrival", "None" },
+        } },
     } },
 };
 
@@ -219,6 +262,7 @@ test "zoolander-rows: every page has cards" {
     const sets = [_][]const Card{
         &keyboard,   &pointer,     &windows, &effects,
         &animations, &decorations, &layouts, &xwayland,
+        &sound,
     };
     try t.expectEqual(page.sections.len, sets.len);
     for (sets) |cards| try t.expect(cards.len > 0);

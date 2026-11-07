@@ -39,10 +39,16 @@ pub fn indicatorCenterY(y: f64, h: f64, lift: f64) f64 {
 }
 
 /// Themed-icon candidates per widget kind, most specific first. The caller
-/// should always fall back to the widget token itself afterwards.
-pub fn iconCandidates(kind: Kind) []const []const u8 {
+/// should always fall back to the widget token itself afterwards. `dark` is
+/// the active chrome darkness; the Settings artwork deliberately contrasts
+/// with it — the light plate on a dark chrome and the dark plate on a light
+/// chrome (`src/resources/icons/settings-1-sliders-{dark,light}.svg`).
+pub fn iconCandidates(kind: Kind, dark: bool) []const []const u8 {
     return switch (kind) {
-        .settings => &.{ "event-horizon-settings", "preferences-system", "settings" },
+        .settings => if (dark)
+            &.{ "event-horizon-settings-1-sliders-light", "event-horizon-settings", "preferences-system", "settings" }
+        else
+            &.{ "event-horizon-settings-1-sliders-dark", "event-horizon-settings", "preferences-system", "settings" },
         // The Audio Center ships its own art (`event-horizon-audio-center`,
         // installed from `src/resources/icons/audio-center.svg`); the mixer
         // names keep a themed icon on screen when that install is missing.
@@ -580,9 +586,14 @@ test "widgets-paint: clock font tracks the icon" {
 test "widgets-paint: icon candidates cover the structural widgets" {
     const t = std.testing;
     for ([_]Kind{ .settings, .trash, .smenu, .bluetooth, .volume_mixer, .overview, .weather }) |k| {
-        try t.expect(iconCandidates(k).len > 0);
+        try t.expect(iconCandidates(k, true).len > 0);
+        try t.expect(iconCandidates(k, false).len > 0);
     }
-    try t.expectEqual(@as(usize, 0), iconCandidates(.app).len);
+    try t.expectEqual(@as(usize, 0), iconCandidates(.app, true).len);
+    // Settings wears the contrasting plate before falling back: light art on
+    // dark chrome, dark art on light chrome.
+    try t.expectEqualStrings("event-horizon-settings-1-sliders-light", iconCandidates(.settings, true)[0]);
+    try t.expectEqualStrings("event-horizon-settings-1-sliders-dark", iconCandidates(.settings, false)[0]);
 }
 
 test "widgets-paint: the generic pill and the widget pill are byte-identical" {

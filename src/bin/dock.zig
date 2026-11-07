@@ -2285,6 +2285,10 @@ const Dock = struct {
         h.update(std.mem.asBytes(&px));
         const theme: []const u8 = if (cfg.dock.icon_theme.len > 0) cfg.dock.icon_theme else "hicolor";
         h.update(theme);
+        // Settings swaps light/dark artwork with the chrome, so a theme flip
+        // must invalidate the resolved pixels like a theme-name change does.
+        const dark: u8 = if (chrome_colors.isDark(chrome_colors.of(cfg))) 1 else 0;
+        h.update(&.{dark});
         return h.final();
     }
 
@@ -3345,7 +3349,7 @@ const Dock = struct {
                 n += 1;
             }
         } else {
-            for (dwp.iconCandidates(s.kind)) |cand| {
+            for (dwp.iconCandidates(s.kind, chrome_colors.isDark(chrome_colors.of(&self.app.loaded.cfg)))) |cand| {
                 if (n >= names.len) break;
                 names[n] = cand;
                 n += 1;
@@ -4019,14 +4023,14 @@ const Dock = struct {
                 if (d.icon) |*ic| ic.tint = chrome.accent;
             }
             if (s.kind == .settings) {
-                // The settings button draws the vendored Lucide gear, not
-                // whatever the icon theme happens to call `preferences-system`
-                // — themed glyphs for this one disagree wildly between themes
-                // (a cog, a wrench-and-cog, a face), and the dock's own
-                // identity is the Lucide set (`assets/UI/LICENSE-lucide.txt`).
-                // `rail_settings` shares the kind and picks the panel-left
-                // rail glyph below.
-                d.icon = null;
+                // Settings wears its own light/dark slider artwork
+                // (`src/resources/icons/settings-1-sliders-{dark,light}.svg`,
+                // resolved by `dwp.iconCandidates` above). The Lucide gear is
+                // only the fallback when that icon is not installed —
+                // `rail_settings` shares the kind and artwork.
+                if (d.icon) |ic| {
+                    if (ic.pixels.len == 0) d.icon = null;
+                }
             }
             const has_icon = if (d.icon) |ic| ic.pixels.len > 0 else false;
             if (i == self.clock_slot and self.label.len > 0) {

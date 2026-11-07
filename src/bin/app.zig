@@ -18,7 +18,7 @@ pub const App = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     loaded: config.Loaded,
-    conn: wl_conn.Connection,
+    conn: *wl_conn.Connection,
     bound: wl_conn.Connection.Bound,
     loop: wl_loop.Loop,
     /// Owned copies of the ambient XDG paths, kept for reloads.
@@ -55,8 +55,17 @@ pub const App = struct {
         errdefer palette.deinit();
         palette.run(&loaded.cfg);
 
-        var conn = wl_conn.Connection.init(gpa);
-        errdefer conn.deinit();
+        // The registry listener stores this address as its callback data, so
+        // the Connection must outlive all struct copies. `App` is returned by
+        // value; a stack-local Connection here would leave the listener's data
+        // pointer dangling after init returns, and the first global_remove
+        // (unplugging a monitor) would crash.
+        const conn = try gpa.create(wl_conn.Connection);
+        conn.* = wl_conn.Connection.init(gpa);
+        errdefer {
+            conn.deinit();
+            gpa.destroy(conn);
+        }
         if (!conn.connect(null)) return error.NoDisplay;
         var app = App{
             .gpa = gpa,
@@ -155,6 +164,7 @@ pub const App = struct {
         self.conn.freeBound(&self.bound);
         self.loop.deinit();
         self.conn.deinit();
+        self.gpa.destroy(self.conn);
         self.loaded.deinit();
         self.palette.deinit();
         freeOrNull(self.gpa, self.xdg_config);
