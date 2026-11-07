@@ -25,6 +25,9 @@ const wallpaper_tab = @import("wallpaper_tab.zig");
 const wallpaper_persist = @import("wallpaper_persist.zig");
 const bing_tab = @import("bing_tab.zig");
 const icons_themes_tab = @import("icons_themes_tab.zig");
+const themes_tab = @import("themes_tab.zig");
+const color_themes_tab = @import("color_themes_tab.zig");
+const theme_data = @import("theme_data.zig");
 const bluetooth_tab = @import("bluetooth_tab.zig");
 const sound_tab = @import("sound_tab.zig");
 const network_tab = @import("network_tab.zig");
@@ -213,6 +216,11 @@ pub const Win = struct {
     /// The Icons tab's page. Owns the theme list, the preview cache and the
     /// Apply/Cancel backup; `Content.icons` borrows it while tab 44 is up.
     icons: icons_themes_tab.Page = .{},
+    themes: themes_tab.Page = .{},
+    /// The Color Themes tab's page. Owns the user-theme scan; `Content`
+    /// borrows it while tab 50 is up. The window applies picks to `Settings`
+    /// and persists the `[appearance]` keys.
+    color_themes: color_themes_tab.Page = .{},
     /// The Desktop Widgets tab's page. Owns its config/popup arenas plus
     /// the display-dropdown and world-clock session state; `Content.dwt`
     /// borrows it while tab 27 is up.
@@ -297,6 +305,12 @@ pub const Win = struct {
         // need the allocator and io, nothing else from the window.
         self.icons.init(self.gpa, self.io);
         self.content.icons = &self.icons;
+        // Themes page: file-backed toolkit lists, preview caches and the
+        // pending/backup sets all ride the allocator + io.
+        self.themes.init(self.gpa, self.io);
+        self.content.themes = &self.themes;
+        self.color_themes.init(self.gpa, self.io);
+        self.content.color_themes = &self.color_themes;
         // Bluetooth page: same deal — it queries BlueZ on init (throttled
         // thereafter) and needs the allocator + io for its memory file.
         self.bt.init(self.gpa, self.io);
@@ -483,6 +497,8 @@ pub const Win = struct {
     pub fn deinit(self: *Win) void {
         if (self.timer_fd >= 0) _ = linux.close(self.timer_fd);
         self.icons.deinit();
+        self.themes.deinit();
+        self.color_themes.deinit();
         self.bt.deinit();
         self.snd.deinit();
         self.net.deinit();
@@ -702,7 +718,8 @@ pub const Win = struct {
     fn flushAppearanceTab(self: *Win) void {
         const tab = self.content.active_tab;
         if (tab != kAppearanceTab and tab != kAppearanceOpacityTab and
-            tab != kAppearanceColorTab and tab != kAppearanceTemplatesTab) return;
+            tab != kAppearanceColorTab and tab != kAppearanceTemplatesTab and
+            tab != app_mod.TabId.color_themes) return;
         const state = self.state_dir orelse return;
         appearance_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
             logz.err("settings: appearance settings save failed: {s}", .{@errorName(e)});
@@ -1199,6 +1216,78 @@ pub const Win = struct {
         self.repaint();
     }
 
+    /// One Color Themes press. The page resolved the geometry; this applies
+    /// it to `Settings` and writes `[appearance]`, exactly like the C++
+    /// `settings_color_themes_consume_pointer_down` + `save_settings` pair.
+    fn onColorThemesAction(self: *Win, act: color_themes_tab.Action) void {
+        switch (act) {
+            .mode => |m| switch (m) {
+                .matugen => {
+                    self.settings.matugen_enabled = true;
+                    self.settings.horizon_native = false;
+                    self.settings.color_theme_enabled = false;
+                },
+                .color_engine => {
+                    self.settings.matugen_enabled = false;
+                    self.settings.horizon_native = true;
+                    self.settings.color_theme_enabled = false;
+                },
+                .custom => {
+                    self.settings.color_theme_enabled = true;
+                    self.settings.matugen_enabled = false;
+                    self.settings.horizon_native = false;
+                },
+            },
+            .pick_preset => |i| {
+                const preset = self.color_themes.presetAt(i) orelse return;
+                // Generated preset strings are static, so the settings slice
+                // can borrow them for the window's lifetime.
+                self.settings.color_theme_name = preset.name;
+                self.settings.color_theme_source = preset.source;
+                self.settings.matugen_enabled = false;
+                applyThemePalette(&self.settings, preset.palette);
+            },
+            .pick_user => |i| {
+                const ut = self.color_themes.userAt(i) orelse return;
+                if (self.str_arena) |*arena| {
+                    const a = arena.allocator();
+                    self.settings.color_theme_name = a.dupe(u8, ut.name) catch self.settings.color_theme_name;
+                    self.settings.color_theme_source = a.dupe(u8, ut.source) catch self.settings.color_theme_source;
+                } else {
+                    self.settings.color_theme_name = ut.name;
+                    self.settings.color_theme_source = ut.source;
+                }
+                self.settings.matugen_enabled = false;
+                applyThemePalette(&self.settings, ut.palette);
+            },
+        }
+        self.flushAppearanceTab();
+        self.content.relayout();
+        self.repaint();
+    }
+
+    /// Copy every palette role into the matching `Settings` triples. The C++
+    /// `apply_theme_to_app` does the same flattening; keeping it in one
+    /// place means a new role cannot be missed by a pick path.
+    fn applyThemePalette(s: *app_mod.Settings, p: theme_data.Palette) void {
+        s.theme_primary = p.primary;
+        s.theme_on_primary = p.on_primary;
+        s.theme_secondary = p.secondary;
+        s.theme_on_secondary = p.on_secondary;
+        s.theme_tertiary = p.tertiary;
+        s.theme_on_tertiary = p.on_tertiary;
+        s.theme_error = p.err;
+        s.theme_on_error = p.on_error;
+        s.theme_surface = p.surface;
+        s.theme_on_surface = p.on_surface;
+        s.theme_surface_variant = p.surface_variant;
+        s.theme_on_surface_variant = p.on_surface_variant;
+        s.theme_outline = p.outline;
+        s.theme_shadow = p.shadow;
+        s.theme_hover = p.hover;
+        s.theme_on_hover = p.on_hover;
+    }
+
     fn setAudioEntry(entries: []section_store.Entry, n: *usize, key: []const u8, value: []const u8) void {
         if (n.* >= entries.len) return;
         entries[n.*] = .{ .key = key, .value = value };
@@ -1673,6 +1762,14 @@ pub const Win = struct {
         // while tab 44 is current, sub-tab clicks included.
         if (self.content.active_tab == icons_themes_tab.tab_id) {
             self.icons.resetSession();
+        }
+        // Same rule for the Themes page: preview caches and pending/backup
+        // sets are session state and do not survive a tab change.
+        if (self.content.active_tab == themes_tab.tab_id) {
+            self.themes.resetSession();
+        }
+        if (self.content.active_tab == color_themes_tab.tab_id) {
+            self.color_themes.resetSession();
         }
         self.picker = null;
         // Leaving a page commits a focused inline text band, like Enter.
@@ -2267,6 +2364,13 @@ pub const Win = struct {
             self.repaint();
             return;
         }
+        // Themes cursor-size slider: session-only, so the drag just repaints.
+        if (self.content.themesPage() != null and
+            self.themes.dragMotion(self.content.themesGeo(), self.content.pointer_x))
+        {
+            self.repaint();
+            return;
+        }
         if (self.content.drag) |d| {
             if (self.content.applyHit(.{ .slider = d }, x)) {
                 self.flushDockLive();
@@ -2310,6 +2414,12 @@ pub const Win = struct {
             // Sound slider release: land the final volume write and let the
             // live snapshot resume.
             if (self.snd.endDrag()) {
+                self.repaint();
+                return;
+            }
+            // Themes cursor-size slider release: disarm the drag; the value
+            // only lands on Apply, like the other page-session picks.
+            if (self.themes.endDrag()) {
                 self.repaint();
                 return;
             }
@@ -2733,6 +2843,18 @@ pub const Win = struct {
             },
             .icons => |act| {
                 self.onIconsAction(act);
+                return;
+            },
+            .themes => |act| {
+                // The page owns every pending/backup value and runs the
+                // toolkit writes itself; the window only repaints.
+                self.themes.handle(act);
+                self.content.relayout();
+                self.repaint();
+                return;
+            },
+            .color_themes => |act| {
+                self.onColorThemesAction(act);
                 return;
             },
             .desktop_widgets => |act| {

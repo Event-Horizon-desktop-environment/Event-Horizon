@@ -65,16 +65,43 @@ const max_visible: usize = 9;
 const thumb_px: f64 = 40.0;
 const max_thumbs: usize = 32;
 
-// Fixed dark palette. Theme integration (chrome colors from the wallpaper
-// palette) is deliberately out of scope for the first cut; the card reads
-// like the shell's other popups and the constants sit in one place.
+// Picker palette. Filled from `derived_chrome_colors` at startup, so the
+// card follows the same custom theme / wallpaper palette as every other
+// shell popup; the defaults are the M3 dark fallbacks used when no config
+// can be read.
+const Pal = struct {
+    card: [4]f64 = .{ 0.086, 0.090, 0.106, 0.98 },
+    border: [4]f64 = .{ 1, 1, 1, 0.07 },
+    text: [4]f64 = .{ 0.90, 0.91, 0.93, 1 },
+    dim: [4]f64 = .{ 0.58, 0.60, 0.66, 1 },
+    accent: [4]f64 = .{ 0.48, 0.64, 0.97, 0.24 },
+    hover: [4]f64 = .{ 1, 1, 1, 0.06 },
+};
+
 const col_backdrop = [4]f64{ 0, 0, 0, 0.35 };
-const col_card = [4]f64{ 0.086, 0.090, 0.106, 0.98 };
-const col_border = [4]f64{ 1, 1, 1, 0.07 };
-const col_text = [4]f64{ 0.90, 0.91, 0.93, 1 };
-const col_dim = [4]f64{ 0.58, 0.60, 0.66, 1 };
-const col_accent = [4]f64{ 0.48, 0.64, 0.97, 0.24 };
-const col_hover = [4]f64{ 1, 1, 1, 0.06 };
+
+/// Resolve the picker palette from the layered config. Best-effort: a
+/// missing/broken config leaves the dark defaults, and the picker still
+/// opens. `chrome_colors.of` is the same resolver the dock, panel and
+/// notification popups paint with (custom > horizon > matugen > default).
+fn loadPalette(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) Pal {
+    var loaded = eh.config.loadStacked(
+        alloc,
+        io,
+        environ.get("XDG_CONFIG_HOME"),
+        environ.get("HOME"),
+    ) catch return .{};
+    defer loaded.deinit();
+    const c = eh.widget_chrome_colors.of(&loaded.cfg);
+    return .{
+        .card = .{ c.dock_fill.r, c.dock_fill.g, c.dock_fill.b, 0.98 },
+        .border = .{ c.outline.r, c.outline.g, c.outline.b, 0.28 },
+        .text = .{ c.text.r, c.text.g, c.text.b, 1 },
+        .dim = .{ c.text.r, c.text.g, c.text.b, 0.58 },
+        .accent = .{ c.accent.r, c.accent.g, c.accent.b, 0.24 },
+        .hover = .{ c.text.r, c.text.g, c.text.b, 0.07 },
+    };
+}
 
 fn wallMs() i64 {
     var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
@@ -125,6 +152,8 @@ const P = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     home: ?[]const u8,
+    /// Theme palette resolved once at startup from the layered config.
+    pal: Pal = .{},
     conn: *eh.wl_conn.Connection,
     bound: *eh.wl_conn.Connection.Bound,
     display: *wl.wl_display,
@@ -368,20 +397,20 @@ fn draw(p: *P, cr: ?*cairo.cairo_t) void {
     cairo.cairo_set_source_rgba(c, 0, 0, 0, 0.45);
     eh.cairo_helpers.roundedRect(c, lay.card_x, lay.card_y + 10.0, lay.card_w, lay.card_h, 16.0);
     cairo.cairo_fill(c);
-    cairo.cairo_set_source_rgba(c, col_card[0], col_card[1], col_card[2], col_card[3]);
+    cairo.cairo_set_source_rgba(c, p.pal.card[0], p.pal.card[1], p.pal.card[2], p.pal.card[3]);
     eh.cairo_helpers.roundedRect(c, lay.card_x, lay.card_y, lay.card_w, lay.card_h, 16.0);
     cairo.cairo_fill(c);
-    cairo.cairo_set_source_rgba(c, col_border[0], col_border[1], col_border[2], col_border[3]);
+    cairo.cairo_set_source_rgba(c, p.pal.border[0], p.pal.border[1], p.pal.border[2], p.pal.border[3]);
     eh.cairo_helpers.roundedRect(c, lay.card_x + 0.5, lay.card_y + 0.5, lay.card_w - 1.0, lay.card_h - 1.0, 16.0);
     cairo.cairo_set_line_width(c, 1.0);
     cairo.cairo_stroke(c);
 
     // Header: title, right side the live filter (or a hint).
-    drawTextCentered(cr, 16, lay.card_x + 20.0, lay.card_y + header_h / 2.0, lay.card_w - 380.0, col_text, "Clipboard history");
+    drawTextCentered(cr, 16, lay.card_x + 20.0, lay.card_y + header_h / 2.0, lay.card_w - 380.0, p.pal.text, "Clipboard history");
     if (p.model.query.items.len > 0) {
-        drawTextCentered(cr, 14, lay.card_x + lay.card_w - 20.0 - 300.0, lay.card_y + header_h / 2.0, 300.0, col_text, p.model.query.items);
+        drawTextCentered(cr, 14, lay.card_x + lay.card_w - 20.0 - 300.0, lay.card_y + header_h / 2.0, 300.0, p.pal.text, p.model.query.items);
     } else {
-        drawTextCentered(cr, 14, lay.card_x + lay.card_w - 20.0 - 300.0, lay.card_y + header_h / 2.0, 300.0, col_dim, "type to filter");
+        drawTextCentered(cr, 14, lay.card_x + lay.card_w - 20.0 - 300.0, lay.card_y + header_h / 2.0, 300.0, p.pal.dim, "type to filter");
     }
 
     // Rows.
@@ -393,11 +422,11 @@ fn draw(p: *P, cr: ?*cairo.cairo_t) void {
         const hovered = p.hover != null and p.hover.? == i;
         const inset: f64 = 8.0;
         if (selected) {
-            cairo.cairo_set_source_rgba(c, col_accent[0], col_accent[1], col_accent[2], col_accent[3]);
+            cairo.cairo_set_source_rgba(c, p.pal.accent[0], p.pal.accent[1], p.pal.accent[2], p.pal.accent[3]);
             eh.cairo_helpers.roundedRect(c, lay.card_x + inset, y + 2.0, lay.card_w - inset * 2.0, row_h - 4.0, 8.0);
             cairo.cairo_fill(c);
         } else if (hovered) {
-            cairo.cairo_set_source_rgba(c, col_hover[0], col_hover[1], col_hover[2], col_hover[3]);
+            cairo.cairo_set_source_rgba(c, p.pal.hover[0], p.pal.hover[1], p.pal.hover[2], p.pal.hover[3]);
             eh.cairo_helpers.roundedRect(c, lay.card_x + inset, y + 2.0, lay.card_w - inset * 2.0, row_h - 4.0, 8.0);
             cairo.cairo_fill(c);
         }
@@ -422,12 +451,12 @@ fn draw(p: *P, cr: ?*cairo.cairo_t) void {
         cairo.cairo_save(c);
         cairo.cairo_rectangle(c, lay.card_x + inset, y, lay.card_w - inset * 2.0, row_h);
         cairo.cairo_clip(c);
-        drawTextCentered(cr, 14, text_x, y + row_h / 2.0, text_w, if (selected) col_text else col_dim, row.label);
+        drawTextCentered(cr, 14, text_x, y + row_h / 2.0, text_w, if (selected) p.pal.text else p.pal.dim, row.label);
         cairo.cairo_restore(c);
     }
 
     if (p.model.count() == 0) {
-        drawTextCentered(cr, 14, lay.card_x + 20.0, lay.list_y + row_h / 2.0, lay.card_w - 40.0, col_dim, "No clipboard history yet");
+        drawTextCentered(cr, 14, lay.card_x + 20.0, lay.list_y + row_h / 2.0, lay.card_w - 40.0, p.pal.dim, "No clipboard history yet");
     }
 
     // Footer: key hints left, count right.
@@ -436,10 +465,10 @@ fn draw(p: *P, cr: ?*cairo.cairo_t) void {
     else
         "Enter copy · Ctrl+S save · Del remove · Ctrl+Del wipe · Esc close";
     const footer_center = lay.card_y + lay.card_h - footer_h / 2.0;
-    drawTextCentered(cr, 12, lay.card_x + 20.0, footer_center, lay.card_w - 160.0, col_dim, hint);
+    drawTextCentered(cr, 12, lay.card_x + 20.0, footer_center, lay.card_w - 160.0, p.pal.dim, hint);
     var cbuf: [32]u8 = undefined;
     const count_text = std.fmt.bufPrint(&cbuf, "{d} of {d}", .{ p.model.count(), p.model.rows.items.len }) catch "";
-    drawTextCentered(cr, 12, lay.card_x + lay.card_w - 110.0, footer_center, 90.0, col_dim, count_text);
+    drawTextCentered(cr, 12, lay.card_x + lay.card_w - 110.0, footer_center, 90.0, p.pal.dim, count_text);
 }
 
 fn paintThumb(cr: ?*cairo.cairo_t, cover: *const eh.mpris_art.Cover, x: f64, y: f64, box: f64) void {
@@ -857,6 +886,7 @@ pub fn main(init: std.process.Init) !u8 {
         .gpa = gpa,
         .io = io,
         .home = init.environ_map.get("HOME"),
+        .pal = loadPalette(gpa, io, init.environ_map),
         .conn = &conn,
         .bound = &bound,
         .display = display,

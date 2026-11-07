@@ -119,6 +119,12 @@ pub const Draw = struct {
     /// Grid colour — palette accent when a palette is driving the bar, plain
     /// white otherwise.
     dot_rgb: tokens.Rgb = .{ .r = 1.0, .g = 1.0, .b = 1.0 },
+    /// Text/icon colour. Callers hand in `chrome.text` so labels and Lucide
+    /// fallbacks follow the active theme (a light custom theme needs dark
+    /// text, which the static token can never provide).
+    text_rgb: tokens.Rgb = tokens.Tokens.text,
+    /// Accent for the fallback letter badge. Callers hand in `chrome.accent`.
+    accent_rgb: tokens.Rgb = tokens.Tokens.accent,
     /// A Lucide SVG glyph to draw when the slot has no raster icon. The
     /// widget slots that identify themselves by a shape — control centre,
     /// start menu, media — use these instead of falling back to a bare
@@ -262,7 +268,7 @@ fn blitIcon(c: ?*cairo.cairo_t, icon: IconPx, x: f64, y: f64, w: f64, h: f64) vo
     cairo.cairo_restore(cr);
 }
 
-fn drawLabel(c: ?*cairo.cairo_t, text: []const u8, font_px: f64, x: f64, y: f64, w: f64, h: f64) void {
+fn drawLabel(c: ?*cairo.cairo_t, text: []const u8, font_px: f64, x: f64, y: f64, w: f64, h: f64, col: tokens.Rgb) void {
     const cr = c orelse return;
     var buf: [64]u8 = undefined;
     const fd = std.fmt.bufPrint(&buf, "Inter {d}", .{@as(i32, @intFromFloat(font_px))}) catch return;
@@ -273,7 +279,7 @@ fn drawLabel(c: ?*cairo.cairo_t, text: []const u8, font_px: f64, x: f64, y: f64,
     const size = l.pixelSize();
     const tx = x + (w - @as(f64, @floatFromInt(size.w))) * 0.5;
     const ty = y + (h - @as(f64, @floatFromInt(size.h))) * 0.5;
-    cairo.cairo_set_source_rgba(cr, tokens.Tokens.text.r, tokens.Tokens.text.g, tokens.Tokens.text.b, 0.95);
+    cairo.cairo_set_source_rgba(cr, col.r, col.g, col.b, 0.95);
     cairo.cairo_move_to(cr, tx, ty);
     l.show(cr);
 }
@@ -471,7 +477,7 @@ fn drawContent(c: ?*cairo.cairo_t, x: f64, y: f64, w: f64, h: f64, icon_px: f64,
     }
     if (d.label) |txt| {
         if (txt.len > 0) {
-            drawLabel(cr, txt, clockFontPx(icon_px), x, y, w, h);
+            drawLabel(cr, txt, clockFontPx(icon_px), x, y, w, h, d.text_rgb);
             return;
         }
     }
@@ -516,7 +522,7 @@ fn drawContent(c: ?*cairo.cairo_t, x: f64, y: f64, w: f64, h: f64, icon_px: f64,
         // the shell no longer ships or loads the Material Symbols font, so
         // an unmapped name would simply draw nothing.
         const box = @min(iconAvail(d.kind, icon_px), @min(w, h));
-        const fg = tokens.Tokens.text;
+        const fg = d.text_rgb;
         if (svg_icons.draw(cr, d.lucide, x + w * 0.5, y + h * 0.5, box, fg.r, fg.g, fg.b, 0.95, false)) return;
     }
     if (d.letter) |ch| {
@@ -525,9 +531,9 @@ fn drawContent(c: ?*cairo.cairo_t, x: f64, y: f64, w: f64, h: f64, icon_px: f64,
             const bx = x + (w - box) * 0.5;
             const by = y + (h - box) * 0.5;
             cairo_helpers.roundedRect(cr, bx, by, box, box, 12.0);
-            cairo.cairo_set_source_rgba(cr, tokens.Tokens.accent.r, tokens.Tokens.accent.g, tokens.Tokens.accent.b, 0.14);
+            cairo.cairo_set_source_rgba(cr, d.accent_rgb.r, d.accent_rgb.g, d.accent_rgb.b, 0.14);
             cairo.cairo_fill(cr);
-            drawLabel(cr, ch, clockFontPx(box), bx, by, box, box);
+            drawLabel(cr, ch, clockFontPx(box), bx, by, box, box, d.text_rgb);
             return;
         }
     }
@@ -736,8 +742,8 @@ test "widgets-paint: only full-bleed art is framed" {
     // Clear the eight probe pixels — the shape of art that carries its own
     // silhouette (a circle, a logo with margins) — and the frame stays off.
     const probe = [_][2]usize{
-        .{ 2, 2 },  .{ 13, 2 }, .{ 2, 13 }, .{ 13, 13 },
-        .{ 4, 4 },  .{ 11, 4 }, .{ 4, 11 }, .{ 11, 11 },
+        .{ 2, 2 }, .{ 13, 2 }, .{ 2, 13 }, .{ 13, 13 },
+        .{ 4, 4 }, .{ 11, 4 }, .{ 4, 11 }, .{ 11, 11 },
     };
     for (probe) |pt| {
         const i = (pt[1] * 16 + pt[0]) * 4;

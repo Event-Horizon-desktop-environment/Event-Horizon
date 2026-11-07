@@ -362,12 +362,26 @@ pub const Settings = struct {
     horizon_native: bool = true,
     color_theme_enabled: bool = false,
     color_theme_name: []const u8 = "",
-    /// Custom-theme RGB triples feeding `resolveColors` (defaults mirror
-    /// settings types).
+    color_theme_source: []const u8 = "",
+    /// Full 16-role custom palette feeding `resolveColors` and the
+    /// `[appearance] color_theme_*` writer. Defaults mirror the C++
+    /// `ThemePalette` fallback.
     theme_primary: [3]f32 = .{ 0.769, 0.659, 0.941 },
-    theme_on_surface: [3]f32 = .{ 1, 1, 1 },
+    theme_on_primary: [3]f32 = .{ 1, 1, 1 },
+    theme_secondary: [3]f32 = .{ 0.239, 0.125, 0.439 },
+    theme_on_secondary: [3]f32 = .{ 1, 1, 1 },
+    theme_tertiary: [3]f32 = .{ 0.910, 0.522, 0.290 },
+    theme_on_tertiary: [3]f32 = .{ 1, 1, 1 },
+    theme_error: [3]f32 = .{ 0.910, 0.416, 0.353 },
+    theme_on_error: [3]f32 = .{ 1, 1, 1 },
     theme_surface: [3]f32 = .{ 0.102, 0.075, 0.188 },
+    theme_on_surface: [3]f32 = .{ 1, 1, 1 },
+    theme_surface_variant: [3]f32 = .{ 0.133, 0.102, 0.227 },
+    theme_on_surface_variant: [3]f32 = .{ 1, 1, 1 },
     theme_outline: [3]f32 = .{ 0.478, 0.416, 0.588 },
+    theme_shadow: [3]f32 = .{ 0.031, 0.020, 0.063 },
+    theme_hover: [3]f32 = .{ 0.212, 0.165, 0.337 },
+    theme_on_hover: [3]f32 = .{ 1, 1, 1 },
     /// Wallpaper-derived palette payloads, filled by `color/refresh.zig` on
     /// load and wallpaper change. Runtime-only (never persisted).
     horizon_colors_ok: bool = false,

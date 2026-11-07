@@ -255,6 +255,7 @@ test {
     _ = @import("desktop_shell/overview/apps.zig");
     _ = @import("desktop_shell/overview/grid_paint.zig");
     _ = @import("desktop_shell/common/icon_disk.zig");
+    _ = @import("desktop_shell/common/system_theming.zig");
     _ = @import("desktop_shell/dashboard/layout.zig");
     _ = @import("desktop_shell/lockscreen/session.zig");
     _ = @import("wl/color/nightlight.zig");
@@ -503,8 +504,10 @@ test {
     _ = @import("ux/settings2/taskflip_tab.zig");
     _ = @import("ux/settings2/templates_registry.zig");
     _ = @import("ux/settings2/templates_tab.zig");
+    _ = @import("ux/settings2/themes_tab.zig");
     _ = @import("ux/settings2/theme_data.zig");
     _ = @import("ux/settings2/theme_manager.zig");
+    _ = @import("ux/settings2/color_themes_tab.zig");
     _ = @import("ux/settings2/time_tab.zig");
     _ = @import("ux/settings2/ui_content.zig");
     _ = @import("ux/settings2/ui_paint.zig");

@@ -3976,6 +3976,8 @@ const Dock = struct {
                 // the logo slots keep their bare faces, and tray/localised
                 // glyph widgets are not artwork to square off.
                 .frame = cfg.dock.dock_icon_frames and s.kind == .app,
+                .text_rgb = chrome.text,
+                .accent_rgb = chrome.accent,
             };
             d.pill_rgb = pill_rgb;
             d.pill_alpha = pill_alpha;

@@ -144,8 +144,8 @@ pub fn visibleCategory(cat_id: i32) bool {
 }
 
 /// Search-result visibility — `settings_search_entry_visible`:
-/// Mango pages are tabs 20..26, Hyprland sections are 64..78, Zoolander
-/// pages are 86..94.
+/// Mango pages are tabs 20..26, Hyprland sections are 64..78, and the
+/// Zoolander page band comes from `zoolander_page`.
 pub fn visibleTab(tab: i32) bool {
     if (tab >= 20 and tab <= 26) return kind() == .mango;
     if (tab >= 64 and tab <= 78) return kind() == .hyprland;
@@ -172,15 +172,15 @@ test "settings-compositor: category and tab gates behave as specified" {
     // Other categories always visible.
     try t.expect(visibleCategory(12));
     try t.expect(visibleCategory(13));
-    // Search gates: mango pages 20..26, hyprland sections 64..78, Zoolander
-    // pages 86..94, the rest free.
+    // Search gates: mango pages 20..26, hyprland sections 64..78, the
+    // Zoolander page band, the rest free.
     for ([_]i32{ 20, 21, 22, 23, 24, 25, 26 }) |tab| {
         try t.expectEqual(k == .mango, visibleTab(tab));
     }
     for ([_]i32{ 64, 66, 70, 78 }) |tab| {
         try t.expectEqual(k == .hyprland, visibleTab(tab));
     }
-    for ([_]i32{ 86, 88, 90, 94 }) |tab| {
+    for ([_]i32{ zoolander_page.first_tab_id, zoolander_page.first_tab_id + 2, zoolander_page.first_tab_id + 4, zoolander_page.last_tab_id }) |tab| {
         try t.expectEqual(k == .zoolander, visibleTab(tab));
     }
     try t.expect(visibleTab(0));

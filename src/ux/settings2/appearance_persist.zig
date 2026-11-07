@@ -39,6 +39,32 @@ fn unitFromPct(v: i32, design: f64) f64 {
     return (@as(f64, @floatFromInt(c)) / 100.0) / design;
 }
 
+/// The 16 custom-theme roles, in the C++ writer's key order. `settings` is
+/// the `Settings` field, `config` the decoded `cfg.Appearance` field, and
+/// `key` the TOML prefix (`<key>_r/_g/_b`).
+const color_theme_roles = [_]struct {
+    settings: []const u8,
+    config: []const u8,
+    key: []const u8,
+}{
+    .{ .settings = "theme_primary", .config = "custom_primary", .key = "color_theme_primary" },
+    .{ .settings = "theme_on_primary", .config = "custom_on_primary", .key = "color_theme_on_primary" },
+    .{ .settings = "theme_secondary", .config = "custom_secondary", .key = "color_theme_secondary" },
+    .{ .settings = "theme_on_secondary", .config = "custom_on_secondary", .key = "color_theme_on_secondary" },
+    .{ .settings = "theme_tertiary", .config = "custom_tertiary", .key = "color_theme_tertiary" },
+    .{ .settings = "theme_on_tertiary", .config = "custom_on_tertiary", .key = "color_theme_on_tertiary" },
+    .{ .settings = "theme_error", .config = "custom_error", .key = "color_theme_error" },
+    .{ .settings = "theme_on_error", .config = "custom_on_error", .key = "color_theme_on_error" },
+    .{ .settings = "theme_surface", .config = "custom_surface", .key = "color_theme_surface" },
+    .{ .settings = "theme_on_surface", .config = "custom_on_surface", .key = "color_theme_on_surface" },
+    .{ .settings = "theme_surface_variant", .config = "custom_surface_variant", .key = "color_theme_surface_variant" },
+    .{ .settings = "theme_on_surface_variant", .config = "custom_on_surface_variant", .key = "color_theme_on_surface_variant" },
+    .{ .settings = "theme_outline", .config = "custom_outline", .key = "color_theme_outline" },
+    .{ .settings = "theme_shadow", .config = "custom_shadow", .key = "color_theme_shadow" },
+    .{ .settings = "theme_hover", .config = "custom_hover", .key = "color_theme_hover" },
+    .{ .settings = "theme_on_hover", .config = "custom_on_hover", .key = "color_theme_on_hover" },
+};
+
 /// Seed the Launcher + Overview + Appearance cards from a decoded
 /// `[appearance]` section.
 // Covers every launchpad_* key the Launcher child owns, the nine overview_*
@@ -90,6 +116,15 @@ pub fn load(alloc: std.mem.Allocator, s: *app_mod.Settings, a: *const cfg.Appear
     s.horizon_native = a.horizon_colors_native;
     s.matugen_scheme = alloc.dupe(u8, a.matugen_scheme) catch "scheme-content";
     s.matugen_mode = alloc.dupe(u8, a.matugen_mode) catch "dark";
+
+    // Color Themes source + full 16-role palette. The C++ page persists
+    // these under the same `[appearance]` keys this writer round-trips.
+    s.color_theme_enabled = a.custom_theme_enabled;
+    s.color_theme_name = alloc.dupe(u8, a.active_theme_name) catch "";
+    s.color_theme_source = alloc.dupe(u8, a.active_theme_source) catch "";
+    inline for (color_theme_roles) |role| {
+        @field(s, role.settings) = @field(a, role.config);
+    }
 
     // Templates: the base-recipe switch plus the 37 per-app switches. The
     // TOML keys and the UI array are in different orders past index 30 (see
@@ -239,6 +274,20 @@ pub fn appendEntries(
     try out.append(list, .{ .key = "horizon_colors_native", .value = section_store.boolValue(s.horizon_native) });
     try out.append(list, .{ .key = "matugen_scheme", .value = try section_store.stringValue(values, s.matugen_scheme) });
     try out.append(list, .{ .key = "matugen_mode", .value = try section_store.stringValue(values, s.matugen_mode) });
+
+    // Color Themes: the selected source and its full 16-role palette, in the
+    // C++ writer's order. Both settings apps watch this file, so a preset
+    // pick lands here and repaints the live shell.
+    try out.append(list, .{ .key = "color_theme_enabled", .value = section_store.boolValue(s.color_theme_enabled) });
+    try out.append(list, .{ .key = "color_theme_name", .value = try section_store.stringValue(values, s.color_theme_name) });
+    try out.append(list, .{ .key = "color_theme_source", .value = try section_store.stringValue(values, s.color_theme_source) });
+    inline for (color_theme_roles) |role| {
+        const rgb = @field(s, role.settings);
+        inline for ([_][]const u8{ "r", "g", "b" }, 0..) |suffix, i| {
+            const key = try std.fmt.allocPrint(values, "{s}_{s}", .{ role.key, suffix });
+            try out.append(list, .{ .key = key, .value = try section_store.floatValue(values, @floatCast(rgb[i])) });
+        }
+    }
 }
 
 /// The `[appearance.matugen_templates]` sub-table: `run_bundled` plus the 37
@@ -303,8 +352,9 @@ test "appearance-persist: entries carry the launcher, overlay and matugen keys" 
     var entries: std.ArrayList(section_store.Entry) = .empty;
     defer entries.deinit(t.allocator);
     try appendEntries(t.allocator, arena.allocator(), &s, &entries);
-    // 11 launchpad keys + 9 overview keys + 17 overlay keys + 4 matugen keys.
-    try t.expectEqual(@as(usize, 41), entries.items.len);
+    // 11 launchpad keys + 9 overview keys + 17 overlay keys + 4 matugen keys
+    // + 3 color-theme source keys + 48 palette channels.
+    try t.expectEqual(@as(usize, 92), entries.items.len);
     try t.expectEqualStrings("launchpad_grid_columns", entries.items[0].key);
     try t.expectEqualStrings("overview_axis", entries.items[11].key);
     try t.expectEqualStrings("1", entries.items[11].value);
@@ -394,6 +444,11 @@ test "appearance-persist: load maps percents and toggles onto the settings" {
     a.horizon_colors_native = false;
     a.matugen_scheme = "scheme-vibrant";
     a.matugen_mode = "auto";
+    a.custom_theme_enabled = true;
+    a.active_theme_name = "Catppuccin Mocha";
+    a.active_theme_source = "catppuccin";
+    a.custom_primary = .{ 0.1, 0.2, 0.3 };
+    a.custom_on_hover = .{ 0.7, 0.8, 0.9 };
     a.matugen_outputs = .{
         .run_bundled_toml = false,
         .niri = false,
@@ -415,6 +470,11 @@ test "appearance-persist: load maps percents and toggles onto the settings" {
     try t.expect(!s.horizon_native);
     try t.expectEqualStrings("scheme-vibrant", s.matugen_scheme);
     try t.expectEqualStrings("auto", s.matugen_mode);
+    try t.expect(s.color_theme_enabled);
+    try t.expectEqualStrings("Catppuccin Mocha", s.color_theme_name);
+    try t.expectEqualStrings("catppuccin", s.color_theme_source);
+    try t.expectApproxEqAbs(@as(f32, 0.2), s.theme_primary[1], 1e-6);
+    try t.expectApproxEqAbs(@as(f32, 0.9), s.theme_on_hover[2], 1e-6);
     try t.expect(!s.matugen_base_recipes);
     try t.expect(!s.matugen_templates[0]); // Niri
     try t.expect(!s.matugen_templates[31]); // OBS Studio

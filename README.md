@@ -22,7 +22,7 @@ Supported compositors: **Hyprland**, **Niri**, **Sway**, **Mango**, and
 - Linux + Wayland
 - MIT licensed
 
-> **Status:** Zig implementation, version `0.1.0` (see `src/version.zig`).
+> **Status:** Zig implementation, version `0.1.2` (see `src/version.zig`).
 > The old C++/Meson tree has been replaced; the Zig build is the only build.
 
 ## What's included

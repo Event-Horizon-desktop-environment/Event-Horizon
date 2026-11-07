@@ -165,10 +165,11 @@ fn paintCenteredIcon(c: *shm_mod.cairo.cairo_t, icon: dwp.IconPx, x: f64, y: f64
     blitIconPx(c, icon, x + (cell - dest_w) * 0.5, y + (cell - dest_h) * 0.5, avail);
 }
 
-fn drawLucide(c: *shm_mod.cairo.cairo_t, name: []const u8, cx: f64, cy: f64, px: f64) void {
-    const fg = eh.m3_tokens.Tokens.text;
+fn drawLucide(c: *shm_mod.cairo.cairo_t, name: []const u8, cx: f64, cy: f64, px: f64, fg: eh.m3_tokens.Rgb) void {
     // Every name resolves through the vendored Lucide bank; a miss paints
-    // nothing (the shell no longer loads the Material Symbols font).
+    // nothing (the shell no longer loads the Material Symbols font). The
+    // caller hands in the active chrome text colour so a light custom
+    // theme gets dark glyphs instead of the static white token.
     _ = svg_icons.draw(c, name, cx, cy, px, fg.r, fg.g, fg.b, 0.95, false);
 }
 
@@ -2240,7 +2241,14 @@ const Taskbar = struct {
         const c = cr orelse return;
         const alpha: f64 = @as(f64, @floatFromInt(@max(0, @min(100, cfg.taskbar.opacity)))) / 100.0;
         const radius: f64 = @floatFromInt(@max(0, cfg.taskbar.radius));
-        cairo_helpers.paintBar(cr, w, h, radius, alpha);
+        // Same palette fill as the dock and panel. `cairo_helpers.paintBar`
+        // paints the static `Tokens.background`; going through
+        // `chrome_colors.of` is what makes the taskbar itself follow a
+        // custom theme (or the wallpaper palette) instead of staying gray.
+        const mc = chrome.of(cfg);
+        cairo_helpers.roundedRect(c, 0, 0, @floatFromInt(w), @floatFromInt(h), radius);
+        cairo.cairo_set_source_rgba(c, mc.dock_fill.r, mc.dock_fill.g, mc.dock_fill.b, alpha);
+        cairo.cairo_fill(c);
         if (cfg.taskbar.border and cfg.taskbar.border_size > 0) {
             const bw: f64 = @floatFromInt(cfg.taskbar.border_size);
             cairo_helpers.roundedRect(c, bw * 0.5, bw * 0.5, @as(f64, @floatFromInt(w)) - bw, @as(f64, @floatFromInt(h)) - bw, @max(0, radius - bw * 0.5));
@@ -2264,11 +2272,14 @@ const Taskbar = struct {
             self.paintAppSlot(c, slot, idx, x, y, w, h, icon_px, ui, hovered, pressed, lift + press_lift + bounce);
             return;
         }
+        const mc = chrome.of(&self.app.loaded.cfg);
         var d = dwp.Draw{
             .kind = dw.Kind.app,
             .hover = hovered,
             .press = pressed,
             .lift = lift + bounce,
+            .text_rgb = mc.text,
+            .accent_rgb = mc.accent,
             // Same rule as the dock's strip: the arms below paint through
             // `paintSlot`, and exactly the kinds that own a pill get one
             // (smenu, trash, overview, settings, …). App and tray are
@@ -2435,7 +2446,7 @@ const Taskbar = struct {
     }
 
     fn paintSlotLabel(self: *Taskbar, c: *cairo.cairo_t, title: []const u8, x: f64, ty: f64, icon: f64, ui: f64) void {
-        _ = self;
+        const mc = chrome.of(&self.app.loaded.cfg);
         cairo.cairo_select_font_face(c, "Inter", cairo.CAIRO_FONT_SLANT_NORMAL, cairo.CAIRO_FONT_WEIGHT_NORMAL);
         cairo.cairo_set_font_size(c, tb_slots.labelFontPx(ui));
         var tbuf: [512]u8 = undefined;
@@ -2444,7 +2455,7 @@ const Taskbar = struct {
         tbuf[n] = 0;
         var te: cairo.cairo_text_extents_t = std.mem.zeroes(cairo.cairo_text_extents_t);
         cairo.cairo_text_extents(c, @ptrCast(&tbuf), &te);
-        cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.92);
+        cairo.cairo_set_source_rgba(c, mc.text.r, mc.text.g, mc.text.b, 0.92);
         cairo.cairo_move_to(c, x + icon + 6.0 * ui - te.x_bearing, ty + (icon - te.height) / 2.0 - te.y_bearing);
         cairo.cairo_show_text(c, @ptrCast(&tbuf));
     }
@@ -2479,6 +2490,7 @@ const Taskbar = struct {
 
     fn paintWidgetFace(self: *Taskbar, c: *cairo.cairo_t, slot: *const tb_types.PaintSlot, kind: dw.Kind, x: f64, y: f64, w: f64, h: f64, icon_px: f64, hovered: bool, pressed: bool) void {
         const cfg = &self.app.loaded.cfg;
+        const mc = chrome.of(cfg);
         switch (kind) {
             // The faces below own their pill and their content. Their painters
             // take `(hovered, pressed)` and paint no hover feedback of their
@@ -2525,7 +2537,7 @@ const Taskbar = struct {
                 } else {
                     widget_pill.paintPill(c, x, y, w, icon_px);
                     if (hovered) dwp.paintHoverOverlay(c, x, y, w, icon_px);
-                    drawLucide(c, "album", x + w * 0.5, y + icon_px * 0.5, icon_px * 0.5);
+                    drawLucide(c, "album", x + w * 0.5, y + icon_px * 0.5, icon_px * 0.5, mc.text);
                 }
             },
             .workspaces => {
@@ -2537,7 +2549,6 @@ const Taskbar = struct {
                 const ccfg = cc_slot.loadCfg(cfg, slot.key);
                 var buf: [4]cc_slot.Glyph = undefined;
                 const list = cc_slot.glyphs(ccfg, rt, &buf);
-                const mc = chrome.of(cfg);
                 cc_slot.paintSlot(c, x, y, w, icon_px, icon_px, list, .{ .r = mc.dock_fill.r, .g = mc.dock_fill.g, .b = mc.dock_fill.b }, pillAlpha(cfg));
                 if (hovered) dwp.paintHoverOverlay(c, x, y, w, icon_px);
             },
@@ -2548,7 +2559,6 @@ const Taskbar = struct {
                 const pcfg = pear_slot.loadCfg(cfg, slot.key);
                 var buf: [4]pear_slot.Glyph = undefined;
                 const list = pear_slot.glyphs(pcfg, self.pear_rt, &buf);
-                const mc = chrome.of(cfg);
                 pear_slot.paintSlot(c, x, y, w, icon_px, icon_px, list, .{ .r = mc.dock_fill.r, .g = mc.dock_fill.g, .b = mc.dock_fill.b }, pillAlpha(cfg));
                 if (hovered) dwp.paintHoverOverlay(c, x, y, w, icon_px);
             },
@@ -2571,14 +2581,14 @@ const Taskbar = struct {
             .vpn => {
                 widget_pill.paintPill(c, x, y, w, icon_px);
                 if (hovered) dwp.paintHoverOverlay(c, x, y, w, icon_px);
-                drawLucide(c, "vpn_key", x + w * 0.5, y + icon_px * 0.5, icon_px * 0.5);
+                drawLucide(c, "vpn_key", x + w * 0.5, y + icon_px * 0.5, icon_px * 0.5, mc.text);
             },
             .clipstack => {
                 // Same feel as the VPN slot: frosted pill + Lucide glyph.
                 // Click launches the picker overlay (toggle via its lock).
                 widget_pill.paintPill(c, x, y, w, icon_px);
                 if (hovered) dwp.paintHoverOverlay(c, x, y, w, icon_px);
-                drawLucide(c, "content_paste", x + w * 0.5, y + icon_px * 0.5, icon_px * 0.5);
+                drawLucide(c, "content_paste", x + w * 0.5, y + icon_px * 0.5, icon_px * 0.5, mc.text);
             },
             .layout => {
                 // The painter's inline ring is disabled (false, false): the
@@ -2595,7 +2605,14 @@ const Taskbar = struct {
                 if (hovered or self.wc_open) dwp.paintHoverOverlay(c, x, y, w, icon_px);
             },
             else => {
-                var d = dwp.Draw{ .kind = kind, .hover = hovered, .press = pressed, .pill = dw.ownsPill(kind) };
+                var d = dwp.Draw{
+                    .kind = kind,
+                    .hover = hovered,
+                    .press = pressed,
+                    .pill = dw.ownsPill(kind),
+                    .text_rgb = mc.text,
+                    .accent_rgb = mc.accent,
+                };
                 const cands = dwp.iconCandidates(kind);
                 d.lucide = if (cands.len > 0) cands[0] else "circle";
                 dwp.paintSlot(c, x, y, w, h, icon_px, d);

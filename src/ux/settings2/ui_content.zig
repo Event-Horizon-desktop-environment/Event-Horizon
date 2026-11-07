@@ -13,6 +13,8 @@ const mon_page = @import("monitors_page.zig");
 const wallpaper_tab = @import("wallpaper_tab.zig");
 const bing_tab = @import("bing_tab.zig");
 const icons_themes_tab = @import("icons_themes_tab.zig");
+const themes_tab = @import("themes_tab.zig");
+const color_themes_tab = @import("color_themes_tab.zig");
 const desktop_widgets_tab = @import("desktop_widgets_tab.zig");
 const default_apps_tab = @import("default_apps_tab.zig");
 const hyprland_data = @import("hyprland_data.zig");
@@ -274,6 +276,15 @@ pub const Hit = union(enum) {
     /// `applyHit` returns false so the window routes it to
     /// `Win.onIconsAction`, which owns `Settings`.
     icons: icons_themes_tab.Action,
+    /// A Themes-tab press (sub-tab / theme card / Apply / Cancel / Qt scheme
+    /// / cursor size). The page owns its session state and runs the toolkit
+    /// writes itself, so `applyHit` returns false and the window only routes
+    /// to `Win.onThemesAction` for a repaint.
+    themes: themes_tab.Action,
+    /// A Color-Themes-tab press (source pill / preset card / user-theme row).
+    /// The page only resolves geometry; the window mutates `Settings` and
+    /// writes the `[appearance]` color-theme keys.
+    color_themes: color_themes_tab.Action,
     /// A Desktop-Widgets-tab press. Same shape: `applyHit` returns false so
     /// the window routes it to `Win.onDesktopWidgetsAction`.
     desktop_widgets: desktop_widgets_tab.Action,
@@ -371,6 +382,13 @@ pub const Content = struct {
     /// previews plus Apply/Cancel, none of which is a row of controls in a
     /// card list.
     icons: ?*icons_themes_tab.Page = null,
+    /// The Themes tab's page, borrowed from the window (same delegation as
+    /// `icons`): four sub-tabs of theme cards with live application previews
+    /// plus the Qt colour-scheme picker and cursor-size slider.
+    themes: ?*themes_tab.Page = null,
+    /// The Color Themes tab's page, borrowed from the window: the source
+    /// pills, grouped preset roster, user-theme list and active summary.
+    color_themes: ?*color_themes_tab.Page = null,
     /// The Desktop Widgets tab's page, borrowed from the window (same
     /// delegation): a display-output card plus a widget list with
     /// drag grips, toggles, remove buttons and per-row settings cogs.
@@ -597,6 +615,34 @@ pub const Content = struct {
         return self.icons;
     }
 
+    /// The Themes page when it owns this tab, else null. Same single-place
+    /// tab-id check as `iconsPage`.
+    pub fn themesPage(self: *const Content) ?*themes_tab.Page {
+        if (self.themes == null) return null;
+        if (self.active_tab != themes_tab.tab_id) return null;
+        return self.themes;
+    }
+
+    /// The Color Themes page when it owns this tab, else null.
+    pub fn colorThemesPage(self: *const Content) ?*color_themes_tab.Page {
+        if (self.color_themes == null) return null;
+        if (self.active_tab != color_themes_tab.tab_id) return null;
+        return self.color_themes;
+    }
+
+    /// Snapshot of the current source selection for the page. The page paints
+    /// the selected pill and active-theme summary from this, never from a
+    /// back-pointer to `Settings`.
+    pub fn colorThemesView(self: *const Content) color_themes_tab.View {
+        return .{
+            .matugen = self.settings.matugen_enabled,
+            .color_engine = !self.settings.color_theme_enabled and !self.settings.matugen_enabled,
+            .custom = self.settings.color_theme_enabled,
+            .active_name = self.settings.color_theme_name,
+            .active_source = self.settings.color_theme_source,
+        };
+    }
+
     pub fn dwtOutputs(self: *const Content) []const []const u8 {
         return self.dwt_outputs[0..self.dwt_outputs_len];
     }
@@ -667,6 +713,24 @@ pub const Content = struct {
 
     /// Content-column geometry for the Icons page.
     pub fn iconsGeo(self: *const Content) icons_themes_tab.Geo {
+        return .{
+            .content_x = self.content_x,
+            .content_w = self.content_w,
+            .win_h = self.win_h,
+        };
+    }
+
+    /// Content-column geometry for the Themes page.
+    pub fn themesGeo(self: *const Content) themes_tab.Geo {
+        return .{
+            .content_x = self.content_x,
+            .content_w = self.content_w,
+            .win_h = self.win_h,
+        };
+    }
+
+    /// Content-column geometry for the Color Themes page.
+    pub fn colorThemesGeo(self: *const Content) color_themes_tab.Geo {
         return .{
             .content_x = self.content_x,
             .content_w = self.content_w,
@@ -759,6 +823,20 @@ pub const Content = struct {
         if (self.iconsPage()) |ip| {
             self.placed_len = 0;
             self.total_h = ip.totalHeight(self.iconsGeo());
+            return;
+        }
+        // Themes tab: the four-card grids and their controls are the page's
+        // own; its bottom edge is the scroll extent.
+        if (self.themesPage()) |tp| {
+            self.placed_len = 0;
+            self.total_h = tp.totalHeight(self.themesGeo());
+            return;
+        }
+        // Color Themes tab: the mode card, preset groups, user list and
+        // active summary are the page's own; their bottom is the extent.
+        if (self.colorThemesPage()) |cp| {
+            self.placed_len = 0;
+            self.total_h = cp.totalHeight(self.colorThemesGeo(), self.colorThemesView());
             return;
         }
         // Desktop Widgets tab: custom display + list page.
@@ -1120,6 +1198,20 @@ pub const Content = struct {
             }
             return .none;
         }
+        // Themes tab: sub-tab bar, cards, picker, slider, buttons.
+        if (self.themesPage()) |tp| {
+            if (tp.hit(self.themesGeo(), px, self.unscroll(py))) |act| {
+                return .{ .themes = act };
+            }
+            return .none;
+        }
+        // Color Themes tab: source pills, preset cards, user-theme rows.
+        if (self.colorThemesPage()) |cp| {
+            if (cp.hit(self.colorThemesGeo(), px, self.unscroll(py), self.colorThemesView())) |act| {
+                return .{ .color_themes = act };
+            }
+            return .none;
+        }
         // Desktop Widgets tab: display dropdown, rows, add button.
         if (self.dwtPage()) |dp| {
             const outs = self.dwtOutputs();
@@ -1294,6 +1386,7 @@ pub const Content = struct {
                 return true;
             },
             .combo_pick => return false, // window calls selectComboIndex
+            .color_themes => return false,
             .text => |f| {
                 self.beginText(f, 128);
                 return true;
@@ -1354,6 +1447,9 @@ pub const Content = struct {
             // The Icons page holds the theme grid, the preview cache and the
             // backup; the window owns `Settings`, so this routes there too.
             .icons => return false,
+            // The Themes page owns its pending/backup state and runs the
+            // GTK/Qt/cursor/Plasma writes itself; the window only repaints.
+            .themes => return false,
             // The Desktop Widgets page edits the layout file and `Settings`
             // output/disabled state; the window owns both, so this routes
             // there too.
@@ -1729,6 +1825,35 @@ pub const Content = struct {
                 self.pointer_ly,
                 g_ov,
                 self.settings.icon_theme,
+            );
+            cairo_restore(c);
+            return;
+        }
+
+        // Themes tab: likewise paints the whole scrollable region itself —
+        // the sub-tab bar, theme-card grids and their controls.
+        if (self.themesPage()) |tp| {
+            tp.paint(
+                c,
+                self.themesGeo(),
+                self.pointer_x,
+                self.pointer_ly,
+                g_ov,
+            );
+            cairo_restore(c);
+            return;
+        }
+
+        // Color Themes tab: likewise self-painted — source pills, preset
+        // groups, user-theme list and active summary.
+        if (self.colorThemesPage()) |cp| {
+            cp.paint(
+                c,
+                self.colorThemesGeo(),
+                self.pointer_x,
+                self.pointer_ly,
+                g_ov,
+                self.colorThemesView(),
             );
             cairo_restore(c);
             return;

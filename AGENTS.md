@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Event Horizon is a Wayland desktop shell written in Zig 0.16 (version 0.1.0).
+Event Horizon is a Wayland desktop shell written in Zig 0.16 (version 0.1.2).
 It runs as a layer-shell client next to a compositor (Hyprland, Niri, Sway,
 Mango, Labwc) and provides dock, taskbar, desktop, overview, settings,
 notifications, lock screen, wallpaper, clipboard history and audio control.

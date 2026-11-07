@@ -161,9 +161,11 @@ fn writeColorsLua(
         \\
     ,
         .{
-            active1, active2, inactive,
-            active1, active2, inactive, locked, inactive,
-            active1, active2, inactive, locked, inactive,
+            active1,  active2,  inactive,
+            active1,  active2,  inactive,
+            locked,   inactive, active1,
+            active2,  inactive, locked,
+            inactive,
         },
     ) catch return;
     defer alloc.free(content);
@@ -619,14 +621,14 @@ test "hyprland-border: setKey trims trailing <= 0x20 only, then matches ok" {
 
     // Replies in order, one per connection: each must be classified the same way.
     const script = [_][]const u8{
-        "ok\n",        // trailing LF  -> ok
-        "ok\r\n",      // trailing CRLF -> ok
-        "ok  ",        // trailing spaces -> ok
-        "ok\x01",      // trailing byte 0x01 (<= 0x20, outside trim()'s set) -> ok
-        "ok\x00",      // trailing NUL (unsigned char <= ' ') -> ok
-        "  ok",        // leading spaces: never forgiven -> not ok
-        "ok!",         // stray trailing byte -> not ok
-        "okay",        // not equal -> not ok
+        "ok\n", // trailing LF  -> ok
+        "ok\r\n", // trailing CRLF -> ok
+        "ok  ", // trailing spaces -> ok
+        "ok\x01", // trailing byte 0x01 (<= 0x20, outside trim()'s set) -> ok
+        "ok\x00", // trailing NUL (unsigned char <= ' ') -> ok
+        "  ok", // leading spaces: never forgiven -> not ok
+        "ok!", // stray trailing byte -> not ok
+        "okay", // not equal -> not ok
     };
     const Serve = struct {
         lfd: i32,
@@ -663,7 +665,10 @@ test "hyprland-border: setKey trims trailing <= 0x20 only, then matches ok" {
 fn accept(listen_fd: i32) ?i32 {
     const deadline = sock.nowMs() + 5000;
     while (sock.nowMs() < deadline) : ({
-        { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
+        {
+            var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }};
+            _ = std.posix.poll(&nap, 5) catch 0;
+        }
     }) {
         if (sock.acceptConn(listen_fd)) |c| return c;
     }
@@ -683,7 +688,10 @@ fn readOne(c: i32, out: *[512]u8) ?[]u8 {
         }
         if (e == .INTR) continue;
         if (e == .AGAIN) {
-            { var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }}; _ = std.posix.poll(&nap, 5) catch 0; }
+            {
+                var nap = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }};
+                _ = std.posix.poll(&nap, 5) catch 0;
+            }
             continue;
         }
         return null;
