@@ -11,6 +11,8 @@
 //! numeric range to fill.
 
 const std = @import("std");
+const linux = std.os.linux;
+const sock = @import("../../sock.zig");
 const compositor = @import("../../backends/compositor.zig");
 const desk = @import("../../backends/desk.zig");
 const hypr_ipc = @import("../../backends/hyprland_ipc.zig");
@@ -939,4 +941,107 @@ test "overview-ws: zoolander lua workspace names are quoted" {
     var buf: [128]u8 = undefined;
     const code = luaWorkspaceCode(&buf, "we\"ird\\name").?;
     try t.expectEqualStrings("return zl.workspace(\"we\\\"ird\\\\name\")", code);
+}
+
+test "overview-ws: zoolander control round trip assembles a snapshot" {
+    const t = std.testing;
+    const io = t.io;
+    const cwd = std.Io.Dir.cwd();
+
+    var name_buf: [128]u8 = undefined;
+    const root = try std.fmt.bufPrint(&name_buf, "/tmp/opencode/eh-zctl-{d}", .{std.os.linux.getpid()});
+    defer cwd.deleteTree(io, root) catch {};
+    cwd.deleteTree(io, root) catch {};
+    try cwd.createDirPath(io, root);
+    const path = try std.fs.path.join(t.allocator, &.{ root, "zoolander-wayland-1.sock" });
+    defer t.allocator.free(path);
+
+    const lfd = try sock.createStream(false);
+    defer sock.closeFd(lfd);
+    try sock.bindPath(lfd, path);
+    try sock.listenOn(lfd, 4);
+
+    // One serving thread, three connections: the greeting then the reply each
+    // `zCtl` command expects, keyed by the command line it reads.
+    const Serve = struct {
+        const clients_json =
+            "OK json\n[{\"id\":\"0x1\",\"app_id\":\"kitty\",\"title\":\"sh\",\"workspace\":\"1\"," ++
+            "\"special\":false,\"output\":\"DP-1\",\"x\":0,\"y\":0,\"width\":960,\"height\":1080," ++
+            "\"floating\":false,\"focused\":true}]\n";
+        const monitors_json =
+            "OK json\n{\"version\":1,\"outputs\":[{\"name\":\"DP-1\",\"enabled\":true,\"x\":0,\"y\":0," ++
+            "\"logical_width\":1920,\"logical_height\":1080}]}\n";
+        const eval_reply = "OK DP-1\x1e1\n";
+
+        lfd: i32,
+
+        fn run(self: @This()) void {
+            var served: u32 = 0;
+            while (served < 3) : (served += 1) {
+                const c = accept(self.lfd) orelse return;
+                defer sock.closeFd(c);
+                sock.sendAll(c, "ZLCTL 1\n") catch {};
+                var got: [4096]u8 = undefined;
+                const n = readAll(c, &got);
+                if (std.mem.startsWith(u8, got[0..n], "clients-json")) {
+                    sock.sendAll(c, clients_json) catch {};
+                } else if (std.mem.startsWith(u8, got[0..n], "monitors-json")) {
+                    sock.sendAll(c, monitors_json) catch {};
+                } else if (std.mem.startsWith(u8, got[0..n], "eval ")) {
+                    sock.sendAll(c, eval_reply) catch {};
+                }
+            }
+        }
+
+        fn accept(l: i32) ?i32 {
+            const deadline = sock.nowMs() + 5000;
+            while (sock.nowMs() < deadline) : (nap()) {
+                if (sock.acceptConn(l)) |c| return c;
+            }
+            return null;
+        }
+
+        fn readAll(c: i32, out: []u8) usize {
+            var n: usize = 0;
+            while (n < out.len) {
+                const rc = linux.recvfrom(c, out[n..].ptr, out.len - n, 0, null, null);
+                const e = linux.errno(rc);
+                if (e == .SUCCESS) {
+                    if (rc == 0) break;
+                    n += rc;
+                    continue;
+                }
+                if (e == .INTR) continue;
+                if (e == .AGAIN) {
+                    nap();
+                    continue;
+                }
+                break;
+            }
+            return n;
+        }
+
+        fn nap() void {
+            var pfd = [_]std.posix.pollfd{.{ .fd = -1, .events = 0, .revents = 0 }};
+            _ = std.posix.poll(&pfd, 5) catch 0;
+        }
+    };
+    var thread = try std.Thread.spawn(.{}, Serve.run, .{Serve{ .lfd = lfd }});
+    defer thread.join();
+
+    var env = std.process.Environ.Map.init(t.allocator);
+    defer env.deinit();
+    try env.put("XDG_RUNTIME_DIR", root);
+    try env.put("WAYLAND_DISPLAY", "wayland-1");
+
+    var snap = fetchZoolander(t.allocator, &env) orelse return error.TestUnexpectedResult;
+    defer snap.deinit();
+    try t.expectEqual(@as(usize, 1), snap.ws.len);
+    try t.expectEqualStrings("1", snap.ws[0].label);
+    try t.expectEqualStrings("1", snap.ws[0].target);
+    try t.expect(snap.ws[0].active);
+    try t.expectEqual(@as(usize, 1), snap.ws[0].wins.len);
+    try t.expectEqualStrings("DP-1", snap.ws[0].monitor);
+    try t.expectEqual(@as(f64, 0.5), snap.ws[0].wins[0].nw);
+    try t.expectEqual(@as(f64, 1920), snap.ws[0].mon_w);
 }

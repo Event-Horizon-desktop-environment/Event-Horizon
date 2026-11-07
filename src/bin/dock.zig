@@ -5532,10 +5532,10 @@ const Dock = struct {
             "NIRI_SOCKET",                  "SWAYSOCK",
             "LABWC_PID",                    "MANGO_INSTANCE_SIGNATURE",
             "ZOOLANDER_INSTANCE_SIGNATURE", "ZOOLANDER_SOCKET",
-            "ZOOLANDER_WSI",
-            "WAYLAND_DISPLAY",              "XDG_CURRENT_DESKTOP",
-            "XDG_SESSION_DESKTOP",          "DESKTOP_SESSION",
-            "XDG_CONFIG_HOME",              "HOME",
+            "ZOOLANDER_WSI",                "WAYLAND_DISPLAY",
+            "XDG_CURRENT_DESKTOP",          "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",              "XDG_CONFIG_HOME",
+            "HOME",
         };
         for (keys) |k| {
             if (getenvStr(k)) |v| env.put(k, v) catch {};

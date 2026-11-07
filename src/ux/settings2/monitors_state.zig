@@ -1052,19 +1052,19 @@ pub fn buildZoolanderBlock(alloc: std.mem.Allocator, m: *const MonitorRow) ![]u8
         }
     }
     if (!m.scale.empty() and !m.scale.eql("1")) try zoolanderKV(&o, alloc, &sep, "scale", m.scale.slice());
-    if (!m.transform.empty() and !m.transform.eql("0")) try zoolanderKV(&o, alloc, &sep, "transform", transformName(m.transform.slice()));
+    if (!m.transform.empty() and !m.transform.eql("0")) try zoolanderKVStr(&o, alloc, &sep, "transform", transformName(m.transform.slice()));
     // `enabled`/`primary` only when they differ from the schema defaults.
     if (m.disabled) try zoolanderKV(&o, alloc, &sep, "enabled", "false");
     if (m.primary) try zoolanderKV(&o, alloc, &sep, "primary", "true");
-    if (m.vrr_capable and !m.vrr.empty()) try zoolanderKV(&o, alloc, &sep, "vrr", vrrPolicyName(m.vrr.slice()));
-    if (m.hdr_capable and !m.hdr_policy.empty()) try zoolanderKV(&o, alloc, &sep, "hdr", hdrPolicyName(m.hdr_policy.slice()));
+    if (m.vrr_capable and !m.vrr.empty()) try zoolanderKVStr(&o, alloc, &sep, "vrr", vrrPolicyName(m.vrr.slice()));
+    if (m.hdr_capable and !m.hdr_policy.empty()) try zoolanderKVStr(&o, alloc, &sep, "hdr", hdrPolicyName(m.hdr_policy.slice()));
     if (!m.bitdepth.empty()) try zoolanderKV(&o, alloc, &sep, "bitdepth", m.bitdepth.slice());
-    if (!m.color_profile.empty()) try zoolanderKV(&o, alloc, &sep, "color_profile", m.color_profile.slice());
+    if (!m.color_profile.empty()) try zoolanderKVStr(&o, alloc, &sep, "color_profile", m.color_profile.slice());
     if (!m.render_sdr_brightness.empty() and !m.render_sdr_brightness.eql("1")) try zoolanderKV(&o, alloc, &sep, "sdr_brightness", m.render_sdr_brightness.slice());
     if (!m.render_sdr_saturation.empty() and !m.render_sdr_saturation.eql("1")) try zoolanderKV(&o, alloc, &sep, "sdr_saturation", m.render_sdr_saturation.slice());
     if (!m.render_sdr_min_lum.empty()) try zoolanderKV(&o, alloc, &sep, "sdr_min_luminance", m.render_sdr_min_lum.slice());
     if (!m.render_sdr_max_lum.empty()) try zoolanderKV(&o, alloc, &sep, "sdr_max_luminance", m.render_sdr_max_lum.slice());
-    if (!m.render_sdr_eotf.empty()) try zoolanderKV(&o, alloc, &sep, "sdr_eotf", sdrEotfName(m.render_sdr_eotf.slice()));
+    if (!m.render_sdr_eotf.empty()) try zoolanderKVStr(&o, alloc, &sep, "sdr_eotf", sdrEotfName(m.render_sdr_eotf.slice()));
     if (!m.min_luminance.empty()) try zoolanderKV(&o, alloc, &sep, "min_luminance", m.min_luminance.slice());
     if (!m.max_luminance.empty()) try zoolanderKV(&o, alloc, &sep, "max_luminance", m.max_luminance.slice());
     if (!m.max_avg_luminance.empty()) try zoolanderKV(&o, alloc, &sep, "max_avg_luminance", m.max_avg_luminance.slice());
@@ -1081,13 +1081,32 @@ fn zoolanderKV(
     val: []const u8,
 ) !void {
     if (val.len == 0) return;
+    // Every entry already ends in "," (Lua allows it), so entries are only
+    // separated by a newline. A ",\n" separator doubled the comma and made
+    // monitors.lua a syntax error that Zoolander refused to load.
     try o.appendSlice(alloc, sep.*);
-    sep.* = ",\n";
+    sep.* = "\n";
     try o.appendSlice(alloc, "    ");
     try o.appendSlice(alloc, key);
     try o.appendSlice(alloc, " = ");
     try o.appendSlice(alloc, val);
     try o.appendSlice(alloc, ",");
+}
+
+/// Like `zoolanderKV`, but the value is a Lua string. Enum-valued fields
+/// (`vrr`, `hdr`, `color_profile`, `sdr_eotf`, `transform`) must be quoted:
+/// a bare word is a nil global, so Zoolander would see no value at all.
+fn zoolanderKVStr(
+    o: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    sep: *[]const u8,
+    key: []const u8,
+    val: []const u8,
+) !void {
+    if (val.len == 0) return;
+    var buf: [96]u8 = undefined;
+    const q = std.fmt.bufPrint(&buf, "\"{s}\"", .{val}) catch return;
+    try zoolanderKV(o, alloc, sep, key, q);
 }
 
 fn emitKV(
@@ -2353,15 +2372,18 @@ test "monitors-state: zoolander block writes only output_rule keys" {
     try t.expect(std.mem.indexOf(u8, block, "output = \"DP-2\"") != null);
     try t.expect(std.mem.indexOf(u8, block, "enabled = false") != null);
     try t.expect(std.mem.indexOf(u8, block, "primary = true") != null);
-    try t.expect(std.mem.indexOf(u8, block, "vrr = fullscreen_game") != null);
-    try t.expect(std.mem.indexOf(u8, block, "hdr = always") != null);
+    try t.expect(std.mem.indexOf(u8, block, "vrr = \"fullscreen_game\"") != null);
+    try t.expect(std.mem.indexOf(u8, block, "hdr = \"always\"") != null);
     try t.expect(std.mem.indexOf(u8, block, "bitdepth = 10") != null);
-    try t.expect(std.mem.indexOf(u8, block, "color_profile = edid") != null);
+    try t.expect(std.mem.indexOf(u8, block, "color_profile = \"edid\"") != null);
     try t.expect(std.mem.indexOf(u8, block, "sdr_brightness = 1.2") != null);
-    try t.expect(std.mem.indexOf(u8, block, "sdr_eotf = gamma24") != null);
+    try t.expect(std.mem.indexOf(u8, block, "sdr_eotf = \"gamma24\"") != null);
     try t.expect(std.mem.indexOf(u8, block, "min_luminance = 0.05") != null);
     try t.expect(std.mem.indexOf(u8, block, "max_luminance = 1000") != null);
-    try t.expect(std.mem.indexOf(u8, block, "transform = flipped_90") != null);
+    try t.expect(std.mem.indexOf(u8, block, "transform = \"flipped_90\"") != null);
+    // No doubled commas: that is a Lua syntax error.
+    try t.expect(std.mem.indexOf(u8, block, ",,") == null);
+    try t.expect(std.mem.indexOf(u8, block, ",\n,") == null);
     // Capability-only fields are not part of the output_rule schema.
     try t.expect(std.mem.indexOf(u8, block, "make =") == null);
     try t.expect(std.mem.indexOf(u8, block, "focused =") == null);

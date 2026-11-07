@@ -702,8 +702,8 @@ pub const Field = enum {
                 }
                 if (comptime f.isZool()) {
                     break :blk switch (zoolander_data.kindOf(f.zoolSlot().?)) {
-                        .boolean => .bool,
-                        .text => .str,
+                        .boolean, .flag => .bool,
+                        .text, .list => .str,
                         else => .int,
                     };
                 }

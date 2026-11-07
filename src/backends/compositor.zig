@@ -261,3 +261,14 @@ test "backends: zoolander control socket path follows the Wayland socket" {
     try env.put("WAYLAND_DISPLAY", "/run/user/1000/wayland-7");
     try t.expectEqualStrings("/run/user/1000/zoolander-wayland-7.sock", zoolanderControlPath(&buf, &env).?);
 }
+
+test "backends: detect stays unknown when no control socket is present" {
+    const t = std.testing;
+    var env = std.process.Environ.Map.init(t.allocator);
+    defer env.deinit();
+    try env.put("XDG_RUNTIME_DIR", "/nonexistent-event-horizon");
+    try env.put("WAYLAND_DISPLAY", "wayland-99");
+    var buf: [256]u8 = undefined;
+    try t.expect(zoolanderControlPath(&buf, &env) != null);
+    try t.expectEqual(Kind.unknown, detect(t.io, &env));
+}
