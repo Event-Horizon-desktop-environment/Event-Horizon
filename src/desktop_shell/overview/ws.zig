@@ -19,6 +19,7 @@ const sock = @import("../../sock.zig");
 const compositor = @import("../../backends/compositor.zig");
 const desk = @import("../../backends/desk.zig");
 const hypr_ipc = @import("../../backends/hyprland_ipc.zig");
+const wl = @import("../../wl/c.zig").wl;
 
 pub const Window = struct {
     addr: []const u8 = "",
@@ -36,6 +37,9 @@ pub const Window = struct {
     focused: bool = false,
     monitor: i32 = -1,
     ws_id: i32 = -1,
+    /// Zoolander's ext_foreign_toplevel_handle_v1 for capture.
+    /// On Zoolander, `addr` is the hex string of this pointer.
+    handle: ?*wl.ext_foreign_toplevel_handle_v1 = null,
     /// Fully outside its monitor (beyond a 5% margin): the compositor
     /// will not copy it until it is parked on-monitor, which is the
     /// reveal pass's job.
@@ -287,6 +291,7 @@ pub fn assemble(alloc: std.mem.Allocator, ws_text: []const u8, mon_text: []const
                 .focused = w.focused,
                 .monitor = w.monitor,
                 .ws_id = w.ws_id,
+                .handle = null,
             };
             for (mons) |m| {
                 if (m.id != w.monitor) continue;

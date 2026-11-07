@@ -4,3 +4,5 @@
 /c++-EH
 /.zig-cache.root-owned-backup
 /Reference
+/.zig-cache-release
+/.zig-out-release

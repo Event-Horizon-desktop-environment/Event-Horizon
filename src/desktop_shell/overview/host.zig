@@ -55,6 +55,8 @@ pub const Win = struct {
     title: []const u8 = "",
     focused: bool = false,
     box: types.WinBox = .{},
+    /// Zoolander's ext_foreign_toplevel_handle_v1 for capture.
+    handle: ?*wl.ext_foreign_toplevel_handle_v1 = null,
 };
 
 pub const Card = struct {
@@ -393,7 +395,9 @@ pub const Host = struct {
         self.surface.setAnchor(layer.Anchor.top | layer.Anchor.bottom | layer.Anchor.left | layer.Anchor.right);
         self.surface.setExclusiveZone(-1);
         self.surface.setSize(0, 0);
-        self.surface.setKeyboardInteractivity(2);
+        // Exclusive (1), not on-demand (2): on-demand only takes the keyboard
+        // after a click, so over a fullscreen game Esc went to the game.
+        self.surface.setKeyboardInteractivity(1);
         self.surface.commit();
         self.open = true;
         return true;
@@ -495,6 +499,7 @@ pub const Host = struct {
                     .title = al.dupe(u8, w.title) catch "",
                     .focused = w.focused,
                     .box = w.box,
+                    .handle = w.handle,
                 };
             }
             out[i] = .{
@@ -1907,7 +1912,7 @@ test "overview-host: press maps tiles, gaps select, outside dismisses" {
     defer h.deinit();
     h.buf_w = 1920;
     h.buf_h = 1080;
-    const wins = [_]Win{ .{ .app_id = "a", .title = "one" }, .{ .app_id = "b", .title = "two" } };
+    const wins = [_]Win{ .{ .app_id = "a", .title = "one", .handle = null }, .{ .app_id = "b", .title = "two", .handle = null } };
     const cards = [_]Card{
         .{ .id = 1, .label = "1", .active = true, .wins = @constCast(&wins) },
         .{ .id = 2, .label = "2", .wins = &.{} },
@@ -1980,7 +1985,7 @@ test "overview-host: dragging a window to the edge scrolls the strip" {
     defer h.deinit();
     h.buf_w = 1920;
     h.buf_h = 1080;
-    const wins = [_]Win{.{ .app_id = "a", .title = "one" }};
+    const wins = [_]Win{.{ .app_id = "a", .title = "one", .handle = null }};
     const cards = [_]Card{
         .{ .id = 1, .label = "1", .active = true, .wins = @constCast(&wins) },
         .{ .id = 2, .label = "2", .wins = &.{} },
@@ -2015,7 +2020,7 @@ test "overview-host: dragging a window to the edge scrolls the strip" {
 
 test "overview-host: dropping a window on a quick-select thumb moves it" {
     const t = std.testing;
-    const wins = [_]Win{.{ .app_id = "a", .title = "one" }};
+    const wins = [_]Win{.{ .app_id = "a", .title = "one", .handle = null }};
     const cards = [_]Card{
         .{ .id = 1, .label = "1", .active = true, .wins = @constCast(&wins) },
         .{ .id = 2, .label = "2", .wins = &.{} },

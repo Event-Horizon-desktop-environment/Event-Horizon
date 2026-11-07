@@ -32,6 +32,7 @@ const protocols = [_]Protocol{
     .{ .name = "hyprland-toplevel-export-v1", .xml = "protocols/hyprland-toplevel-export-v1.xml" },
     .{ .name = "hyprland-focus-grab-v1", .xml = "protocols/hyprland-focus-grab-v1.xml" },
     .{ .name = "wlr-screencopy-unstable-v1", .xml = "protocols/wlr-screencopy-unstable-v1.xml" },
+    .{ .name = "zoolander-image-copy-capture-size-v1", .xml = "protocols/zoolander-image-copy-capture-size-v1.xml" },
 };
 
 /// Options that differ between the shell library and its standalone
@@ -414,6 +415,7 @@ pub fn build(b: *std.Build) void {
         \\#include <wlr-screencopy-unstable-v1-client-protocol.h>
         \\#include <ext-image-copy-capture-v1-client-protocol.h>
         \\#include <ext-image-capture-source-v1-client-protocol.h>
+        \\#include <zoolander-image-copy-capture-size-v1-client-protocol.h>
         \\#include <xdg-output-unstable-v1-client-protocol.h>
     );
 

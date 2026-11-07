@@ -38,6 +38,7 @@ const ov_types = @import("../desktop_shell/overview/types.zig");
 const ov_tiles = @import("../desktop_shell/overview/tiles.zig");
 const ov_ws = @import("../desktop_shell/overview/ws.zig");
 const ov_capture = @import("../desktop_shell/overview/capture.zig");
+const foreign = @import("../wl/toplevel/foreign.zig");
 const hypr_ipc = @import("../backends/hyprland_ipc.zig");
 const compositor = @import("../backends/compositor.zig");
 const ov_reveal = @import("../desktop_shell/overview/reveal.zig");
@@ -93,6 +94,8 @@ const Ov = struct {
     /// Last paint cost, so the pulse never schedules faster than painting
     /// sustains (a 5ms paint at 240Hz would otherwise queue forever).
     last_paint_ms: u64 = 0,
+    /// Foreign toplevel tracker for Zoolander window capture handles.
+    foreign: foreign.Tracker = undefined,
     xdg_config: ?[]const u8 = null,
     home: ?[]const u8 = null,
 
@@ -106,6 +109,7 @@ const Ov = struct {
         if (self.shots) |*s| s.deinit();
         if (self.snap) |*s| s.deinit();
         if (self.app_dirs.len > 0) app_launch.freeDirs(self.gpa, self.app_dirs);
+        self.foreign.deinit();
         self.host.deinit();
     }
 
@@ -365,7 +369,11 @@ const Ov = struct {
             .resync = struct {
                 fn f(p: *anyopaque, addr: []const u8) void {
                     const s: *Self = @ptrCast(@alignCast(p));
-                    if (s.capture) |*cap| _ = cap.retryWindow(addr);
+                    var zoo_handle: ?*wl.ext_foreign_toplevel_handle_v1 = null;
+                    if (s.isZoolander()) {
+                        zoo_handle = s.foreign.handleByIdentifier(addr);
+                    }
+                    if (s.capture) |*cap| _ = cap.retryWindow(addr, zoo_handle);
                     s.syncCapture();
                 }
             }.f,
@@ -395,6 +403,14 @@ const Ov = struct {
         self.refresh();
     }
 
+    /// Called from the foreign toplevel tracker when handles change.
+    /// Repopulates window handles and triggers a capture resync.
+    fn populateForeignChanged(ctx: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        self.populateZoolanderHandles();
+        self.want_resnap = true;
+    }
+
     /// Ask the stream for the windows currently scrolled into view. Live
     /// mode keeps a one-card margin either side so a scroll lands on
     /// already-streamed neighbours; snapshot mode asks once for every
@@ -405,20 +421,44 @@ const Ov = struct {
         if (!cap.active()) return;
         const live = self.liveUpdates();
         var addrs: std.ArrayList([]const u8) = .empty;
+        var handles: std.ArrayList(*wl.ext_foreign_toplevel_handle_v1) = .empty;
         defer addrs.deinit(self.gpa);
+        var zoo_addrs: std.ArrayList([]const u8) = .empty;
+        defer handles.deinit(self.gpa);
+        defer zoo_addrs.deinit(self.gpa);
         if (live) {
             const lo, const hi = self.visibleCardRange();
             var ci = lo;
             while (ci <= hi) : (ci += 1) {
                 if (ci < 0 or ci >= self.host.cards.len) continue;
-                for (self.host.cards[@intCast(ci)].wins) |win| addrs.append(self.gpa, win.addr) catch break;
+                for (self.host.cards[@intCast(ci)].wins) |win| {
+                    addrs.append(self.gpa, win.addr) catch break;
+                    if (win.handle) |h| {
+                        if (win.addr.len == 0) continue;
+                        handles.append(self.gpa, h) catch break;
+                        zoo_addrs.append(self.gpa, win.addr) catch {
+                            _ = handles.pop();
+                            break;
+                        };
+                    }
+                }
             }
         } else {
             for (self.host.cards) |card| {
-                for (card.wins) |win| addrs.append(self.gpa, win.addr) catch break;
+                for (card.wins) |win| {
+                    addrs.append(self.gpa, win.addr) catch break;
+                    if (win.handle) |h| {
+                        if (win.addr.len == 0) continue;
+                        handles.append(self.gpa, h) catch break;
+                        zoo_addrs.append(self.gpa, win.addr) catch {
+                            _ = handles.pop();
+                            break;
+                        };
+                    }
+                }
             }
         }
-        cap.sync(addrs.items, self.captureMaxDim(), live);
+        cap.sync(addrs.items, handles.items, zoo_addrs.items, self.captureMaxDim(), live);
     }
 
     /// Frames only ever draw at tile size, so request them near what a
@@ -573,6 +613,20 @@ const Ov = struct {
             return;
         }
         self.host.setCards(cards.items);
+        // Harmless off Zoolander: Hyprland `0x…` addresses never match an identifier.
+        self.populateZoolanderHandles();
+    }
+
+    /// Populate Zoolander window handles from the foreign toplevel tracker.
+    fn populateZoolanderHandles(self: *Self) void {
+        for (self.host.cards) |*card| {
+            for (card.wins) |*win| {
+                if (win.addr.len == 0) continue;
+                if (self.foreign.handleByIdentifier(win.addr)) |h| {
+                    win.handle = h;
+                }
+            }
+        }
     }
 
     fn hyprSend(self: *Self, cmd: []const u8) bool {
@@ -1283,11 +1337,23 @@ pub fn main(init: std.process.Init) !u8 {
     ov.host.on_frame = Ov.frameTicked;
     ov.host.frame_ctx = &ov;
     ov.startEvents();
+    ov.foreign = foreign.Tracker.init(gpa);
+    ov.foreign.on_changed = Ov.populateForeignChanged;
+    ov.foreign.changed_ctx = &ov;
+    if (bound.foreign_toplevel_list != null) {
+        // The bind inside bindAll had its initial window dump eaten by the
+        // connect roundtrip before any listener existed; a fresh bind
+        // replays it to the tracker.
+        conn.rebindToplevelList(&bound);
+        ov.foreign.bindExt(bound.foreign_toplevel_list);
+        _ = conn.roundtrip();
+        ov.populateZoolanderHandles();
+    }
     ov.capture = ov_capture.Capture.init(gpa);
     if (ov.capture) |*cap| {
         cap.wake_ctx = &ov;
         cap.wake = Ov.onCaptureFrame;
-        if (cap.start(bound.toplevel_export, bound.shm)) {
+        if (cap.start(bound.toplevel_export, bound.ext_image_copy_capture, bound.ext_toplevel_capture_source, bound.shm, bound.zoolander_capture_size)) {
             logz.log("overview: capture stream ready (live={d})", .{@as(u8, @intFromBool(cfg.appearance.overview_live_updates))});
         } else {
             logz.log("overview: no toplevel export manager — tiles stay tinted", .{});

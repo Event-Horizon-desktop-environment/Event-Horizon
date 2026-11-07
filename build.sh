@@ -4,7 +4,7 @@
 #
 #   ./build.sh                 detect the best x86-64 level, build, install to /usr
 #   ./build.sh --cpu v3        force x86-64-v3
-#   ./build.sh --no-install    build only (zig-out/bin)
+#   ./build.sh --no-install    build only (.zig-out-release/bin)
 #   ./build.sh --skip-deps     never call the package manager
 #
 # The final install asks for privilege through pkexec (falling back to sudo
@@ -19,6 +19,10 @@ readonly ZIG_MIN_VERSION="0.16.0"
 readonly OPTIMIZE="ReleaseFast"
 readonly CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/event-horizon"
 readonly ZIG_CACHE_DIR="$CACHE_ROOT/zig-$ZIG_MIN_VERSION"
+# Release builds use their own cache and output dirs so they never touch the
+# .zig-cache / zig-out used for day-to-day development.
+readonly BUILD_CACHE_DIR="$SCRIPT_DIR/.zig-cache-release"
+readonly BUILD_OUT_DIR="$SCRIPT_DIR/.zig-out-release"
 
 PREFIX="/usr"
 INSTALL_BINARIES=(
@@ -62,7 +66,7 @@ Options:
   --cpu LEVEL        x86-64 level: v2, v3, v4, native, or baseline.
                      Default: auto-detect the highest level this CPU supports.
   --prefix PATH      Install prefix (default: /usr). Binaries go to PATH/bin.
-  --no-install       Build only; leave everything in zig-out/.
+  --no-install       Build only; leave everything in .zig-out-release/.
   --skip-deps        Do not install missing system packages.
   --deps-only        Install dependencies and exit.
   --jobs N           Limit parallel build jobs (passed to zig build -jN).
@@ -477,7 +481,10 @@ choose_cpu() {
 
 build_shell() {
     local cpu_model="$1"
-    local args=(build "-Doptimize=$OPTIMIZE")
+    local args=(build
+        --cache-dir "$BUILD_CACHE_DIR"
+        --prefix "$BUILD_OUT_DIR"
+        "-Doptimize=$OPTIMIZE")
 
     if [[ -n "$cpu_model" ]]; then
         args+=("-Dcpu=$cpu_model")
@@ -503,29 +510,29 @@ install_system() {
     # Remove the unprivileged staging tree on exit.
     cleanup_stage() { rm -rf "$stage"; }
     trap cleanup_stage EXIT
-    "$ZIG_BIN" build install-icons --prefix "$stage" >/dev/null
+    "$ZIG_BIN" build install-icons --cache-dir "$BUILD_CACHE_DIR" --prefix "$stage" >/dev/null
     if [[ -d "$stage/icons" ]]; then
         log "Installing icon theme to $PREFIX/share/icons"
     fi
-    if [[ -d "$SCRIPT_DIR/zig-out/share/event-horizon" ]]; then
+    if [[ -d "$BUILD_OUT_DIR/share/event-horizon" ]]; then
         log "Installing matugen templates to $PREFIX/share/event-horizon"
     fi
 
     run_privileged sh -c '
         set -e
-        repo=$1
+        out=$1
         prefix=$2
         stage=$3
         shift 3
 
         # Reject a symlinked share prefix before writing binaries or assets.
-        if [ -d "$stage/icons" ] || [ -d "$repo/zig-out/share/event-horizon" ]; then
+        if [ -d "$stage/icons" ] || [ -d "$out/share/event-horizon" ]; then
             test ! -L "$prefix/share"
         fi
 
         install -d "$prefix/bin"
         for name in "$@"; do
-            install -m755 "$repo/zig-out/bin/$name" "$prefix/bin/$name"
+            install -m755 "$out/bin/$name" "$prefix/bin/$name"
         done
 
         if [ -d "$stage/icons" ]; then
@@ -540,7 +547,7 @@ install_system() {
                 install -o 0 -g 0 -m644 -t "$prefix/share/icons/hicolor/scalable/apps" {} +
         fi
 
-        if [ -d "$repo/zig-out/share/event-horizon" ]; then
+        if [ -d "$out/share/event-horizon" ]; then
             # Prepare a root-owned tree privately, then replace the old tree.
             # This also repairs installs whose directories belonged to the builder.
             install -d "$prefix/share"
@@ -549,7 +556,7 @@ install_system() {
             # Remove a staging tree left behind by a failed installation.
             cleanup_staging() { rm -rf "$staging"; }
             trap cleanup_staging EXIT
-            cp -R --no-preserve=ownership,mode "$repo/zig-out/share/event-horizon/." "$staging/"
+            cp -R --no-preserve=ownership,mode "$out/share/event-horizon/." "$staging/"
             test -z "$(find "$staging" -type l -print -quit)"
             chown -R 0:0 "$staging"
             find "$staging" -type d -exec chmod 755 {} +
@@ -559,16 +566,16 @@ install_system() {
             trap - EXIT
         fi
 
-        if [ -f "$repo/zig-out/share/licenses/event-horizon/LICENSE" ]; then
+        if [ -f "$out/share/licenses/event-horizon/LICENSE" ]; then
             install -Dm644 \
-                "$repo/zig-out/share/licenses/event-horizon/LICENSE" \
+                "$out/share/licenses/event-horizon/LICENSE" \
                 "$prefix/share/licenses/event-horizon/LICENSE"
         fi
 
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
             gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
         fi
-    ' sh "$SCRIPT_DIR" "$PREFIX" "$stage" "${INSTALL_BINARIES[@]}"
+    ' sh "$BUILD_OUT_DIR" "$PREFIX" "$stage" "${INSTALL_BINARIES[@]}"
 
     rm -rf "$stage"
     trap - EXIT
@@ -597,5 +604,5 @@ build_shell "$CPU_MODEL"
 if ((DO_INSTALL == 1)); then
     install_system
 else
-    log "Build complete: $SCRIPT_DIR/zig-out/bin"
+    log "Build complete: $BUILD_OUT_DIR/bin"
 fi

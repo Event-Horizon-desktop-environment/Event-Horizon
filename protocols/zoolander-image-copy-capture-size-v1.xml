@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="zoolander_image_copy_capture_size_v1">
+  <copyright>
+    Copyright © 2026 ferreo
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="scaled-down image copy capture">
+    This protocol extends ext-image-copy-capture-v1 so that a client which
+    only shows a small preview of a capture source, such as a thumbnail of a
+    window or an output, can ask the compositor for a smaller image. The
+    compositor then scales the source down while drawing it, straight into
+    the client's buffer, instead of handing over a full-size image for the
+    client to shrink.
+
+    The protocol only changes the buffer constraints of a session and the
+    size of the images it fills: frames, damage, transforms, cursor painting
+    and alpha follow ext-image-copy-capture-v1 exactly as for a full-size
+    session.
+  </description>
+
+  <interface name="zoolander_image_copy_capture_size_manager_v1" version="1">
+    <description summary="manager of capture session sizes">
+      Gives image copy capture sessions a maximum image size.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroys the manager. Objects created through it remain valid.
+      </description>
+    </request>
+
+    <request name="get_session_size">
+      <description summary="control the image size of a capture session">
+        Creates an object that sets the maximum image size of a capture
+        session.
+
+        The session may have been created from any capture source: an output,
+        a toplevel, a workspace or anything else the compositor captures. More
+        than one object may be created for the same session; the most recent
+        set_max_size request through any of them is the one in effect.
+      </description>
+      <arg name="id" type="new_id" interface="zoolander_image_copy_capture_session_size_v1"/>
+      <arg name="session" type="object" interface="ext_image_copy_capture_session_v1"/>
+    </request>
+  </interface>
+
+  <interface name="zoolander_image_copy_capture_session_size_v1" version="1">
+    <description summary="maximum image size of a capture session">
+      Sets the largest image a capture session may produce.
+
+      Until set_max_size is sent the session keeps the full source size.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the object">
+        Destroys the object. The session keeps the maximum size last set.
+      </description>
+    </request>
+
+    <request name="set_max_size">
+      <description summary="set the maximum image size">
+        Sets the maximum width and height, in buffer pixels, of the images of
+        the session. Zero means no limit in that dimension, so (0, 0) restores
+        the full source size.
+
+        From then on the buffer_size the session advertises is the source size
+        fitted inside the maximum size with the source's aspect ratio kept:
+        when the source is no larger than the maximum in either dimension it is
+        the source size, since the image is never scaled up; otherwise it is the
+        largest size of the source's aspect ratio that fits, with the scaled
+        dimension rounded to the nearest pixel and at least 1. When the
+        source's size changes, as when a toplevel is resized, the fitted size
+        follows it.
+
+        If this changes the buffer constraints, the compositor sends them again
+        at once, ending with ext_image_copy_capture_session_v1.done, and a
+        frame captured with a buffer of the old size fails with
+        buffer_constraints. A client that sends this request right after
+        creating the session sees the full-size constraints first and should
+        allocate buffers after the last done event.
+
+        The compositor draws the whole source scaled down into the buffer, for
+        shared-memory and dma-buf buffers alike. Damage is reported in the
+        buffer's own coordinates.
+
+        The request has no effect once the session is stopped or destroyed.
+      </description>
+      <arg name="width" type="uint" summary="maximum width, 0 for none"/>
+      <arg name="height" type="uint" summary="maximum height, 0 for none"/>
+    </request>
+  </interface>
+</protocol>

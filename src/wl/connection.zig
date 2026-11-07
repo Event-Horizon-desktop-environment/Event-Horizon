@@ -220,6 +220,7 @@ pub const Connection = struct {
         ext_image_copy_capture: ?*wl.ext_image_copy_capture_manager_v1 = null,
         ext_output_capture_source: ?*wl.ext_output_image_capture_source_manager_v1 = null,
         ext_toplevel_capture_source: ?*wl.ext_foreign_toplevel_image_capture_source_manager_v1 = null,
+        zoolander_capture_size: ?*wl.zoolander_image_copy_capture_size_manager_v1 = null,
         outputs: std.ArrayList(*OutputObj) = .empty,
     };
 
@@ -349,6 +350,10 @@ pub const Connection = struct {
             } else if (std.mem.eql(u8, g.interface, "ext_foreign_toplevel_image_capture_source_manager_v1")) {
                 if (bound.ext_toplevel_capture_source == null) {
                     bound.ext_toplevel_capture_source = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1));
+                }
+            } else if (std.mem.eql(u8, g.interface, "zoolander_image_copy_capture_size_manager_v1")) {
+                if (bound.zoolander_capture_size == null) {
+                    bound.zoolander_capture_size = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.zoolander_image_copy_capture_size_manager_v1_interface, 1));
                 }
             } else if (std.mem.eql(u8, g.interface, "zwlr_gamma_control_manager_v1")) {
                 if (bound.gamma_manager == null) {

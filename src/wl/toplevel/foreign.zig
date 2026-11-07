@@ -180,6 +180,18 @@ pub const Tracker = struct {
             } else i += 1;
         }
     }
+
+    /// Look up a window by its protocol identifier (the string from `identifier` event).
+    /// Returns the raw handle pointer, or null if not found.
+    pub fn handleByIdentifier(self: *const Tracker, identifier: []const u8) ?*wl.ext_foreign_toplevel_handle_v1 {
+        if (identifier.len == 0) return null;
+        for (self.windows.items) |w| {
+            if (!w.closed and std.mem.eql(u8, w.identifier, identifier)) {
+                return @ptrCast(w.raw);
+            }
+        }
+        return null;
+    }
 };
 
 test "foreign: empty tracker" {
