@@ -1,5 +1,9 @@
 <img width="3200" height="960" alt="Event Horizon banner" src="https://github.com/user-attachments/assets/709ddf5b-cf76-4e9b-8a48-1a4c43434a42" />
 
+| PayPal | Ko-fi |
+|:---:|:---:|
+|[<img src="https://github.com/vinceliuice/WhiteSur-gtk-theme/blob/pictures/pictures/paypal.png?raw=true" width="32" height="32" alt="paypal" />](https://paypal.me/gamedev1909)|[<img src="https://github.com/user-attachments/assets/06c1704b-ead5-4b4a-a865-9b85aa9f5015" width="32" height="32" alt="ko-fi" />](https://ko-fi.com/tlv)|
+
 # Event Horizon
 
 **A Wayland-native desktop shell written in Zig.**
