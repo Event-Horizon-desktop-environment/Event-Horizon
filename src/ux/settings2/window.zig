@@ -48,6 +48,7 @@ const dw_data = @import("desktop_widgets_data.zig");
 const hyprland_data = @import("hyprland_data.zig");
 const zoolander_data = @import("zoolander_data.zig");
 const zoolander_anim = @import("zoolander_anim.zig");
+const hyprland_anim_curve = @import("hyprland_anim_curve.zig");
 const display_confirm = @import("display_confirm.zig");
 const zoolander_page = @import("zoolander_page.zig");
 const hyprland_tab = @import("hyprland_tab.zig");
@@ -1794,6 +1795,7 @@ pub const Win = struct {
         self.sidebar.active_tab = t;
         self.content.active_tab = t;
         zoolander_anim.reset();
+        hyprland_anim_curve.reset();
         self.content.open_combo = null;
         self.scroll.snapTo(0);
         // First entry to the Monitors tab pulls the live output list.
@@ -2387,6 +2389,11 @@ pub const Win = struct {
             self.repaint();
             return;
         }
+        // Same for a Hyprland inline editor's curve-handle drag.
+        if (hyprland_anim_curve.motion(self.content.pointer_x, self.content.pointer_ly)) {
+            self.repaint();
+            return;
+        }
         if (self.content.drag) |d| {
             if (self.content.applyHit(.{ .slider = d }, x)) {
                 self.flushDockLive();
@@ -2504,6 +2511,7 @@ pub const Win = struct {
             // A finished curve-handle drag needs no special commit here: the
             // leaf is already marked dirty and the block below writes it.
             if (zoolander_anim.isDragging()) zoolander_anim.endDrag();
+            if (hyprland_anim_curve.isDragging()) hyprland_anim_curve.endDrag();
             // Zoolander pages batch slider drags the same way: the release
             // writes pending Lua edits and asks Zoolander to reload. The
             // Monitors tab carries the global `set_presentation` rows, so it
@@ -2941,6 +2949,12 @@ pub const Win = struct {
             .anim_leaf => {
                 if (self.content.applyHit(ch, x)) self.content.relayout();
                 self.flushZoolanderTab();
+            },
+            // Same shape for the Hyprland inline editor: expand/collapse
+            // changes the row height, the rest are value pokes. Hyprland
+            // data commits on release, so no flush here.
+            .anim_curve => {
+                if (self.content.applyHit(ch, x)) self.content.relayout();
             },
             // Picking a layout can add or remove the arguments panel under
             // the picker, so the card height changes with the pick.

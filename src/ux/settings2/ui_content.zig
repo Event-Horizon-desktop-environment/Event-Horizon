@@ -23,6 +23,7 @@ const hyprland_page = @import("hyprland_page.zig");
 const zoolander_page = @import("zoolander_page.zig");
 const zoolander_data = @import("zoolander_data.zig");
 const zoolander_anim = @import("zoolander_anim.zig");
+const hyprland_anim_curve = @import("hyprland_anim_curve.zig");
 const bluetooth_tab = @import("bluetooth_tab.zig");
 const sound_tab = @import("sound_tab.zig");
 const network_tab = @import("network_tab.zig");
@@ -370,6 +371,9 @@ pub const Hit = union(enum) {
     anim_toggle: u8,
     /// Hyprland animation 3-dot editor trigger (entry index).
     anim_dot: u8,
+    /// Hyprland animation inline editor (Zoolander-style leaf row): switch,
+    /// expand, speed stepper, curve graph and style chips.
+    anim_curve: hyprland_anim_curve.Action,
 };
 
 pub const Content = struct {
@@ -1342,18 +1346,7 @@ pub const Content = struct {
                     return .{ .anim_leaf = zoolander_anim.hit(p.x, p.y, p.w, lx, ly) };
                 },
                 .anim => |an| {
-                    const tgx: f64 = @floatFromInt(p.x + p.w - common.card_pad - 40 - 34);
-                    const tgy: f64 = @floatFromInt(p.y + @divTrunc(rows_mod.anim_row_h - 24, 2));
-                    if (lx >= tgx and lx < tgx + 40 and @as(f64, @floatFromInt(ly)) >= tgy and @as(f64, @floatFromInt(ly)) < tgy + 24) {
-                        return .{ .anim_toggle = an.entry };
-                    }
-                    const dd = hyprland_tab.animDotCenter(p.card_x, p.card_w, p.y);
-                    const dx = lx - @as(f64, @floatFromInt(dd.x));
-                    const dy = @as(f64, @floatFromInt(ly)) - @as(f64, @floatFromInt(dd.cy));
-                    if (@abs(dx) < @as(f64, hyprland_tab.anim_dot_hit_w) and @abs(dy) < @as(f64, hyprland_tab.anim_dot_hit_h)) {
-                        return .{ .anim_dot = an.entry };
-                    }
-                    return .none;
+                    return .{ .anim_curve = hyprland_anim_curve.hit(p.x, p.y, p.w, an.entry, lx, ly) };
                 },
                 .slider => |sl| {
                     const tr = if (isHyprStyle(self.active_tab)) hyprSliderTrack(p) else sliderTrack(p);
@@ -1552,10 +1545,14 @@ pub const Content = struct {
                 self.sub_for[@intCast(self.active_tab)] = @intCast(i);
                 self.scroll_px = 0;
                 self.open_combo = null;
+                // An open inline editor belongs to the section we are
+                // leaving; it has no row on any other section's cards.
+                hyprland_anim_curve.reset();
                 self.relayout();
                 return true;
             },
             .anim_leaf => |act| return zoolander_anim.apply(act),
+            .anim_curve => |act| return hyprland_anim_curve.apply(act),
             .anim_toggle => |ei| {
                 const meta = hyprland_data.k_anim_entries[ei];
                 hyprland_data.setAnimEnabled(meta.name, !hyprland_data.animEnabled(meta.name));
@@ -2661,64 +2658,10 @@ pub const Content = struct {
                 zoolander_anim.paint(c, p.x, p.y, p.w, self.pointer_x, self.pointer_ly);
             },
             .anim => |an| {
-                // Hyprland animation entry: label + `speed, curve[, style]`
-                // info + switch + 3-dot editor menu. Text baselines match;
-                // the switch and dots centre in the 60px toggle-pitch row.
-                const yf: f64 = @floatFromInt(p.y);
-                const ei: usize = an.entry;
-                const meta: hyprland_data.AnimEntry = if (ei < hyprland_data.k_anim_entries.len)
-                    hyprland_data.k_anim_entries[ei]
-                else
-                    .{ .name = "?", .label = "?", .styles = "" };
-                const en = hyprland_data.animEnabled(meta.name);
-                const inherited = hyprland_data.animIsInherited(meta.name);
-                ui_paint.showText(
-                    c,
-                    @floatFromInt(p.x + common.card_pad),
-                    yf + 22,
-                    meta.label,
-                    14,
-                    500,
-                    t.text_r,
-                    t.text_g,
-                    t.text_b,
-                    if (en) 0.93 else 0.46,
-                );
-                var info_buf: [128]u8 = undefined;
-                const info: []const u8 = if (inherited)
-                    "Inherited (3.0, default)"
-                else blk: {
-                    const speed = hyprland_data.animSpeed(meta.name);
-                    const curve = hyprland_data.animCurve(meta.name);
-                    const style = hyprland_data.animStyle(meta.name);
-                    break :blk if (style.len > 0)
-                        std.fmt.bufPrint(&info_buf, "{d:.1}, {s}, {s}", .{ speed, curve, style }) catch ""
-                    else
-                        std.fmt.bufPrint(&info_buf, "{d:.1}, {s}", .{ speed, curve }) catch "";
-                };
-                if (info.len > 0) ui_paint.showText(
-                    c,
-                    @floatFromInt(p.x + common.card_pad),
-                    yf + 42,
-                    info,
-                    11,
-                    400,
-                    t.text_r,
-                    t.text_g,
-                    t.text_b,
-                    if (!en) 0.20 else if (inherited) 0.40 else 0.50,
-                );
-                const tg_x: i32 = p.x + p.w - common.card_pad - 40 - 34;
-                drawToggle(c, tg_x, p.y + @divTrunc(rows_mod.anim_row_h - 24, 2), 40, 24, en, .l);
-                const dot_x: f64 = @floatFromInt(p.x + p.w - (common.card_pad + 12));
-                const dot_cy: f64 = yf + @as(f64, @floatFromInt(rows_mod.anim_row_h)) * 0.5;
-                cairo_set_source_rgba(c, t.text_r, t.text_g, t.text_b, 0.40);
-                cairo_arc(c, dot_x, dot_cy - 7.0, 1.8, 0, std.math.pi * 2.0);
-                cairo_fill(c);
-                cairo_arc(c, dot_x, dot_cy, 1.8, 0, std.math.pi * 2.0);
-                cairo_fill(c);
-                cairo_arc(c, dot_x, dot_cy + 7.0, 1.8, 0, std.math.pi * 2.0);
-                cairo_fill(c);
+                // Hyprland animation entry with the inline curve editor:
+                // the module owns the row header (label, info, thumbnail,
+                // switch, chevron) and the expanded editor bands.
+                hyprland_anim_curve.paint(c, p.x, p.y, p.w, an.entry, self.pointer_x, self.pointer_ly);
             },
         }
     }

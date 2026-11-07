@@ -460,6 +460,7 @@ test {
     _ = @import("ux/settings2/fields.zig");
     _ = @import("ux/settings2/general_persist.zig");
     _ = @import("ux/settings2/hyprland_anim_popup.zig");
+    _ = @import("ux/settings2/hyprland_anim_curve.zig");
     _ = @import("ux/settings2/hyprland_bezier.zig");
     _ = @import("ux/settings2/hyprland_data.zig");
     _ = @import("ux/settings2/hyprland_page.zig");

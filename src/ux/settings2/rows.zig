@@ -5,6 +5,7 @@ const templates_tab = @import("templates_tab.zig");
 const time_tab = @import("time_tab.zig");
 const rows_zoolander = @import("rows_zoolander.zig");
 const zoolander_anim = @import("zoolander_anim.zig");
+const hyprland_anim_curve = @import("hyprland_anim_curve.zig");
 
 // Declarative content rows — one table per tab describing its cards and rows. Each
 // tab describes its cards/rows once, here; the generic renderer in
@@ -407,7 +408,7 @@ pub fn rowHeightFor(r: Row, board_max: usize) i32 {
         .toolbar => toolbar_h,
         .canvas => canvas_h,
         .pills => pills_h,
-        .anim => anim_row_h,
+        .anim => |a| anim_row_h + hyprland_anim_curve.extraFor(a.entry),
         .anim_leaves => zoolander_anim.height(),
     };
 }

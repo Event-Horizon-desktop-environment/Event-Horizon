@@ -1098,6 +1098,14 @@ test "hyprland-data: animation entries parse and rewrite in file order" {
     try t.expectEqualStrings(expected, out.items);
 
     // Reset for the other tests: nothing pending, defaults restored.
+    clearAnimStateForTests();
+}
+
+/// Reset the in-memory animation list and dirty flag so tests that poke
+/// settings through `setAnim*` can leave the shared module state as they
+/// found it. (The entries themselves live on `g_arena`, which `load`
+/// reinitialises; dropping the list is what the load path does anyway.)
+pub fn clearAnimStateForTests() void {
     g_anims = .empty;
     g_dirty = false;
 }
