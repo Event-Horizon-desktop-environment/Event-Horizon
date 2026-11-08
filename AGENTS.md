@@ -41,6 +41,7 @@ only build.
    `src/tmp_*.zig`, `src/scratch_bar.zig`, `src/zz_monitors_smoke_test.zig`,
    `New Document.log` (a CI log), `src/.zig-cache/`, `scripts/__pycache__/`,
    `assets/.state/`.
+9. Git is read only.   
 
 ## Commands
 

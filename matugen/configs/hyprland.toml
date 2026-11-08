@@ -1,7 +1,3 @@
 [templates.ehhyprland]
-input_path = 'SHELL_DIR/matugen/templates/hypr-colors.conf'
-output_path = 'CONFIG_DIR/hypr/eh/colors.conf'
-
-[templates.ehhyprland_lua]
 input_path = 'SHELL_DIR/matugen/templates/hypr-colors.lua'
 output_path = 'CONFIG_DIR/hypr/eh/colors.lua'

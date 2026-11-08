@@ -3,21 +3,25 @@ const common = @import("common.zig");
 
 // Hyprland tab (incl. m3 sub-states, anim popup, bezier editor). The
 // sections are the rail's sub pages — one sidebar tab each
-// (`app.hyprland_subs`, General=64 … Quirks=78) — so there is no in-page
+// (`app.hyprland_subs`, General=64 … Quirks=77) — so there is no in-page
 // child strip: the content column starts at the design-B page top like
 // every other card page. Card sliders mirror hyprland.conf keys, bezier
 // P1/P2 drag in a 230x230 pad.
 
 /// Sidebar tab ids of the section pages (`app.TabId.hyprland_first/last`).
 pub const first_tab_id: i32 = 64;
-pub const last_tab_id: i32 = 78;
+pub const last_tab_id: i32 = 77;
 
-/// Section order (`child_tabs`, General=0 … Quirks=14) — the rail subs
-/// (`app.hyprland_subs`) walk these in the same order.
+/// Section order (`child_tabs`, General=0 … Quirks=13) — the rail subs
+/// (`app.hyprland_subs`) walk these in the same order. The layout sections
+/// are one page ("Layouts") like Zoolander's Workspaces & Layouts: a
+/// default-layout picker plus per-layout option cards. Input splits into
+/// Keyboards and Mouse & Touchpad the way Zoolander's settings do.
 pub const child_tabs = [_][]const u8{
-    "General", "Decoration", "Input",   "Binds",   "Dwindle",
-    "Master",  "Scrolling",  "Animations", "Misc", "Render",
-    "Cursor",  "Group",      "XWayland", "OpenGL", "Quirks",
+    "General", "Decoration", "Keyboards",  "Mouse & Touchpad",
+    "Binds",   "Layouts",    "Animations", "Misc",
+    "Render",  "Cursor",     "Group",      "XWayland",
+    "OpenGL",  "Quirks",
 };
 
 /// True when `tab` selects a Hyprland section page.
@@ -117,7 +121,6 @@ pub var bezier_p2y: f64 = 1.0;
 /// The Layout dropdown rides the generic combo machinery (`open_combo` with
 /// a 140px box — see `ui_content.comboPopupRect`), so it needs no separate
 /// open/hover state.
-
 pub fn resetPopups() void {
     anim_edit_idx = -1;
     anim_curve_open = false;
@@ -142,15 +145,17 @@ pub fn setAnimSpeedBuf(s: []const u8) void {
 
 test "settings-hyprland-tab: section ids and popup geometry" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 15), child_tabs.len);
-    try t.expectEqualStrings("Dwindle", child_tabs[4]);
-    try t.expectEqualStrings("Animations", child_tabs[7]);
-    try t.expectEqualStrings("Quirks", child_tabs[14]);
-    // Section ids: General=64 … Quirks=78, contiguous.
+    try t.expectEqual(@as(usize, 14), child_tabs.len);
+    try t.expectEqualStrings("Keyboards", child_tabs[2]);
+    try t.expectEqualStrings("Mouse & Touchpad", child_tabs[3]);
+    try t.expectEqualStrings("Layouts", child_tabs[5]);
+    try t.expectEqualStrings("Animations", child_tabs[6]);
+    try t.expectEqualStrings("Quirks", child_tabs[13]);
+    // Section ids: General=64 … Quirks=77, contiguous.
     try t.expect(!isSectionTab(63));
     try t.expect(isSectionTab(64));
-    try t.expect(isSectionTab(78));
-    try t.expect(!isSectionTab(79));
+    try t.expect(isSectionTab(77));
+    try t.expect(!isSectionTab(78));
     try t.expectEqual(@as(i32, 6), sectionOf(70));
     try t.expectEqual(@as(i32, 0), sectionOf(33));
     // Anim popup: centered in the content box, below the page header.

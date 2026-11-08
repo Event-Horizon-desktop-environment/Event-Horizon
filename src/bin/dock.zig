@@ -388,6 +388,11 @@ const Dock = struct {
     /// Frames actually put out since the last drag ended — the half of the
     /// picture the dropped count does not tell.
     paint_frames: u32 = 0,
+    /// Whether the trash has anything in it, polled off the filesystem and
+    /// mirrored into the can's empty/full artwork.
+    trash_full: bool = false,
+    /// Earliest monotonic millisecond for the next trash poll.
+    trash_next_ms: u64 = 0,
     /// A frame is owed: the last `repaint` had to drop one because the
     /// compositor held both buffers. The release hook (`onShmRelease`) puts it
     /// out the moment a buffer comes back, so the dock never sits frozen
@@ -2287,7 +2292,8 @@ const Dock = struct {
         h.update(theme);
         // Settings swaps light/dark artwork with the chrome, so a theme flip
         // must invalidate the resolved pixels like a theme-name change does.
-        const dark: u8 = if (chrome_colors.isDark(chrome_colors.of(cfg))) 1 else 0;
+        // The Settings override counts too: it changes which plate is read.
+        const dark: u8 = if (dwp.lightArtwork(chrome_colors.isDark(chrome_colors.of(cfg)), cfg.dock.widget_dark_icons)) 1 else 0;
         h.update(&.{dark});
         return h.final();
     }
@@ -3349,7 +3355,7 @@ const Dock = struct {
                 n += 1;
             }
         } else {
-            for (dwp.iconCandidates(s.kind, chrome_colors.isDark(chrome_colors.of(&self.app.loaded.cfg)))) |cand| {
+            for (dwp.iconCandidates(s.kind, dwp.lightArtwork(chrome_colors.isDark(chrome_colors.of(&self.app.loaded.cfg)), self.app.loaded.cfg.dock.widget_dark_icons))) |cand| {
                 if (n >= names.len) break;
                 names[n] = cand;
                 n += 1;
@@ -3926,6 +3932,7 @@ const Dock = struct {
                         .title_scale = media_paint.titleScaleLimit(cfg, s.key),
                         .now_sec = @as(f64, @floatFromInt(now_ns)) / 1e9,
                         .now_ns = now_ns,
+                        .dark = dwp.lightArtwork(chrome_colors.isDark(chrome), cfg.dock.widget_dark_icons),
                     },
                     &self.media_pos,
                 );
@@ -3982,6 +3989,7 @@ const Dock = struct {
                 .frame = cfg.dock.dock_icon_frames and s.kind == .app,
                 .text_rgb = chrome.text,
                 .accent_rgb = chrome.accent,
+                .dark = dwp.lightArtwork(chrome_colors.isDark(chrome), cfg.dock.widget_dark_icons),
             };
             d.pill_rgb = pill_rgb;
             d.pill_alpha = pill_alpha;
@@ -3995,6 +4003,7 @@ const Dock = struct {
             // ships no logo we could find, and never the first letter of
             // `__app_menu__`.
             if (i < self.icons.len) d.icon = self.icons[i];
+            d.trash_full = self.trash_full;
             if (s.kind == .app_menu and (d.icon == null or d.icon.?.pixels.len == 0)) {
                 d.dots = 3;
                 d.dot_rgb = if (palette_on) chrome.accent else .{ .r = 1.0, .g = 1.0, .b = 1.0 };
@@ -4133,30 +4142,6 @@ const Dock = struct {
                 );
                 if (d.hover) dwp.paintHoverOverlay(cr, sx, slot_y, sw, slot_h);
                 continue;
-            } else if (s.kind == .volume_mixer) {
-                // VolumeMixer slot — the same
-                // pill, wash and glyph the vpn slot draws, one name over:
-                // `volume_up`, accent when a palette is driving the bar and
-                // white when it is not. It resolves to Lucide's `volume-2`
-                // through the vendored SVG bank.
-                dwp.paintPill(cr, sx, slot_y, sw, slot_h, pill_rgb, pill_alpha, true);
-                if (d.hover) {
-                    dwp.paintSlot(cr, sx, slot_y, sw, slot_h, @floatFromInt(self.icon_px), .{
-                        .pill = false,
-                        .kind = s.kind,
-                        .hover = true,
-                    });
-                }
-                const icon_px: f64 = @floatFromInt(self.icon_px);
-                // `palette_on` is frame-scoped, hoisted with the pill globals.
-                const acc = chrome.accent;
-                const gr = if (palette_on) acc.r else 1.0;
-                const gg = if (palette_on) acc.g else 1.0;
-                const gb = if (palette_on) acc.b else 1.0;
-                const gx = sx + icon_px * 0.5;
-                const gy = slot_y + icon_px * 0.5;
-                _ = svg_icons.draw(cr, "volume_up", gx, gy, icon_px * 0.52, gr, gg, gb, 1.0, false);
-                continue;
             } else if (s.kind == .vpn) {
                 // Vpn slot: pill, the shared
                 // wash, then `vpn_key` — the palette's accent when one is
@@ -4174,25 +4159,6 @@ const Dock = struct {
                 const gx = sx + icon_px * 0.5;
                 const gy = slot_y + icon_px * 0.5;
                 _ = svg_icons.draw(cr, "vpn_key", gx, gy, icon_px * 0.52, gr, gg, gb, 1.0, false);
-                continue;
-            } else if (s.kind == .overview) {
-                // Overview slot: the same pill-and-glyph shape the vpn arm
-                // draws, with `dashboard` for the glyph — the mark the
-                // C++ Overview arm paints (`draw_material_glyph` at
-                // `icon * 0.52`): accent when a palette is driving the bar,
-                // plain white otherwise. `dashboard` resolves to Lucide's
-                // `layout-dashboard`, which is what renders here.
-                dwp.paintPill(cr, sx, slot_y, sw, slot_h, pill_rgb, pill_alpha, true);
-                if (d.hover) dwp.paintHoverOverlay(cr, sx, slot_y, sw, slot_h);
-                const icon_px: f64 = @floatFromInt(self.icon_px);
-                // `palette_on` is frame-scoped, hoisted with the pill globals.
-                const acc = chrome.accent;
-                const gr = if (palette_on) acc.r else 1.0;
-                const gg = if (palette_on) acc.g else 1.0;
-                const gb = if (palette_on) acc.b else 1.0;
-                const gx = sx + icon_px * 0.5;
-                const gy = slot_y + icon_px * 0.5;
-                _ = svg_icons.draw(cr, "dashboard", gx, gy, icon_px * 0.52, gr, gg, gb, 1.0, false);
                 continue;
             } else if (s.kind == .layout) {
                 // Layout slot: the widget's own
@@ -4233,6 +4199,10 @@ const Dock = struct {
                     d.lucide = "tune";
                 } else if (s.kind == .clipstack) {
                     d.lucide = "content_paste";
+                } else if (s.kind == .overview) {
+                    // Artwork is embedded and drawn by `drawContent`; the
+                    // dashboard glyph only covers a librsvg failure.
+                    d.lucide = "dashboard";
                 }
             }
             if (d.icon == null and d.label == null and d.dots == 0) {
@@ -7847,6 +7817,34 @@ const Dock = struct {
     const kWeatherIntervalMs: i64 = 15 * 60 * 1000;
     const kWeatherRetryMs: i64 = 60 * 1000;
 
+    /// Picks the trash can's empty/full artwork. The trash directory is a
+    /// plain filesystem read, throttled to the same 5 s cadence the taskbar
+    /// uses. Returns true when the state changed, so the caller repaints.
+    fn pollTrashFs(self: *Dock, now_ms: u64) bool {
+        if (now_ms < self.trash_next_ms) return false;
+        self.trash_next_ms = now_ms + 5000;
+        var full = false;
+        const home = self.app.home orelse "/tmp";
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const dir_path = std.fmt.bufPrint(&path_buf, "{s}/.local/share/Trash/files", .{home}) catch "";
+        if (dir_path.len > 0) {
+            var dir = std.Io.Dir.openDirAbsolute(self.app.io, dir_path, .{ .iterate = true }) catch null;
+            if (dir != null) {
+                defer dir.?.close(self.app.io);
+                var it = dir.?.iterate();
+                while (it.next(self.app.io) catch null) |e| {
+                    if (e.name.len > 0) {
+                        full = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (full == self.trash_full) return false;
+        self.trash_full = full;
+        return true;
+    }
+
     /// Drains the weather worker and starts the next fetch when one is due.
     /// The request itself runs on its own thread because `std.http.Client`
     /// blocks and this is the compositor's input path. Returns true when a
@@ -7983,6 +7981,9 @@ const Dock = struct {
         // An open popup refreshes its snapshot off the same poll.
         const cc_changed = self.pollCcLive(now_ms, false);
         const bat_changed = self.pollBattery(now_ms);
+        // The trash can's empty/full artwork follows the Trash directory on a
+        // slow cadence; the repaint below picks the state up.
+        _ = self.pollTrashFs(now_ms);
         // The VPN list rides its own worker. Taking the result *and* starting
         // the next read both live here rather than inside the cc poll above,
         // which has its own throttle and its own early returns: a read that

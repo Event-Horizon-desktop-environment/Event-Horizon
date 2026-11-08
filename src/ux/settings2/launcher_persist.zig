@@ -25,6 +25,8 @@ pub const widgets_component = "widgets";
 pub fn loadSlotPill(s: *app_mod.Settings, d: *const cfg.DockSettings, t: *const cfg.TaskbarSettings) void {
     s.slot_pill_opacity = d.slot_pill_opacity;
     s.taskbar_slot_pill_opacity = t.slot_pill_opacity;
+    // Either bar asking for the dark variant wins: the toggle is shared.
+    s.widget_dark_icons = d.widget_dark_icons or t.widget_dark_icons;
 }
 
 /// Seed the Workspaces child from the `workspaces` widget instance.
@@ -73,6 +75,7 @@ pub fn saveSlotPill(
         defer gpa.free(path);
         const entries = [_]section_store.Entry{
             .{ .key = "slot_pill_opacity", .value = try section_store.intValue(values.allocator(), s.slot_pill_opacity) },
+            .{ .key = "widget_dark_icons", .value = section_store.boolValue(s.widget_dark_icons) },
         };
         try section_store.save(gpa, io, path, dock_section, &entries);
     }
@@ -81,6 +84,7 @@ pub fn saveSlotPill(
         defer gpa.free(path);
         const entries = [_]section_store.Entry{
             .{ .key = "slot_pill_opacity", .value = try section_store.intValue(values.allocator(), s.taskbar_slot_pill_opacity) },
+            .{ .key = "widget_dark_icons", .value = section_store.boolValue(s.widget_dark_icons) },
         };
         try section_store.save(gpa, io, path, taskbar_section, &entries);
     }
@@ -154,11 +158,13 @@ test "launcher-persist: workspaces load keeps defaults when absent" {
 test "launcher-persist: slot pill seeds from dock" {
     const t = std.testing;
     var s = app_mod.Settings{};
-    const d = cfg.DockSettings{ .slot_pill_opacity = 42 };
-    const tb = cfg.TaskbarSettings{ .slot_pill_opacity = 43 };
+    const d = cfg.DockSettings{ .slot_pill_opacity = 42, .widget_dark_icons = true };
+    const tb = cfg.TaskbarSettings{ .slot_pill_opacity = 43, .widget_dark_icons = false };
     loadSlotPill(&s, &d, &tb);
     // Dock wins the shared slider; the taskbar copy keeps its own file value
     // until the slider moves (fields.setInt syncs both on edit).
     try t.expectEqual(@as(i32, 42), s.slot_pill_opacity);
     try t.expectEqual(@as(i32, 43), s.taskbar_slot_pill_opacity);
+    // Either bar asking for the dark artwork wins too.
+    try t.expect(s.widget_dark_icons);
 }

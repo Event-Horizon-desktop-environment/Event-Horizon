@@ -40,6 +40,12 @@ pub fn loadPng(alloc: std.mem.Allocator, path: []const u8) ?Pixels {
     return .{ .w = img.w, .h = img.h, .data = img.pixels };
 }
 
+/// Straight `R,G,B,A` → cairo's premultiplied `B,G,R,A`, in place. Exposed for
+/// callers that build pixels themselves (embedded icon resources).
+pub fn rgbaToCairo(px: []u8) void {
+    toCairoBgra(px);
+}
+
 fn toCairoBgra(px: []u8) void {
     var i: usize = 0;
     while (i + 3 < px.len) : (i += 4) {

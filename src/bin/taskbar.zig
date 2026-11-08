@@ -658,7 +658,7 @@ const Taskbar = struct {
         std.mem.writeInt(i32, ib[4..8], @intFromFloat(@round(self.uiScale() * 1000.0)), .little);
         ib[8] = if (self.trash_full) 1 else 0;
         // Settings ships light and dark artwork; a theme flip must reload it.
-        ib[9] = if (chrome.isDark(chrome.of(cfg))) 1 else 0;
+        ib[9] = if (dwp.lightArtwork(chrome.isDark(chrome.of(cfg)), cfg.taskbar.widget_dark_icons)) 1 else 0;
         h.update(&ib);
         h.update(cfg.taskbar.icon_theme);
         for (self.pins) |p| h.update(p.norm);
@@ -1459,17 +1459,18 @@ const Taskbar = struct {
                 const tpx: i32 = @intFromFloat(@round(@max(16.0, icon * 2.0)));
                 self.icons[i] = self.resolveAppIcon(name, tpx);
             } else if (sl.kind == .audio_center) {
-                // Shell component art (the icon installed from
-                // `src/resources/icons/audio-center.svg`), same naming rule
-                // the dock uses for the settings gear.
-                const tpx: i32 = @intFromFloat(@round(@max(16.0, icon * 2.0)));
-                self.icons[i] = self.resolveAppIcon("event-horizon-audio-center", tpx);
+                // Audio Centre artwork is embedded in `widgets_paint` and
+                // drawn by `paintSlot`, so no theme lookup is needed here.
+                self.icons[i] = .{};
             } else if (sl.kind == .settings) {
                 // Settings ships light and dark slider artwork; walk the
                 // candidates so an older install without the variant still
                 // lands on the generic themed gear.
                 const tpx: i32 = @intFromFloat(@round(@max(16.0, icon * 2.0)));
-                const cands = dwp.iconCandidates(.settings, chrome.isDark(chrome.of(&self.app.loaded.cfg)));
+                const cands = dwp.iconCandidates(.settings, dwp.lightArtwork(
+                    chrome.isDark(chrome.of(&self.app.loaded.cfg)),
+                    self.app.loaded.cfg.taskbar.widget_dark_icons,
+                ));
                 for (cands) |name| {
                     self.icons[i] = self.resolveAppIcon(name, tpx);
                     if (self.icons[i].pixels.len > 0) break;
@@ -2272,6 +2273,7 @@ const Taskbar = struct {
 
     fn slotDraw(self: *Taskbar, cr: ?*cairo.cairo_t, slot: *const tb_types.PaintSlot, idx: usize, x: f64, y: f64, w: f64, h: f64, icon_px: f64, ui: f64) void {
         const c = cr orelse return;
+        const cfg = &self.app.loaded.cfg;
         const hovered = @as(i32, @intCast(idx)) == self.hover;
         const pressed = @as(i32, @intCast(idx)) == self.pressed;
         const is_app = slot.kind == .app;
@@ -2292,6 +2294,7 @@ const Taskbar = struct {
             .lift = lift + bounce,
             .text_rgb = mc.text,
             .accent_rgb = mc.accent,
+            .dark = dwp.lightArtwork(chrome.isDark(mc), cfg.taskbar.widget_dark_icons),
             // Same rule as the dock's strip: the arms below paint through
             // `paintSlot`, and exactly the kinds that own a pill get one
             // (smenu, trash, overview, settings, …). App and tray are
@@ -2344,11 +2347,18 @@ const Taskbar = struct {
             },
             .trash => {
                 d.kind = .trash;
+                // Embedded full-colour artwork (empty vs full, contrasting
+                // plate) is painted by `paintSlot`; the themed icon and the
+                // Lucide glyph remain only as rasterization fallbacks.
+                d.trash_full = self.trash_full;
                 d.icon = self.icons[idx];
                 if (d.icon == null or d.icon.?.pixels.len == 0) d.lucide = "delete";
                 dwp.paintSlot(cr, x, y, w, h, icon_px, d);
             },
             .overview => {
+                // Full-colour Overview artwork (light plate on a dark bar),
+                // embedded in `widgets_paint`; dashboard stays as the
+                // pre-rasterization fallback.
                 d.kind = .overview;
                 d.lucide = "dashboard";
                 dwp.paintSlot(cr, x, y, w, h, icon_px, d);
@@ -2545,6 +2555,7 @@ const Taskbar = struct {
                             .title_scale = media_paint.titleScaleLimit(cfg, slot.key),
                             .now_sec = @as(f64, @floatFromInt(now_ns)) / 1e9,
                             .now_ns = now_ns,
+                            .dark = dwp.lightArtwork(chrome.isDark(mc), cfg.taskbar.widget_dark_icons),
                         },
                         &self.media_pos,
                     );
@@ -2629,7 +2640,10 @@ const Taskbar = struct {
                     .text_rgb = mc.text,
                     .accent_rgb = mc.accent,
                 };
-                const cands = dwp.iconCandidates(kind, chrome.isDark(chrome.of(cfg)));
+                const cands = dwp.iconCandidates(kind, dwp.lightArtwork(
+                    chrome.isDark(chrome.of(cfg)),
+                    cfg.taskbar.widget_dark_icons,
+                ));
                 d.lucide = if (cands.len > 0) cands[0] else "circle";
                 dwp.paintSlot(c, x, y, w, h, icon_px, d);
             },

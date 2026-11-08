@@ -149,6 +149,7 @@ const launcher_grid_rows = [_]Row{
 };
 
 const launcher_appearance_rows = [_]Row{
+    .{ .toggle = .{ .label = "Dark widget icons", .desc = "Always use the dark artwork variant for the shell's widget icons instead of following the bar theme.", .field = .widget_dark_icons } },
     .{ .slider = .{ .label = "Widget opacity", .field = .slot_pill_opacity, .min = 0, .max = 100, .unit = "%" } },
 };
 
@@ -166,7 +167,7 @@ pub const launcher_main = [_]Card{
     },
     .{
         .title = "Appearance",
-        .subtitle = "Widget opacity",
+        .subtitle = "Widget artwork and opacity",
         .rows = &launcher_appearance_rows,
     },
 };

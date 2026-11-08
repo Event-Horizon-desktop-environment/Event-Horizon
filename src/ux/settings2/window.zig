@@ -2956,11 +2956,13 @@ pub const Win = struct {
             .anim_curve => {
                 if (self.content.applyHit(ch, x)) self.content.relayout();
             },
-            // Picking a layout can add or remove the arguments panel under
-            // the picker, so the card height changes with the pick.
-            .layout_pick => {
+            // Picking a layout can add or remove the option cards under the
+            // picker, so the card height changes with the pick. Zoolander's
+            // picker flushes its tab like every other zool control; the
+            // Hyprland one rides the section-band release-commit path.
+            .layout_pick => |lp| {
                 _ = self.content.applyHit(ch, x);
-                self.flushZoolanderTab();
+                if (!lp.field.isHypr()) self.flushZoolanderTab();
                 self.content.relayout();
             },
             else => {

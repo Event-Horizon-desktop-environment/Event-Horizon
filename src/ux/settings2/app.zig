@@ -15,9 +15,9 @@ const overlay = @import("../../config/overlay.zig");
 //   Bluetooth(47): 47 Bluetooth (single-page rail category)
 //   Default Apps(10): 10 Default Apps
 //   Display(13): 7 Monitors, 19 Nightlight
-//   Hyprland(33): 64 General, 65 Decoration, 66 Input, 67 Binds, 68 Dwindle, 69 Master,
-//                 70 Scrolling, 71 Animations, 72 Misc, 73 Render, 74 Cursor, 75 Group,
-//                 76 XWayland, 77 OpenGL, 78 Quirks
+//   Hyprland(33): 64 General, 65 Decoration, 66 Keyboards, 67 Mouse & Touchpad, 68 Binds,
+//                 69 Layouts, 70 Animations, 71 Misc, 72 Render, 73 Cursor, 74 Group,
+//                 75 XWayland, 76 OpenGL, 77 Quirks
 //   MangoWM(16): 20 Decoration, 21 Colors, 22 Animations, 23 Keybinds, 24 Layout, 25 Input, 26 Misc
 //   Network(85): 18 Wired, 28 VPN
 //   Panels&UI(12): 0 Dock, 1 Panel, 11 Taskbar, 9 Launcher, 29 Desktop, 27 Desktop Widgets
@@ -432,6 +432,9 @@ pub const Settings = struct {
     launchpad_view_mode: i32 = 0,
     slot_pill_opacity: i32 = 100,
     taskbar_slot_pill_opacity: i32 = 100,
+    /// Force the dark variant of the shell's full-colour widget artwork.
+    /// Shared by both bars; the Launcher toggle writes it to each bar file.
+    widget_dark_icons: bool = false,
 
     overview_axis: i32 = 0,
     overview_live_updates: bool = false,
@@ -649,10 +652,10 @@ test "settings-app: tab registry mirrors the sidebar sections" {
     for (display_subs) |s| try t.expect(s.tab_id != 2 and s.tab_id != 45 and s.tab_id != 50 and s.tab_id != 44);
     // The Hyprland rail category expands into section pages: the category
     // itself has subs now, so `tabTitle` answers for the section tabs
-    // (64 = General … 78 = Quirks) and not for the rail id 33.
+    // (64 = General … 77 = Quirks) and not for the rail id 33.
     try t.expect(tabTitle(33) == null);
     try t.expectEqualStrings("General", tabTitle(64).?);
-    try t.expectEqualStrings("Binds", tabTitle(67).?);
+    try t.expectEqualStrings("Binds", tabTitle(68).?);
     // Bing owns its own tab id — it shares nothing with MangoWM's rail id.
     try t.expectEqualStrings("Bing Wallpaper", tabTitle(34).?);
     try t.expectEqualStrings("Decoration", tabTitle(20).?);

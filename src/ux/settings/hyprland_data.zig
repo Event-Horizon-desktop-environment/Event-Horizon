@@ -72,10 +72,12 @@ pub const k_bezier_presets = keys.k_bezier_presets;
 
 pub const slot_count: u16 = k_ui.len;
 
-/// The animations file holds a list of `animation = "…"` lines, one per
-/// entry; the C++ model keeps them in a `std::vector` in file order. This is
-/// that vector — including names the tab does not render, which a save
-/// re-emits untouched (the C++ vector carries them for the same reason).
+/// The animations file holds one `hl.animation({ … })` call per entry; the
+/// C++ model keeps them in a `std::vector` in file order. This is that
+/// vector — including names the tab does not render, which a save re-emits
+/// untouched (the C++ vector carries them for the same reason). Older files
+/// may still use the pre-0.57 `animation = "…"` key; the loader accepts both
+/// and a save rewrites them in the current form.
 pub const AnimLine = struct {
     name: []const u8,
     enabled: bool = true,
@@ -307,7 +309,8 @@ fn doubleVal(kv: []const KV, key: []const u8, def: f64) f64 {
 /// style. Every part is trimmed; an empty part between commas counts (the
 /// C++ pushes it) while a trailing comma's empty tail does not; and a part
 /// the line never had keeps the struct default. The three text parts are
-/// copied into `a`.
+/// copied into `a`. This is the pre-0.57 form, kept so an old config still
+/// loads before its first save migrates it.
 fn parseAnimEntry(a: std.mem.Allocator, raw: []const u8) !AnimLine {
     var e: AnimLine = .{ .name = "" };
     var start: usize = 0;
@@ -332,17 +335,74 @@ fn parseAnimEntry(a: std.mem.Allocator, raw: []const u8) !AnimLine {
     return e;
 }
 
-/// `read_anim_lines`: every line whose key is `animation`, in file order.
+/// The body of an `hl.animation({ … })` table -> one entry. Keys are read by
+/// name, so field order and the usual whitespace do not matter. `bezier` is
+/// what the current API takes for a named curve; `curve` is accepted too for
+/// hand-written configs and for older files that used the same word.
+fn parseAnimTable(a: std.mem.Allocator, body: []const u8) !?AnimLine {
+    var e: AnimLine = .{ .name = "" };
+    var has_name = false;
+
+    var start: usize = 0;
+    var i: usize = 0;
+    var quoted = false;
+    while (i <= body.len) : (i += 1) {
+        if (i < body.len) {
+            const c = body[i];
+            if (c == '"') {
+                quoted = !quoted;
+                continue;
+            }
+            if (quoted or c != ',') continue;
+        }
+        const part = trim(body[start..i]);
+        start = i + 1;
+        const eq = std.mem.indexOfScalar(u8, part, '=') orelse continue;
+        const key = trim(part[0..eq]);
+        var val = trim(part[eq + 1 ..]);
+        if (val.len >= 2 and val[0] == '"' and val[val.len - 1] == '"') {
+            val = val[1 .. val.len - 1];
+        }
+        if (std.mem.eql(u8, key, "leaf")) {
+            e.name = try a.dupe(u8, val);
+            has_name = val.len != 0;
+        } else if (std.mem.eql(u8, key, "enabled")) {
+            e.enabled = std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1");
+        } else if (std.mem.eql(u8, key, "speed")) {
+            e.speed = stodPrefix(val) orelse e.speed;
+        } else if (std.mem.eql(u8, key, "bezier") or std.mem.eql(u8, key, "curve")) {
+            e.curve = try a.dupe(u8, val);
+        } else if (std.mem.eql(u8, key, "style")) {
+            e.style = try a.dupe(u8, val);
+        }
+    }
+    return if (has_name) e else null;
+}
+
+/// `read_anim_lines`: every animation call or legacy line, in file order.
+/// Current files use `hl.animation({ … })`; the old `animation = "…"` key is
+/// still decoded so the first save after an upgrade migrates it instead of
+/// dropping every entry.
 fn loadAnimLines(a: std.mem.Allocator, text: []const u8) void {
+    var rest = text;
+    while (std.mem.indexOf(u8, rest, "hl.animation(")) |off| {
+        const after = rest[off + "hl.animation(".len ..];
+        const open = std.mem.indexOfScalar(u8, after, '{') orelse break;
+        const close = std.mem.indexOfScalar(u8, after[open..], '}') orelse break;
+        const body = after[open + 1 .. open + close];
+        if (parseAnimTable(a, body) catch null) |e| g_anims.append(a, e) catch break;
+        rest = after[open + close + 1 ..];
+    }
+
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = trim(raw);
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         if (!std.mem.eql(u8, trim(line[0..eq]), "animation")) continue;
         var val = trim(line[eq + 1 ..]);
-        // Comma first, quotes second — `read_anim_lines` pops the trailing
+        // Comma first, quotes second — the old writer pops the trailing
         // comma before it unwraps the string, and `"…",` is the shape every
-        // line has.
+        // legacy line has.
         if (val.len > 0 and val[val.len - 1] == ',') val = val[0 .. val.len - 1];
         if (val.len >= 2 and val[0] == '"' and val[val.len - 1] == '"') {
             val = val[1 .. val.len - 1];
@@ -512,24 +572,60 @@ fn writeNested(out: *std.ArrayList(u8), a: std.mem.Allocator, indent: usize, sel
     }
 }
 
-/// `write_animations`' per-entry block: a blank line, then a one-key
-/// `hl.config({ animation = "…" })`.
+/// One `hl.curve(name, …)` definition for a curve the file references.
+/// Hyprland 0.57's Lua config only ships `default`; every other preset the
+/// editor offers has to be declared or the animation is rejected with
+/// `no such bezier`. Unknown names are left alone — they may come from a
+/// user-managed curve elsewhere in the config.
+fn writeCurveDef(out: *std.ArrayList(u8), a: std.mem.Allocator, name: []const u8) !void {
+    if (std.mem.eql(u8, name, "default")) return;
+    if (std.mem.eql(u8, name, "eh_custom")) {
+        // Hand-dragged curves are session-only (see hyprland_bezier), so the
+        // persisted name needs a stable definition to stay valid.
+        try out.appendSlice(a, "\nhl.curve(\"eh_custom\", { type = \"bezier\", points = { { 0.25, 0.1 }, { 0.25, 1.0 } } })\n");
+        return;
+    }
+    const p = bezierForCurve(name) orelse return;
+    try out.appendSlice(a, "\nhl.curve(\"");
+    try out.appendSlice(a, name);
+    try appendFmt(out, a, "\", {{ type = \"bezier\", points = {{ {{ {d:.6}, {d:.6} }}, {{ {d:.6}, {d:.6} }} }} }})\n", .{ p.p1x, p.p1y, p.p2x, p.p2y });
+}
+
+/// `write_animations`' per-entry block: a blank line, then one
+/// `hl.animation({ … })` call — the form Hyprland 0.57 and later require.
+/// Emitting one call also keeps each entry on a single line, so a hand edit
+/// stays local to the animation it names. Curve definitions come first, once
+/// per distinct name.
 fn writeAnimBlocks(out: *std.ArrayList(u8), a: std.mem.Allocator) !void {
+    var defined: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer defined.deinit(a);
     for (g_anims.items) |e| {
-        var val: std.ArrayList(u8) = .empty;
-        defer val.deinit(a);
-        try val.appendSlice(a, e.name);
-        try val.appendSlice(a, if (e.enabled) ", 1, " else ", 0, ");
-        try appendFmt(&val, a, "{d:.6}", .{e.speed});
-        try val.appendSlice(a, ", ");
-        try val.appendSlice(a, e.curve);
-        if (e.style.len != 0) {
-            try val.appendSlice(a, ", ");
-            try val.appendSlice(a, e.style);
+        if (e.curve.len == 0 or std.mem.eql(u8, e.curve, "default")) continue;
+        var seen = false;
+        for (defined.items) |d| {
+            if (std.mem.eql(u8, d, e.curve)) {
+                seen = true;
+                break;
+            }
         }
-        try out.appendSlice(a, "\nhl.config({\n  animation = \"");
-        try out.appendSlice(a, val.items);
-        try out.appendSlice(a, "\",\n})\n");
+        if (seen) continue;
+        try defined.append(a, e.curve);
+        try writeCurveDef(out, a, e.curve);
+    }
+    for (g_anims.items) |e| {
+        try out.appendSlice(a, "\nhl.animation({ leaf = \"");
+        try out.appendSlice(a, e.name);
+        try out.appendSlice(a, "\", enabled = ");
+        try out.appendSlice(a, if (e.enabled) "true" else "false");
+        try appendFmt(out, a, ", speed = {d:.6}, bezier = \"", .{e.speed});
+        try out.appendSlice(a, e.curve);
+        try out.appendSlice(a, "\"");
+        if (e.style.len != 0) {
+            try out.appendSlice(a, ", style = \"");
+            try out.appendSlice(a, e.style);
+            try out.appendSlice(a, "\"");
+        }
+        try out.appendSlice(a, " })\n");
     }
 }
 
@@ -1076,11 +1172,9 @@ test "hyprland-data: animation entries parse and rewrite in file order" {
     // would hand `append` a pointer from another arena's block.
     const a = g_arena.allocator();
     loadAnimLines(a,
-        \\hl.config({
-        \\  animation = "windows, 0, 1.500000, easeOut, slide",
-        \\  animation = "weird_entry, 1, 2.000000, default",
-        \\  animation = "fade, 1, 3.000000, default",
-        \\})
+        \\hl.animation({ leaf = "windows", enabled = false, speed = 1.500000, bezier = "easeOut", style = "slide" })
+        \\hl.animation({ leaf = "weird_entry", enabled = true, speed = 2.000000, bezier = "default" })
+        \\hl.animation({ leaf = "fade", enabled = true, speed = 3.000000, bezier = "default" })
     );
     try t.expectEqual(@as(usize, 3), g_anims.items.len);
     try t.expectEqualStrings("windows", g_anims.items[0].name);
@@ -1096,33 +1190,57 @@ test "hyprland-data: animation entries parse and rewrite in file order" {
     try t.expect(animIsInherited("global"));
     try t.expectEqualStrings("Inherited (3.0, default)", animInfo("global", &buf));
 
-    // Turning an entry on appends the line the C++ would write.
+    // Turning an entry on appends the call the writer would emit.
     setAnimEnabled("global", false);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(a);
     try writeAnimBlocks(&out, a);
     const expected =
         \\
-        \\hl.config({
-        \\  animation = "windows, 0, 1.500000, easeOut, slide",
-        \\})
+        \\hl.curve("easeOut", { type = "bezier", points = { { 0.000000, 0.000000 }, { 0.580000, 1.000000 } } })
         \\
-        \\hl.config({
-        \\  animation = "weird_entry, 1, 2.000000, default",
-        \\})
+        \\hl.animation({ leaf = "windows", enabled = false, speed = 1.500000, bezier = "easeOut", style = "slide" })
         \\
-        \\hl.config({
-        \\  animation = "fade, 1, 3.000000, default",
-        \\})
+        \\hl.animation({ leaf = "weird_entry", enabled = true, speed = 2.000000, bezier = "default" })
         \\
-        \\hl.config({
-        \\  animation = "global, 0, 3.000000, default",
-        \\})
+        \\hl.animation({ leaf = "fade", enabled = true, speed = 3.000000, bezier = "default" })
+        \\
+        \\hl.animation({ leaf = "global", enabled = false, speed = 3.000000, bezier = "default" })
         \\
     ;
     try t.expectEqualStrings(expected, out.items);
 
     // Reset for the other tests: nothing pending, defaults restored.
+    g_anims = .empty;
+    g_dirty = false;
+}
+
+test "hyprland-data: legacy animation lines still load for migration" {
+    const a = g_arena.allocator();
+    loadAnimLines(a,
+        \\hl.config({
+        \\  animation = "windows, 0, 1.500000, easeOut, slide",
+        \\  animation = "fade, 1, 3.000000, default",
+        \\})
+    );
+    try t.expectEqual(@as(usize, 2), g_anims.items.len);
+    try t.expectEqualStrings("windows", g_anims.items[0].name);
+    try t.expect(!g_anims.items[0].enabled);
+    try t.expectEqualStrings("slide", g_anims.items[0].style);
+    try t.expectEqualStrings("fade", g_anims.items[1].name);
+    g_anims = .empty;
+    g_dirty = false;
+}
+
+test "hyprland-data: custom curve gets a valid definition" {
+    const a = g_arena.allocator();
+    g_anims = .empty;
+    setAnimCurve("global", "eh_custom");
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    try writeAnimBlocks(&out, a);
+    try t.expect(std.mem.indexOf(u8, out.items, "hl.curve(\"eh_custom\"") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "bezier = \"eh_custom\"") != null);
     g_anims = .empty;
     g_dirty = false;
 }

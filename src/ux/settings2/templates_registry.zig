@@ -128,7 +128,7 @@ pub const Config = struct {
 pub const templates = [_]Config{
     // --- Compositors ---------------------------------------------------------
     .{ .label = "Niri", .group = 0, .slot = 0, .input = "niri-colors.kdl", .output = "CONFIG_DIR/niri/eh/colors.kdl", .check = .bin, .bin = "niri" },
-    .{ .label = "Hyprland", .group = 0, .slot = 1, .input = "hypr-colors.conf", .output = "CONFIG_DIR/hypr/eh/colors.conf", .check = .hypr_sig },
+    .{ .label = "Hyprland", .group = 0, .slot = 1, .input = "hypr-colors.lua", .output = "CONFIG_DIR/hypr/eh/colors.lua", .check = .hypr_sig },
     .{ .label = "Mango", .group = 0, .slot = 2, .input = "mango-colors.conf", .output = "CONFIG_DIR/mango/hyprmango/colors.matugen.conf", .hook = "mmsg -d reload_config", .check = .bin, .bin = "mmsg" },
     // --- Terminals -----------------------------------------------------------
     .{ .label = "Kitty theme", .group = 1, .slot = 9, .input = "kitty.conf", .output = "CONFIG_DIR/kitty/event-theme.conf", .check = .bin, .bin = "kitty" },
@@ -745,7 +745,7 @@ test "registry: resolvePath handles every token" {
         .vscode_ext = "/h/.vscode/extensions/eh-matugen-themes",
     };
     var buf: [512]u8 = undefined;
-    try t.expectEqualStrings("/c/hypr/eh/colors.conf", resolvePath(&buf, env, "CONFIG_DIR/hypr/eh/colors.conf").?);
+    try t.expectEqualStrings("/c/hypr/eh/colors.lua", resolvePath(&buf, env, "CONFIG_DIR/hypr/eh/colors.lua").?);
     try t.expectEqualStrings("/h/.local/share/color-schemes/EventMatugen.colors", resolvePath(&buf, env, "DATA_DIR/color-schemes/EventMatugen.colors").?);
     try t.expectEqualStrings("/h/.cache/wal/event-pywalfox.json", resolvePath(&buf, env, "CACHE_DIR/wal/event-pywalfox.json").?);
     try t.expectEqualStrings("/h/.emacs.d/themes/event-emacs-theme.el", resolvePath(&buf, env, "EMACS_DIR/themes/event-emacs-theme.el").?);

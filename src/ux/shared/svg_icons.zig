@@ -124,6 +124,45 @@ fn surfaceFor(idx: u16, px: u16) ?*cairo.cairo_surface_t {
     return surf;
 }
 
+const ArtKey = struct { svg: usize, px: u16 };
+
+// Full-colour artwork cache, keyed by the embedded SVG's address. Unlike the
+// tinted Lucide set these carry their own background, so they are painted
+// rather than masked and their colours must survive.
+var art_cache: std.AutoHashMap(ArtKey, *cairo.cairo_surface_t) = undefined;
+var art_inited = false;
+
+fn artworkSurface(svg: []const u8, px: u16) ?*cairo.cairo_surface_t {
+    if (!art_inited) {
+        art_cache = std.AutoHashMap(ArtKey, *cairo.cairo_surface_t).init(std.heap.page_allocator);
+        art_inited = true;
+    }
+    const key = ArtKey{ .svg = @intFromPtr(svg.ptr), .px = px };
+    if (art_cache.get(key)) |s| return s;
+    const surf = renderSvg(svg, px) orelse return null;
+    art_cache.put(key, surf) catch {
+        cairo.cairo_surface_destroy(surf);
+        return null;
+    };
+    return surf;
+}
+
+/// Draw a full-colour embedded SVG centred on (cx, cy) at `px`. These carry
+/// their own background and palette, so the surface is painted, not masked.
+/// Returns false when rasterization failed.
+pub fn drawArtwork(cr: ?*cairo.cairo_t, svg: []const u8, cx: f64, cy: f64, px: f64) bool {
+    const c = cr orelse return false;
+    const pxi: u16 = @intFromFloat(@round(@min(@max(px, 8.0), 256.0)));
+    const surf = artworkSurface(svg, pxi) orelse return false;
+    cairo.cairo_save(c);
+    cairo.cairo_translate(c, cx, cy);
+    const off = -@as(f64, @floatFromInt(pxi)) * 0.5;
+    _ = cairo.cairo_set_source_surface(c, surf, off, off);
+    cairo.cairo_paint(c);
+    cairo.cairo_restore(c);
+    return true;
+}
+
 /// Draw the Lucide icon for `material` centred on (cx, cy) at `px`,
 /// tinted (r, g, b, a), optionally mirrored vertically (the Panel row's
 /// dock icon is the taskbar's upside down). Returns false when the name

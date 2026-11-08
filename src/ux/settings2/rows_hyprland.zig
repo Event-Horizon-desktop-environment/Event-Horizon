@@ -14,9 +14,10 @@ const Card = rows.Card;
 
 /// Child-tab labels.
 pub const child_labels = [_][]const u8{
-    "General",   "Decoration", "Input",      "Binds",      "Dwindle",
-    "Master",    "Scrolling",  "Animations", "Misc",       "Render",
-    "Cursor",    "Group",      "XWayland",   "OpenGL",     "Quirks",
+    "General", "Decoration", "Keyboards",  "Mouse & Touchpad",
+    "Binds",   "Layouts",    "Animations", "Misc",
+    "Render",  "Cursor",     "Group",      "XWayland",
+    "OpenGL",  "Quirks",
 };
 
 /// --- general ---
@@ -106,18 +107,31 @@ pub const decoration = [_]Card{
     } },
 };
 
-/// --- input ---
-pub const input = [_]Card{
-    .{ .title = "Keyboard", .subtitle = "Repeat, rotation, and key handling", .rows = &.{
+/// --- keyboards ---
+pub const keyboards = [_]Card{
+    .{ .title = "Keyboard", .subtitle = "Layout, variant, options, and repeat behavior", .rows = &.{
+        .{ .text = .{ .label = "Layout", .desc = "XKB layout name, like us, de, or gb", .field = Field.hypr_input_kb_layout } },
+        .{ .text = .{ .label = "Variant", .desc = "XKB variant applied to the layout", .field = Field.hypr_input_kb_variant } },
+        .{ .text = .{ .label = "Options", .desc = "XKB options, comma separated", .field = Field.hypr_input_kb_options } },
         .{ .toggle = .{ .label = "Numlock by default", .desc = "Enable numlock at startup", .field = Field.hypr_input_numlock_by_default } },
-        .{ .toggle = .{ .label = "Resolve binds by sym", .desc = "Resolve keybinds by keysym", .field = Field.hypr_input_resolve_binds_by_sym } },
-        .{ .toggle = .{ .label = "Force no accel", .desc = "Disable mouse acceleration", .field = Field.hypr_input_force_no_accel } },
         .{ .slider = .{ .label = "Repeat delay", .field = Field.hypr_input_repeat_delay, .min = 100, .max = 1000, .unit = "" } },
         .{ .slider = .{ .label = "Repeat rate", .field = Field.hypr_input_repeat_rate, .min = 10, .max = 100, .unit = "" } },
+    } },
+    .{ .title = "Key Handling", .subtitle = "Bind resolution and input rotation", .rows = &.{
+        .{ .toggle = .{ .label = "Resolve binds by sym", .desc = "Resolve keybinds by keysym", .field = Field.hypr_input_resolve_binds_by_sym } },
         .{ .slider = .{ .label = "Input rotation", .field = Field.hypr_input_rotation, .min = 0, .max = 3, .unit = "" } },
     } },
+    .{ .title = "Virtual Keyboard", .subtitle = "Virtual keyboard state sharing", .rows = &.{
+        .{ .toggle = .{ .label = "Release keys on close", .desc = "Release pressed keys when virtual keyboard closes", .field = Field.hypr_input_virtualkeyboard_release_pressed_on_close } },
+        .{ .slider = .{ .label = "Share states", .field = Field.hypr_input_virtualkeyboard_share_states, .min = 0, .max = 2, .unit = "" } },
+    } },
+};
+
+/// --- mouse & touchpad ---
+pub const pointer = [_]Card{
     .{ .title = "Mouse", .subtitle = "Pointer speed, acceleration, and behavior", .rows = &.{
         .{ .toggle = .{ .label = "Natural scroll", .desc = "Invert mouse scroll direction", .field = Field.hypr_input_natural_scroll } },
+        .{ .toggle = .{ .label = "Force no accel", .desc = "Disable mouse acceleration", .field = Field.hypr_input_force_no_accel } },
         .{ .toggle = .{ .label = "Left handed", .desc = "Swap mouse buttons for left-handed use", .field = Field.hypr_input_left_handed } },
         .{ .toggle = .{ .label = "Mouse refocus", .desc = "Refocus window on mouse move", .field = Field.hypr_input_mouse_refocus } },
         .{ .toggle = .{ .label = "Scroll button lock", .desc = "Do not need to hold the scroll button", .field = Field.hypr_input_scroll_button_lock } },
@@ -149,10 +163,6 @@ pub const input = [_]Card{
         .{ .toggle = .{ .label = "Enabled", .desc = "Enable input for touch devices", .field = Field.hypr_input_touchdevice_enabled } },
         .{ .slider = .{ .label = "Transform", .field = Field.hypr_input_touchdevice_transform, .min = 0, .max = 6, .unit = "" } },
     } },
-    .{ .title = "Virtual Keyboard", .subtitle = "Virtual keyboard state sharing", .rows = &.{
-        .{ .toggle = .{ .label = "Release keys on close", .desc = "Release pressed keys when virtual keyboard closes", .field = Field.hypr_input_virtualkeyboard_release_pressed_on_close } },
-        .{ .slider = .{ .label = "Share states", .field = Field.hypr_input_virtualkeyboard_share_states, .min = 0, .max = 2, .unit = "" } },
-    } },
     .{ .title = "Tablet", .subtitle = "Tablet mapping and behavior", .rows = &.{
         .{ .toggle = .{ .label = "Absolute region position", .desc = "Treat region position as absolute in monitor layout", .field = Field.hypr_input_tablet_absolute_region_position } },
         .{ .toggle = .{ .label = "Relative input", .desc = "Use relative input mode", .field = Field.hypr_input_tablet_relative_input } },
@@ -177,9 +187,9 @@ pub const binds = [_]Card{
     } },
 };
 
-/// --- dwindle ---
+/// --- dwindle (option card on the Layouts page; placed only for dwindle) ---
 pub const dwindle = [_]Card{
-    .{ .title = "Split Behavior", .subtitle = "Dwindle splitting and resizing", .rows = &.{
+    .{ .title = "Split Behavior", .subtitle = "Dwindle splitting and resizing", .layout_applies = &.{"dwindle"}, .rows = &.{
         .{ .toggle = .{ .label = "Preserve split", .desc = "Keep split direction when reopening", .field = Field.hypr_dwindle_preserve_split } },
         .{ .toggle = .{ .label = "Smart split", .desc = "Split in direction with more space", .field = Field.hypr_dwindle_smart_split } },
         .{ .toggle = .{ .label = "Smart resizing", .desc = "Resize neighbor when splitting", .field = Field.hypr_dwindle_smart_resizing } },
@@ -194,9 +204,9 @@ pub const dwindle = [_]Card{
     } },
 };
 
-/// --- master ---
+/// --- master (option card on the Layouts page; placed only for master) ---
 pub const master = [_]Card{
-    .{ .title = "Master Layout", .subtitle = "Master window placement and sizing", .rows = &.{
+    .{ .title = "Master Layout", .subtitle = "Master window placement and sizing", .layout_applies = &.{"master"}, .rows = &.{
         .{ .toggle = .{ .label = "New on top", .desc = "Place new windows at top of stack", .field = Field.hypr_master_new_on_top } },
         .{ .toggle = .{ .label = "Allow small split", .desc = "Allow splitting with small windows", .field = Field.hypr_master_allow_small_split } },
         .{ .toggle = .{ .label = "Smart resizing", .desc = "Resize direction from cursor position", .field = Field.hypr_master_smart_resizing } },
@@ -213,9 +223,9 @@ pub const master = [_]Card{
     } },
 };
 
-/// --- scrolling ---
+/// --- scrolling (option card on the Layouts page; placed only for scrolling) ---
 pub const scrolling = [_]Card{
-    .{ .title = "Scrolling Layout", .subtitle = "Column layout and scrolling", .rows = &.{
+    .{ .title = "Scrolling Layout", .subtitle = "Column layout and scrolling", .layout_applies = &.{"scrolling"}, .rows = &.{
         .{ .toggle = .{ .label = "Follow focus", .desc = "Scroll to follow focused window", .field = Field.hypr_scrolling_follow_focus } },
         .{ .toggle = .{ .label = "Wrap focus", .desc = "Wrap around when moving focus", .field = Field.hypr_scrolling_wrap_focus } },
         .{ .toggle = .{ .label = "Wrap swap column", .desc = "Wrap around when swapping columns", .field = Field.hypr_scrolling_wrap_swapcol } },
@@ -225,6 +235,28 @@ pub const scrolling = [_]Card{
         .{ .slider = .{ .label = "Direction", .field = Field.hypr_scrolling_direction, .min = 0, .max = 3, .unit = "" } },
     } },
 };
+
+/// --- layouts: Zoolander's Workspaces & Layouts design for Hyprland. ---
+/// A default-layout picker (`general.layout`, the same value the General
+/// tab's Layout dropdown writes) plus each layout's option cards, which the
+/// `layout_applies` gating places only under the layout that reads them —
+/// Dwindle's controls disappear when Master is selected, and so on.
+/// Monocle has no Hyprland options, so it shows just the picker.
+pub const layouts = [_]Card{
+    .{ .title = "Default layout", .subtitle = "How new windows are arranged on each workspace", .rows = &.{
+        .{ .layout_picker = .{
+            .field = Field.hypr_general_layout,
+            .options = &.{ "dwindle", "master", "scrolling", "monocle" },
+            .labels = &.{ "Dwindle", "Master", "Scrolling", "Monocle" },
+            .descs = &.{
+                "Each new window splits the focused tile in two.",
+                "A master area beside a stack of the other windows.",
+                "Windows become columns that scroll left and right.",
+                "One window fills the screen; the others wait behind it.",
+            },
+        } },
+    } },
+} ++ dwindle ++ master ++ scrolling;
 
 /// --- animations ---
 pub const animations = [_]Card{

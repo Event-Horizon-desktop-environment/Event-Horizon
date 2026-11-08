@@ -1,6 +1,7 @@
 const std = @import("std");
 
 extern fn stbi_load(filename: [*c]const u8, x: *c_int, y: *c_int, channels: *c_int, req_channels: c_int) ?[*]u8;
+extern fn stbi_load_from_memory(buffer: [*c]const u8, len: c_int, x: *c_int, y: *c_int, channels: *c_int, req_channels: c_int) ?[*]u8;
 extern fn stbi_info(filename: [*c]const u8, x: *c_int, y: *c_int, channels: *c_int) c_int;
 extern fn stbi_image_free(data: ?*anyopaque) void;
 extern fn stbi_failure_reason() [*c]const u8;
@@ -26,6 +27,21 @@ pub fn loadRgba(alloc: std.mem.Allocator, path: []const u8) ?Image {
     if (stbi_info(&zbuf, &w, &h, &ch) == 0) return null;
     if (w <= 0 or h <= 0 or @as(i64, w) * @as(i64, h) > 16 * 1024 * 1024) return null;
     const data = stbi_load(&zbuf, &w, &h, &ch, 4) orelse return null;
+    defer stbi_image_free(data);
+    if (w <= 0 or h <= 0 or @as(i64, w) * @as(i64, h) > 16 * 1024 * 1024) return null;
+    const nbytes: usize = @intCast(w * h * 4);
+    const out = alloc.dupe(u8, data[0..nbytes]) catch return null;
+    return .{ .w = w, .h = h, .pixels = out };
+}
+
+/// Decode an image already in memory (a PNG icon resource inside a PE file,
+/// for example) within the same pixel budget as `loadRgba`.
+pub fn loadRgbaMemory(alloc: std.mem.Allocator, bytes: []const u8) ?Image {
+    if (bytes.len == 0 or bytes.len > 128 * 1024 * 1024) return null;
+    var w: c_int = 0;
+    var h: c_int = 0;
+    var ch: c_int = 0;
+    const data = stbi_load_from_memory(bytes.ptr, @intCast(bytes.len), &w, &h, &ch, 4) orelse return null;
     defer stbi_image_free(data);
     if (w <= 0 or h <= 0 or @as(i64, w) * @as(i64, h) > 16 * 1024 * 1024) return null;
     const nbytes: usize = @intCast(w * h * 4);

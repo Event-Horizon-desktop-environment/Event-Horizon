@@ -266,22 +266,22 @@ pub fn cardsFor(tab: i32, sub: i32) []const Card {
         62 => &rows_wall_net.dashboard,
         63 => &rows_wall_net.live_wallpaper,
         // Hyprland sections — one rail sub page each (order General …
-        // Quirks); the in-page child strip is gone.
+        // Quirks); the in-page child strip is gone. The three layout
+        // sections share one "Layouts" page with a default-layout picker.
         64 => &rows_hyprland.general,
         65 => &rows_hyprland.decoration,
-        66 => &rows_hyprland.input,
-        67 => &rows_hyprland.binds,
-        68 => &rows_hyprland.dwindle,
-        69 => &rows_hyprland.master,
-        70 => &rows_hyprland.scrolling,
-        71 => &rows_hyprland.animations,
-        72 => &rows_hyprland.misc,
-        73 => &rows_hyprland.render,
-        74 => &rows_hyprland.cursor,
-        75 => &rows_hyprland.group,
-        76 => &rows_hyprland.xwayland,
-        77 => &rows_hyprland.opengl,
-        78 => &rows_hyprland.quirks,
+        66 => &rows_hyprland.keyboards,
+        67 => &rows_hyprland.pointer,
+        68 => &rows_hyprland.binds,
+        69 => &rows_hyprland.layouts,
+        70 => &rows_hyprland.animations,
+        71 => &rows_hyprland.misc,
+        72 => &rows_hyprland.render,
+        73 => &rows_hyprland.cursor,
+        74 => &rows_hyprland.group,
+        75 => &rows_hyprland.xwayland,
+        76 => &rows_hyprland.opengl,
+        77 => &rows_hyprland.quirks,
         20 => &rows_compositor.mango_decoration,
         21 => &rows_compositor.mango_colors,
         22 => &rows_compositor.mango_animations,
@@ -319,11 +319,22 @@ pub const toolbar_h: i32 = 48;
 /// 60px toggle pitch — and `hyprland_paint_anim_card`/`hitDot` paint and hit
 /// them there too. This is that pitch.
 pub const anim_row_h: i32 = 60;
-/// Workspaces & Layouts card picker: 3 rows of 84px cards, 8px gaps, plus
-/// the selected layout's 22px description line.
+/// Workspaces & Layouts card picker: 84px cards in a 5-column grid with
+/// 8px gaps; the row count follows the option count (`layout_picker_h_for`
+/// — Zoolander's 15 options make three rows, Hyprland's four make one).
+/// The selected layout's description is a hover tooltip, not row content.
 pub const layout_card_h: i32 = 84;
 pub const layout_card_gap: i32 = 8;
+pub const layout_card_cols: usize = 5;
 pub const layout_picker_h: i32 = 3 * layout_card_h + 2 * layout_card_gap;
+
+/// Picker band height for `n` options; `layout_picker_h` is the 15-option
+/// case, kept so the Zoolander page's geometry is named explicitly.
+pub fn layout_picker_h_for(n: usize) i32 {
+    if (n == 0) return 0;
+    const rows: i32 = @intCast((n + layout_card_cols - 1) / layout_card_cols);
+    return rows * layout_card_h + (rows - 1) * layout_card_gap;
+}
 /// The layout-arguments panel under the picker: its own inset surface so the
 /// chosen layout's controls read as a separate area, with room to breathe.
 pub const layout_params_h: i32 = 92;
@@ -398,7 +409,7 @@ pub fn rowHeightFor(r: Row, board_max: usize) i32 {
         .toggle => toggle_row_h,
         .slider => slider_row_h,
         .combo => combo_row_h,
-        .layout_picker => layout_picker_h,
+        .layout_picker => |lp| layout_picker_h_for(lp.options.len),
         .layout_params => layout_params_h,
         .text, .color => toggle_row_h,
         .tile_slider, .tile_toggle => tile_h,

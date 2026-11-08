@@ -17,6 +17,58 @@ const anim = @import("anim.zig");
 const svg_icons = @import("../../ux/shared/svg_icons.zig");
 const pill_style = @import("../widgets/shared/pill.zig");
 
+/// Overview widget art: the light plate sits on a dark bar and the dark plate
+/// on a light bar, same contrast rule as the Settings sliders. Embedded so the
+/// widget looks right even when `install-icons` has not populated the theme.
+const overview_light_svg = @embedFile("../../resources/icons/overview-light.svg");
+const overview_dark_svg = @embedFile("../../resources/icons/overview-dark.svg");
+/// Audio Centre, Sound Mixer and the idle Media disc follow the same
+/// light-on-dark / dark-on-light contrast rule.
+const audio_center_light_svg = @embedFile("../../resources/icons/audio-center-light.svg");
+const audio_center_dark_svg = @embedFile("../../resources/icons/audio-center-dark.svg");
+const sound_mixer_light_svg = @embedFile("../../resources/icons/sound-mixer-light.svg");
+const sound_mixer_dark_svg = @embedFile("../../resources/icons/sound-mixer-dark.svg");
+/// Trash can: empty and full, each in a dark and a light plate. Same
+/// contrast rule — the light artwork sits on a dark bar.
+const trash_empty_light_svg = @embedFile("../../resources/icons/trash-empty-light.svg");
+const trash_empty_dark_svg = @embedFile("../../resources/icons/trash-empty-dark.svg");
+const trash_full_light_svg = @embedFile("../../resources/icons/trash-full-light.svg");
+const trash_full_dark_svg = @embedFile("../../resources/icons/trash-full-dark.svg");
+
+/// Draw the full-colour Overview artwork, choosing the variant that contrasts
+/// with `dark` chrome. Returns false when rasterization failed, so callers
+/// keep the Lucide dashboard glyph as a fallback.
+pub fn drawOverviewArtwork(cr: ?*cairo.cairo_t, dark: bool, cx: f64, cy: f64, px: f64) bool {
+    return svg_icons.drawArtwork(cr, if (dark) overview_light_svg else overview_dark_svg, cx, cy, px);
+}
+
+/// Audio Centre speaker plate, light on a dark bar.
+pub fn drawAudioCenterArtwork(cr: ?*cairo.cairo_t, dark: bool, cx: f64, cy: f64, px: f64) bool {
+    return svg_icons.drawArtwork(cr, if (dark) audio_center_light_svg else audio_center_dark_svg, cx, cy, px);
+}
+
+/// Sound Mixer fader plate, light on a dark bar.
+pub fn drawSoundMixerArtwork(cr: ?*cairo.cairo_t, dark: bool, cx: f64, cy: f64, px: f64) bool {
+    return svg_icons.drawArtwork(cr, if (dark) sound_mixer_light_svg else sound_mixer_dark_svg, cx, cy, px);
+}
+
+/// Trash can artwork: `full` picks the filled variant, `dark` the plate that
+/// contrasts with the bar.
+pub fn drawTrashArtwork(cr: ?*cairo.cairo_t, dark: bool, full: bool, cx: f64, cy: f64, px: f64) bool {
+    const svg = if (full)
+        (if (dark) trash_full_light_svg else trash_full_dark_svg)
+    else
+        (if (dark) trash_empty_light_svg else trash_empty_dark_svg);
+    return svg_icons.drawArtwork(cr, svg, cx, cy, px);
+}
+
+/// Which plate the artwork should use: the one that contrasts with the
+/// chrome, unless the user forced the dark variant from Settings. The result
+/// is the `dark` argument every `draw*Artwork` call takes (true = light art).
+pub fn lightArtwork(dark_chrome: bool, force_dark: bool) bool {
+    return dark_chrome and !force_dark;
+}
+
 pub const IconPx = @import("paint.zig").IconPx;
 pub const Kind = widgets.Kind;
 
@@ -49,10 +101,10 @@ pub fn iconCandidates(kind: Kind, dark: bool) []const []const u8 {
             &.{ "event-horizon-settings-1-sliders-light", "event-horizon-settings", "preferences-system", "settings" }
         else
             &.{ "event-horizon-settings-1-sliders-dark", "event-horizon-settings", "preferences-system", "settings" },
-        // The Audio Center ships its own art (`event-horizon-audio-center`,
-        // installed from `src/resources/icons/audio-center.svg`); the mixer
-        // names keep a themed icon on screen when that install is missing.
-        .audio_center => &.{ "event-horizon-audio-center", "multimedia-volume-control", "audio-volume-high" },
+        // Audio Centre and Sound Mixer ship full-colour artwork embedded in
+        // this module (contrasting plate, like Settings/Overview); these are
+        // only the fallback when librsvg cannot rasterize it.
+        .audio_center => &.{ "multimedia-volume-control", "audio-volume-high" },
         .smenu => &.{ "start-here", "view-app-grid", "open-menu", "system-run" },
         .app_drawer => &.{ "view-app-grid", "view-apps", "view-list" },
         .trash => &.{ "user-trash", "user-trash-full", "edit-clear-trash" },
@@ -129,6 +181,12 @@ pub const Draw = struct {
     /// fallbacks follow the active theme (a light custom theme needs dark
     /// text, which the static token can never provide).
     text_rgb: tokens.Rgb = tokens.Tokens.text,
+    /// Whether the bar chrome reads as dark. Artwork that ships light and
+    /// dark plates picks the contrasting one: light art on a dark bar.
+    dark: bool = true,
+    /// `Kind.trash` only: whether the trash can has anything in it. Selects
+    /// the filled artwork over the empty one.
+    trash_full: bool = false,
     /// Accent for the fallback letter badge. Callers hand in `chrome.accent`.
     accent_rgb: tokens.Rgb = tokens.Tokens.accent,
     /// A Lucide SVG glyph to draw when the slot has no raster icon. The
@@ -158,7 +216,7 @@ pub const Draw = struct {
 pub fn iconAvail(kind: Kind, icon_px: f64) f64 {
     const box = switch (kind) {
         .tray => @min(icon_px * 0.6, icon_px - 8.0),
-        .volume_mixer, .vpn, .overview, .bluetooth, .battery => icon_px * 0.52,
+        .vpn, .bluetooth, .battery => icon_px * 0.52,
         .weather => std.math.clamp(icon_px * 0.42, 13.0, 18.0),
         .media => icon_px * 0.78,
         // 6 px total means 3 px of breathing room per side: 44 px slots
@@ -487,6 +545,19 @@ fn drawContent(c: ?*cairo.cairo_t, x: f64, y: f64, w: f64, h: f64, icon_px: f64,
             return;
         }
     }
+    if (d.kind == .overview or d.kind == .audio_center or d.kind == .volume_mixer or d.kind == .trash) {
+        const box = @min(iconAvail(d.kind, icon_px), @min(w, h));
+        const cx = x + w * 0.5;
+        const cy = y + h * 0.5;
+        const drawn = switch (d.kind) {
+            .overview => drawOverviewArtwork(cr, d.dark, cx, cy, box),
+            .audio_center => drawAudioCenterArtwork(cr, d.dark, cx, cy, box),
+            .volume_mixer => drawSoundMixerArtwork(cr, d.dark, cx, cy, box),
+            .trash => drawTrashArtwork(cr, d.dark, d.trash_full, cx, cy, box),
+            else => unreachable,
+        };
+        if (drawn) return;
+    }
     if (d.icon) |ic| {
         if (ic.pixels.len > 0) {
             // `iconAvail`, not the raw slot box: art fits into a
@@ -561,7 +632,11 @@ test "widgets-paint: artwork is fitted into a padded sub-box of the slot" {
     try t.expectApproxEqAbs(@as(f64, 26.4), iconAvail(.tray, 44.0), 1e-9);
     // Glyph widgets: `draw_material_glyph(..., icon * 0.52, ...)`.
     try t.expectApproxEqAbs(@as(f64, 22.88), iconAvail(.bluetooth, 44.0), 1e-9);
-    try t.expectApproxEqAbs(@as(f64, 22.88), iconAvail(.overview, 44.0), 1e-9);
+    // Overview, Audio Centre and Sound Mixer ship full-bleed artwork, so they
+    // take the app box rather than the glyph box.
+    try t.expectApproxEqAbs(@as(f64, 38.0), iconAvail(.overview, 44.0), 1e-9);
+    try t.expectApproxEqAbs(@as(f64, 38.0), iconAvail(.audio_center, 44.0), 1e-9);
+    try t.expectApproxEqAbs(@as(f64, 38.0), iconAvail(.volume_mixer, 44.0), 1e-9);
     // The App menu wears the distro mark like the other logo slots, so its
     // logo takes the full `icon - 12` art box; the nine-dot fallback sizes
     // itself off the raw slot (`drawDots`) and never reads this.
@@ -594,6 +669,39 @@ test "widgets-paint: icon candidates cover the structural widgets" {
     // dark chrome, dark art on light chrome.
     try t.expectEqualStrings("event-horizon-settings-1-sliders-light", iconCandidates(.settings, true)[0]);
     try t.expectEqualStrings("event-horizon-settings-1-sliders-dark", iconCandidates(.settings, false)[0]);
+}
+
+test "widgets-paint: overview, audio, mixer and trash artwork rasterize in both themes" {
+    const t = std.testing;
+    const surf = cairo.cairo_image_surface_create(cairo.CAIRO_FORMAT_ARGB32, 64, 64);
+    defer cairo.cairo_surface_destroy(surf);
+    const cr = cairo.cairo_create(surf);
+    defer cairo.cairo_destroy(cr);
+    // Light plate for a dark bar, dark plate for a light bar.
+    try t.expect(drawOverviewArtwork(cr, true, 32, 32, 38));
+    try t.expect(drawOverviewArtwork(cr, false, 32, 32, 38));
+    try t.expect(drawAudioCenterArtwork(cr, true, 32, 32, 38));
+    try t.expect(drawAudioCenterArtwork(cr, false, 32, 32, 38));
+    try t.expect(drawSoundMixerArtwork(cr, true, 32, 32, 38));
+    try t.expect(drawSoundMixerArtwork(cr, false, 32, 32, 38));
+    // Both trash states, both plates.
+    inline for ([_]bool{ false, true }) |full| {
+        inline for ([_]bool{ true, false }) |dark| {
+            try t.expect(drawTrashArtwork(cr, dark, full, 32, 32, 38));
+        }
+    }
+    try t.expect(drawOverviewArtwork(null, true, 32, 32, 38) == false);
+    try t.expect(cairo.cairo_status(cr) == cairo.CAIRO_STATUS_SUCCESS);
+}
+
+test "widgets-paint: the artwork override forces the dark plate" {
+    const t = std.testing;
+    // Chrome contrast by default: light art on a dark bar, dark art on light.
+    try t.expect(lightArtwork(true, false));
+    try t.expect(!lightArtwork(false, false));
+    // The Settings override always lands on the dark plate.
+    try t.expect(!lightArtwork(true, true));
+    try t.expect(!lightArtwork(false, true));
 }
 
 test "widgets-paint: the generic pill and the widget pill are byte-identical" {

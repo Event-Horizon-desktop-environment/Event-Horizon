@@ -136,6 +136,7 @@ pub const Field = enum {
     launchpad_view_mode,
     slot_pill_opacity,
     taskbar_slot_pill_opacity,
+    widget_dark_icons,
     workspaces_max_icons,
     overview_axis,
     overview_capture_mode,
@@ -418,6 +419,12 @@ pub const Field = enum {
     hypr_scrolling_direction, // scrolling.direction
     hypr_xwayland_enabled, // xwayland.enabled
     hypr_general_layout, // general.layout
+    // Input keyboard rows, appended at the block end so every Hyprland
+    // slot before them keeps its number (`k_ui` and the data tests pin
+    // those).
+    hypr_input_kb_layout, // input.kb_layout
+    hypr_input_kb_variant, // input.kb_variant
+    hypr_input_kb_options, // input.kb_options
 
     // -- Zoolander config bindings (`zoolander_data`) --
     // Same shape as the Hyprland block: contiguous, value = UI slot in
@@ -606,7 +613,7 @@ pub const Field = enum {
     // enum value's distance from `matugen_tpl_0` is the array index
     // (`tplIndex`). Declared after the Hyprland block on purpose: the block
     // stays contiguous for `hyprSlot`, whose upper bound is
-    // `hypr_general_layout`.
+    // `hypr_input_kb_options`.
     matugen_tpl_0, // Niri
     matugen_tpl_1, // Hyprland
     matugen_tpl_2, // Mango
@@ -652,14 +659,14 @@ pub const Field = enum {
     pub fn hyprSlot(self: Field) ?u16 {
         const n: u16 = @intFromEnum(self);
         const first: u16 = @intFromEnum(Field.hypr_animations_enabled);
-        const last: u16 = @intFromEnum(Field.hypr_general_layout);
+        const last: u16 = @intFromEnum(Field.hypr_input_kb_options);
         if (n < first or n > last) return null;
         return n - first;
     }
 
     pub fn isHypr(self: Field) bool {
         return @intFromEnum(self) >= @intFromEnum(Field.hypr_animations_enabled) and
-            @intFromEnum(self) <= @intFromEnum(Field.hypr_general_layout);
+            @intFromEnum(self) <= @intFromEnum(Field.hypr_input_kb_options);
     }
 
     /// The `zoolander_data` UI slot a Zoolander field drives, or null.
@@ -786,6 +793,7 @@ pub fn getBool(s: *const app_mod.Settings, f: Field) bool {
         .bing_enabled => s.bing_enabled,
         .bing_daily_enabled => s.bing_daily_enabled,
         .workspaces_show_apps => s.workspaces_show_apps,
+        .widget_dark_icons => s.widget_dark_icons,
         .notifications_dbus_enabled => s.notifications_dbus_enabled,
         .notifications_dnd => s.notifications_dnd,
         .notifications_layer_shell => s.notifications_layer_shell,
@@ -851,6 +859,7 @@ pub fn setBool(s: *app_mod.Settings, f: Field, v: bool) void {
         .bing_enabled => s.bing_enabled = v,
         .bing_daily_enabled => s.bing_daily_enabled = v,
         .workspaces_show_apps => s.workspaces_show_apps = v,
+        .widget_dark_icons => s.widget_dark_icons = v,
         .notifications_dbus_enabled => s.notifications_dbus_enabled = v,
         .notifications_dnd => s.notifications_dnd = v,
         .notifications_layer_shell => s.notifications_layer_shell = v,

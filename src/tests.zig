@@ -135,6 +135,7 @@ test {
     _ = @import("desktop_shell/common/icon_lookup.zig");
     _ = @import("desktop_shell/common/icon_raster.zig");
     _ = @import("desktop_shell/common/icon_cache.zig");
+    _ = @import("desktop_shell/common/icon_extra.zig");
     _ = @import("desktop_shell/common/os_logo.zig");
     _ = @import("desktop_shell/common/icon_blit.zig");
     _ = @import("desktop_shell/common/material_glyph.zig");

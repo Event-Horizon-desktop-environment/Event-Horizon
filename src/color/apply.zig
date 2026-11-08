@@ -721,6 +721,24 @@ pub const Applier = struct {
                 } else |_| {}
             }
 
+            // Hyprland 0.57 dropped hyprlang configs. Once the Lua palette is
+            // written, remove the old `eh/colors.conf` so an upgrade cannot
+            // keep a dead source line around.
+            if (toggles.hyprland and cfg_main.len > 0) {
+                var b1: [4096]u8 = undefined;
+                if (std.fmt.bufPrint(&b1, "{s}/hypr/eh", .{cfg_main})) |dir| {
+                    var b2: [4300]u8 = undefined;
+                    var b3: [4300]u8 = undefined;
+                    if (std.fmt.bufPrint(&b2, "{s}/colors.lua", .{dir})) |lua_path| {
+                        if (std.fmt.bufPrint(&b3, "{s}/colors.conf", .{dir})) |legacy| {
+                            if (isRegular(self.io, lua_path) and isRegular(self.io, legacy)) {
+                                std.Io.Dir.cwd().deleteFile(self.io, legacy) catch {};
+                            }
+                        } else |_| {}
+                    } else |_| {}
+                } else |_| {}
+            }
+
             // Post-hooks: best-effort file surgery.
             if (toggles.otter_term) self.syncOtterTerm(cfg_main);
             if (toggles.horizon_files) self.syncHorizonFiles(cfg_main);

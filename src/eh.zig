@@ -81,6 +81,7 @@ pub const clock_fmt = @import("desktop_shell/desktop/clock.zig");
 pub const icon_lookup = @import("desktop_shell/common/icon_lookup.zig");
 pub const icon_raster = @import("desktop_shell/common/icon_raster.zig");
 pub const icon_cache = @import("desktop_shell/common/icon_cache.zig");
+pub const icon_extra = @import("desktop_shell/common/icon_extra.zig");
 pub const icon_themes = @import("desktop_shell/common/icon_themes.zig");
 pub const os_logo = @import("desktop_shell/common/os_logo.zig");
 pub const icon_blit = @import("desktop_shell/common/icon_blit.zig");

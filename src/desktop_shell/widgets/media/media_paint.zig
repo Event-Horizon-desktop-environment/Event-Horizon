@@ -13,9 +13,15 @@ const text = @import("../../../text/layout.zig");
 const pill = @import("../shared/pill.zig");
 const wset = @import("../shared/widget_settings.zig");
 const glyphs = @import("../../common/material_glyph.zig");
+const svg_icons = @import("../../../ux/shared/svg_icons.zig");
 const mclient = @import("../../../services/mpris_client.zig");
 const schema = @import("../../../config/schema.zig");
 const perf = @import("media_perf.zig");
+
+/// Idle-disc artwork: a vinyl plate in the variant that contrasts with the
+/// bar's chrome, embedded so it works without an icon-theme install.
+const media_idle_light_svg = @embedFile("../../../resources/icons/media-idle-light.svg");
+const media_idle_dark_svg = @embedFile("../../../resources/icons/media-idle-dark.svg");
 
 const tau: f64 = 2.0 * std.math.pi;
 const k_btn_small_d: f64 = 16.0;
@@ -90,6 +96,9 @@ pub const Pill = struct {
     now_sec: f64 = 0.0,
     /// The same instant in nanoseconds, for the playhead projection.
     now_ns: i64 = 0,
+    /// Whether the bar chrome reads as dark; the idle vinyl then takes its
+    /// light plate (and the dark plate on a light bar).
+    dark: bool = true,
 };
 
 pub const Result = struct {
@@ -432,6 +441,7 @@ pub fn paint(cr: ?*cairo.cairo_t, g: Geometry, p: Pill, pos: *Position) Result {
         .max_text = max_text,
         .s = s,
         .now_sec = p.now_sec,
+        .dark = p.dark,
     });
 
     if (p.pointer_x >= 0.0) {
@@ -510,6 +520,7 @@ const ContentInputs = struct {
     max_text: f64,
     s: f64,
     now_sec: f64,
+    dark: bool,
 };
 
 fn paintContent(cr: ?*cairo.cairo_t, in: ContentInputs) bool {
@@ -518,7 +529,15 @@ fn paintContent(cr: ?*cairo.cairo_t, in: ContentInputs) bool {
 
     if (in.active and in.art.present()) {
         paintArt(c, in.art, in.art_cx, in.cy, in.art_dia);
-    } else {
+    } else if (!svg_icons.drawArtwork(
+        c,
+        if (in.dark) media_idle_light_svg else media_idle_dark_svg,
+        in.art_cx,
+        in.cy,
+        in.art_dia,
+    )) {
+        // librsvg failure: keep the old two-dot placeholder so the disc is
+        // never empty.
         cairo.cairo_set_source_rgba(c, 1.0, 1.0, 1.0, in.alpha);
         const nr = in.art_r * 0.28;
         cairo.cairo_new_path(c);

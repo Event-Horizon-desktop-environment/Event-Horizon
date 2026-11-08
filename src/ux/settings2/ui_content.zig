@@ -933,11 +933,15 @@ pub const Content = struct {
     }
 
     /// The default layout currently selected, used to hide option cards that
-    /// the chosen layout does not read. Only the Workspaces & Layouts page
-    /// filters; every other page keeps its full card list.
+    /// the chosen layout does not read. Only the two layout pages filter —
+    /// Zoolander's Workspaces & Layouts and Hyprland's Layouts; every other
+    /// page keeps its full card list.
     fn layoutFilter(self: *const Content) ?[]const u8 {
-        if (self.active_tab != zoolander_page.layouts_tab_id) return null;
-        return self.getText(fields.Field.zool_layout_default);
+        if (self.active_tab == zoolander_page.layouts_tab_id)
+            return self.getText(fields.Field.zool_layout_default);
+        if (self.active_tab == hyprland_page.layouts_tab_id)
+            return self.getText(fields.Field.hypr_general_layout);
+        return null;
     }
 
     /// The card list this content renders. The monitors page is the one
@@ -1067,11 +1071,16 @@ pub const Content = struct {
     }
 
     pub fn getText(self: *const Content, f: fields.Field) []const u8 {
+        if (f.hyprSlot()) |slot| return hyprland_data.getStr(slot);
         if (f.zoolSlot()) |slot| return zoolander_data.getStr(slot);
         return fields.getStr(self.settings, f);
     }
 
     pub fn setText(self: *Content, f: fields.Field, v: []const u8) void {
+        if (f.hyprSlot()) |slot| {
+            hyprland_data.setStr(slot, v);
+            return;
+        }
         if (f.zoolSlot()) |slot| {
             zoolander_data.setStr(slot, v);
             return;
@@ -3076,7 +3085,7 @@ const cairo_arc = cairo.cairo_arc;
 
 /// Number of cards the layout picker paints (the schema's 15 built-ins).
 const k_layout_cards: usize = 15;
-const k_layout_cols: usize = 5;
+const k_layout_cols = rows_mod.layout_card_cols;
 
 /// Window-space box of layout card `i` in placed row `p`. Shared by paint and
 /// hit-test, like every other row geometry helper.
@@ -3087,8 +3096,17 @@ fn layoutCardRect(p: PlacedRow, i: usize) common.Rect {
     const cw = @divTrunc(p.w - 2 * pad - (cols - 1) * gap, cols);
     const col: i32 = @intCast(i % k_layout_cols);
     const row: i32 = @intCast(i / k_layout_cols);
+    // A short row — Hyprland's four options in a five-column grid — centers
+    // its cards instead of leaving the gap on the right; full rows (Zoolander)
+    // keep the plain left-to-right layout.
+    const n: i32 = switch (p.row) {
+        .layout_picker => |lp| @intCast(@min(lp.options.len, k_layout_cards)),
+        else => cols,
+    };
+    const in_row: i32 = @min(cols, n - row * cols);
+    const off = @divTrunc(p.w - 2 * pad - (in_row * cw + (in_row - 1) * gap), 2);
     return .{
-        .x = p.x + pad + col * (cw + gap),
+        .x = p.x + pad + off + col * (cw + gap),
         .y = p.y + 6 + row * (rows_mod.layout_card_h + gap),
         .w = cw,
         .h = rows_mod.layout_card_h,
@@ -3246,7 +3264,9 @@ fn paintLayoutPreview(c: anytype, name: []const u8, r: common.Rect) void {
     const g: f64 = 2;
     const half_w = (bw - g) * 0.5;
     const half_h = (bh - g) * 0.5;
-    if (std.mem.eql(u8, name, "dwindle") or std.mem.eql(u8, name, "master_stack")) {
+    if (std.mem.eql(u8, name, "dwindle") or std.mem.eql(u8, name, "master_stack") or
+        std.mem.eql(u8, name, "master"))
+    {
         layoutBlock(c, x, y, bw * 0.58, bh, true);
         layoutBlock(c, x + bw * 0.58 + g, y, bw * 0.42 - g, half_h, false);
         layoutBlock(c, x + bw * 0.58 + g, y + half_h + g, bw * 0.42 - g, bh - half_h - g, false);
@@ -3626,6 +3646,73 @@ test "settings-ui-content: a Hyprland section page places, hits and dispatches" 
     try t.expect(content.applyHit(.{ .toggle = tg.field }, 0));
     try t.expectEqual(!before, content.getBool(tg.field));
     hyprland_data.load(std.testing.io);
+}
+
+/// True when a toggle/slider row bound to `f` is currently placed. Used by
+/// the layout-gating test to check which option cards the page kept.
+fn placedHasField(c: *const Content, f: fields.Field) bool {
+    for (c.placed[0..c.placed_len]) |p| {
+        switch (p.row) {
+            .toggle => |r| if (r.field == f) return true,
+            .slider => |r| if (r.field == f) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+test "settings-ui-content: Hyprland's Layouts page gates option cards by the picked layout" {
+    const t = std.testing;
+    hyprland_data.load(std.testing.io); // schema-default values, deterministically
+    defer hyprland_data.load(std.testing.io); // leave global state clean
+    var s = app_mod.Settings{};
+    var content = Content{ .settings = &s };
+    const app = app_mod.AppState{};
+    content.win_w = app_mod.window_width;
+    content.win_h = app_mod.window_height;
+    content.content_x = app_mod.AppState.contentX();
+    content.content_w = app.contentW();
+    content.active_tab = hyprland_page.layouts_tab_id;
+    content.relayout();
+
+    // A fresh config: `general.layout` defaults to dwindle, so only the
+    // Dwindle card is placed under the picker.
+    const slot = fields.Field.hypr_general_layout.hyprSlot().?;
+    try t.expectEqualStrings("dwindle", hyprland_data.getStr(slot));
+    try t.expect(placedHasField(&content, fields.Field.hypr_dwindle_preserve_split));
+    try t.expect(!placedHasField(&content, fields.Field.hypr_master_new_on_top));
+    try t.expect(!placedHasField(&content, fields.Field.hypr_scrolling_follow_focus));
+
+    // Four options make one 84px picker band; Zoolander's fifteen still
+    // get the three-row `layout_picker_h`.
+    const pr = for (content.placed[0..content.placed_len]) |p| {
+        if (p.row == .layout_picker) break p;
+    } else return error.TestUnexpectedResult;
+    try t.expectEqual(rows_mod.layout_card_h, pr.h);
+    try t.expectEqual(rows_mod.layout_picker_h, rows_mod.layout_picker_h_for(15));
+
+    // Four options in a five-column grid center the band: the margins on
+    // either side of the four cards match (within 1px of truncation).
+    const c0 = layoutCardRect(pr, 0);
+    const c3 = layoutCardRect(pr, 3);
+    const left = c0.x - (pr.x + common.card_pad);
+    const right = pr.x + pr.w - common.card_pad - (c3.x + c3.w);
+    try t.expect(@abs(left - right) <= 1);
+    try t.expect(left > 0);
+
+    // Click the Master tile (index 1): the hit is a layout pick, applying
+    // it writes the live config, and relayout swaps the option cards.
+    const mr = layoutCardRect(pr, 1);
+    const hx: f64 = @floatFromInt(mr.x + @divTrunc(mr.w, 2));
+    const hy: f64 = @floatFromInt(mr.y + @divTrunc(mr.h, 2));
+    const hit = content.hitTest(hx, hy);
+    try t.expect(hit == .layout_pick);
+    try t.expect(content.applyHit(hit, hx));
+    content.relayout();
+    try t.expectEqualStrings("master", hyprland_data.getStr(slot));
+    try t.expect(hyprland_data.isDirty());
+    try t.expect(placedHasField(&content, fields.Field.hypr_master_new_on_top));
+    try t.expect(!placedHasField(&content, fields.Field.hypr_dwindle_preserve_split));
 }
 
 test "settings-ui-content: Display combos follow the live outputs" {

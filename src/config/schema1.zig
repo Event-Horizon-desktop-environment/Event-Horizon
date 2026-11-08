@@ -69,6 +69,10 @@ pub const DockSettings = struct {
     /// independent preference: an explicit `slim_dock = false` must survive
     /// a reload even while islands are present.
     dock_slim: bool = false,
+    /// Always draw the shell's full-colour widget artwork in its dark variant
+    /// (the `-dark.svg` plate) instead of picking the one that contrasts with
+    /// the bar.
+    widget_dark_icons: bool = false,
 };
 
 pub fn decodeDock(alloc: std.mem.Allocator, t: *const T, d: *DockSettings) !void {
@@ -97,6 +101,7 @@ pub fn decodeDock(alloc: std.mem.Allocator, t: *const T, d: *DockSettings) !void
     setBool(t, "bar_follows_icons", &d.dock_bar_follows_icons);
     setInt(t, "manual_bar_height", &d.dock_manual_bar_height_px, 32, 200);
     setBool(t, "slim_dock", &d.dock_slim);
+    setBool(t, "widget_dark_icons", &d.widget_dark_icons);
     try setStrArray(alloc, t, "pinned_apps", &d.pinned_apps);
     try setStrArray(alloc, t, "start_menu_pinned_apps", &d.start_menu_pinned_apps);
     try setStrArray(alloc, t, "drawer_pinned_apps", &d.drawer_pinned_apps);
@@ -142,6 +147,9 @@ pub const TaskbarSettings = struct {
     border: bool = false,
     border_size: i32 = 1,
     icon_theme: []const u8 = "",
+    /// Mirror of the dock's artwork override so each bar can honour it on its
+    /// own; the Launcher toggle writes both.
+    widget_dark_icons: bool = false,
 };
 
 pub fn decodeTaskbar(alloc: std.mem.Allocator, t: *const T, s: *TaskbarSettings) !void {
@@ -177,6 +185,7 @@ pub fn decodeTaskbar(alloc: std.mem.Allocator, t: *const T, s: *TaskbarSettings)
     setBool(t, "widgets_enabled", &s.widgets_enabled);
     setBool(t, "border", &s.border);
     setInt(t, "border_size", &s.border_size, 1, 12);
+    setBool(t, "widget_dark_icons", &s.widget_dark_icons);
     if (getStr(t, "icon_theme")) |v| s.icon_theme = try alloc.dupe(u8, std.mem.trim(u8, v, " \t\n"));
 }
 

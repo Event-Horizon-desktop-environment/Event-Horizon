@@ -18,8 +18,9 @@ const common = @import("common.zig");
 //     Folder columns 2-8 "%d", Folder rows 1-6 "%d"
 //   Grid group (0,3): Columns 4-12 "%d", Rows 3-10 "%d",
 //     DPI scale 50-300 "%d %%"
-//   Appearance group (1,1): Widget opacity 0-100 "%d %%" (one slider drives
-//     both dock.slotPillOpacity and taskbar.slotPillOpacity)
+//   Appearance group (1,1): Dark widget icons toggle, Widget opacity
+//     0-100 "%d %%" (one slider drives both dock.slotPillOpacity and
+//     taskbar.slotPillOpacity)
 // Child 1 "Workspaces" (1 toggle, 2 sliders):
 //   Show app icons toggle ("Show running applications as icons in the
 //     workspace strip"), Number of workspaces 0-16 (0 renders "Auto",
@@ -155,7 +156,7 @@ pub const layout_sub = "Scale and spacing for the launcher grid";
 pub const grid_title = "Grid";
 pub const grid_sub = "Columns, rows, and DPI scaling";
 pub const appearance_title = "Appearance";
-pub const appearance_sub = "Widget opacity";
+pub const appearance_sub = "Widget artwork and opacity";
 pub const workspaces_title = "Workspaces";
 pub const workspaces_sub = "Workspace slots and app icons";
 pub const overview_title = "Overview";

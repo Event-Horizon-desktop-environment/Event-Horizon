@@ -2,15 +2,19 @@
 //!
 //! The whole Hyprland tab from the original settings tree (`ux/settings`)
 //! lives in this tree: `hyprland_data.zig` carries the live compositor
-//! config model and `rows_hyprland.zig` carries the 15 section card tables
+//! config model and `rows_hyprland.zig` carries the 14 section card tables
 //! the generic renderer (`ui_content.zig`) places. This file is the
 //! design-B page seen in the mockups: the rail category spills into
-//! fifteen section pages — one row per section in the list column — and
+//! fourteen section pages — one row per section in the list column — and
 //! every section page opens on the standard tri-line header
-//! (`page_header.zig`) above its centered 68% card column.
+//! (`page_header.zig`) above its centered 68% card column. The layout
+//! sections (dwindle / master / scrolling) live on one "Layouts" page with
+//! a default-layout picker, like Zoolander's Workspaces & Layouts; Input
+//! splits into Keyboards and Mouse & Touchpad like Zoolander's Keyboard
+//! and Mouse & Touchpad pages.
 //!
 //! Section → page routing is `hyprland_tab.zig`'s `first_tab_id ..=
-//! last_tab_id` band (General = 64 … Quirks = 78); `compositor.visibleTab`
+//! last_tab_id` band (General = 64 … Quirks = 77); `compositor.visibleTab`
 //! shows the band only while Hyprland itself is running, exactly like the
 //! rail category gate `compositor.visibleCategory(33)`.
 
@@ -29,26 +33,29 @@ pub const Section = struct {
 /// First sidebar tab of the section band (`hyprland_tab.first_tab_id`).
 const first = hyprland_tab.first_tab_id;
 
-/// The fifteen section pages, in `hyprland_tab.child_tabs` dispatch order
+/// The fourteen section pages, in `hyprland_tab.child_tabs` dispatch order
 /// (General → Quirks). Glyphs are the Material symbols the list-column
 /// rows and the matching search entries already resolve.
 pub const sections = [_]Section{
     .{ .label = "General", .glyph = "tune", .tab_id = first },
     .{ .label = "Decoration", .glyph = "border_style", .tab_id = first + 1 },
-    .{ .label = "Input", .glyph = "mouse", .tab_id = first + 2 },
-    .{ .label = "Binds", .glyph = "keyboard", .tab_id = first + 3 },
-    .{ .label = "Dwindle", .glyph = "view_column", .tab_id = first + 4 },
-    .{ .label = "Master", .glyph = "view_agenda", .tab_id = first + 5 },
-    .{ .label = "Scrolling", .glyph = "vertical_split", .tab_id = first + 6 },
-    .{ .label = "Animations", .glyph = "play_arrow", .tab_id = first + 7 },
-    .{ .label = "Misc", .glyph = "blocks", .tab_id = first + 8 },
-    .{ .label = "Render", .glyph = "memory", .tab_id = first + 9 },
-    .{ .label = "Cursor", .glyph = "mouse", .tab_id = first + 10 },
-    .{ .label = "Group", .glyph = "splitscreen", .tab_id = first + 11 },
-    .{ .label = "XWayland", .glyph = "desktop_windows", .tab_id = first + 12 },
-    .{ .label = "OpenGL", .glyph = "rocket_launch", .tab_id = first + 13 },
-    .{ .label = "Quirks", .glyph = "component", .tab_id = first + 14 },
+    .{ .label = "Keyboards", .glyph = "vpn_key", .tab_id = first + 2 },
+    .{ .label = "Mouse & Touchpad", .glyph = "mouse", .tab_id = first + 3 },
+    .{ .label = "Binds", .glyph = "keyboard", .tab_id = first + 4 },
+    .{ .label = "Layouts", .glyph = "grid_view", .tab_id = first + 5 },
+    .{ .label = "Animations", .glyph = "play_arrow", .tab_id = first + 6 },
+    .{ .label = "Misc", .glyph = "blocks", .tab_id = first + 7 },
+    .{ .label = "Render", .glyph = "memory", .tab_id = first + 8 },
+    .{ .label = "Cursor", .glyph = "mouse", .tab_id = first + 9 },
+    .{ .label = "Group", .glyph = "splitscreen", .tab_id = first + 10 },
+    .{ .label = "XWayland", .glyph = "desktop_windows", .tab_id = first + 11 },
+    .{ .label = "OpenGL", .glyph = "rocket_launch", .tab_id = first + 12 },
+    .{ .label = "Quirks", .glyph = "component", .tab_id = first + 13 },
 };
+
+/// The "Layouts" section page, whose cards are gated by the chosen default
+/// layout (`ui_content.layoutFilter`).
+pub const layouts_tab_id: i32 = first + 5;
 
 /// True when `tab` is a Hyprland section page (one per rail row).
 pub fn ownsTab(tab: i32) bool {
@@ -96,9 +103,10 @@ test "settings2-hyprland-page: sections mirror the dispatch tables" {
     try t.expect(!ownsTab(hyprland_tab.last_tab_id + 1));
     try t.expect(!ownsTab(0));
     // Titles resolve off the band; the mockup example first.
-    try t.expectEqualStrings("Binds", labelOf(67).?);
+    try t.expectEqualStrings("Binds", labelOf(68).?);
     try t.expectEqualStrings("General", labelOf(64).?);
-    try t.expectEqualStrings("Quirks", labelOf(78).?);
+    try t.expectEqualStrings("Layouts", labelOf(69).?);
+    try t.expectEqualStrings("Quirks", labelOf(hyprland_tab.last_tab_id).?);
     try t.expect(labelOf(33) == null);
 }
 

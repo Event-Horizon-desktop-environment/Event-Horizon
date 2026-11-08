@@ -29,6 +29,7 @@ const std = @import("std");
 const cairo = @import("../../wl/buffer/shm.zig").cairo;
 const logz = @import("../../logz.zig");
 const icon_disk = @import("icon_disk.zig");
+const icon_extra = @import("icon_extra.zig");
 const icon_lookup = @import("icon_lookup.zig");
 const icon_raster = @import("icon_raster.zig");
 const icon_themes = @import("icon_themes.zig");
@@ -498,6 +499,11 @@ pub const IconCache = struct {
     total_bytes: usize = 0,
     /// Names that failed, keyed size-independently, for O(1) rejection.
     negative: std.StringHashMap(void),
+    /// Materialized paths from sources outside the theme chain (AppImage
+    /// `.DirIcon`, Steam library art, a PE icon resource). Kept for the
+    /// process and freed at deinit; unlike theme entries these do not change
+    /// with the icon theme.
+    extra_paths: std.StringHashMap([]u8),
     max_bytes: usize,
 
     /// Decoded pixels survive process restarts, shared with the overview and
@@ -531,6 +537,7 @@ pub const IconCache = struct {
             .index = Index.init(gpa),
             .map = std.StringHashMap(*Entry).init(gpa),
             .negative = std.StringHashMap(void).init(gpa),
+            .extra_paths = std.StringHashMap([]u8).init(gpa),
             .queued = std.StringHashMap(void).init(gpa),
             .max_bytes = cacheBudget(),
             .disk = icon_disk.Disk.init(gpa, io),
@@ -544,6 +551,12 @@ pub const IconCache = struct {
         self.mu.unlock(self.io);
         self.map.deinit();
         self.negative.deinit();
+        var eit = self.extra_paths.iterator();
+        while (eit.next()) |en| {
+            self.gpa.free(en.key_ptr.*);
+            self.gpa.free(en.value_ptr.*);
+        }
+        self.extra_paths.deinit();
         self.queued.deinit();
         self.queue.deinit(self.gpa);
         self.index.deinit();
@@ -630,8 +643,10 @@ pub const IconCache = struct {
     /// `kind` is accepted for signature parity with `getOwned`/`enqueue` but
     /// unused: the index is keyed by icon name alone.
     pub fn pathFor(self: *Self, kind: Kind, name: []const u8, px: i32) ?[]const u8 {
-        _ = kind;
         if (name.len == 0) return null;
+        // Steam library art and an already-extracted AppImage icon live
+        // outside the theme index; a cheap directory/file probe finds them.
+        if (kind == .app) if (self.extraPathCheap(name)) |p| return p;
         // `Icon=/abs/path.svg` is legal in a desktop file and is used as-is.
         if (std.fs.path.isAbsolute(name)) return name;
         self.ensureIndex();
@@ -752,6 +767,9 @@ pub const IconCache = struct {
     /// caller's next use.
     fn findCandidate(self: *Self, kind: Kind, name: []const u8, px: i64) ?Candidate {
         if (std.fs.path.isAbsolute(name)) {
+            // An AppImage is not an image file itself: its `.DirIcon` is
+            // inside the squashfs. Everything else absolute is used as-is.
+            if (kind == .app) if (self.extraPath(name, true)) |p| return .{ .path = p, .dir_size = 0, .svg = false };
             return .{ .path = name, .dir_size = 0, .svg = std.mem.endsWith(u8, name, ".svg") };
         }
         if (kind == .tray) return self.indexFind(name, px);
@@ -766,6 +784,7 @@ pub const IconCache = struct {
         // only covers an app id that is itself a path, so a declared one has
         // to be used here — no index contains it as a name.
         if (std.fs.path.isAbsolute(resolved)) {
+            if (self.extraPath(resolved, true)) |p| return .{ .path = p, .dir_size = 0, .svg = false };
             return .{ .path = resolved, .dir_size = 0, .svg = std.mem.endsWith(u8, resolved, ".svg") };
         }
 
@@ -783,6 +802,14 @@ pub const IconCache = struct {
         pushLower(&strict, a, resolved);
         pushAliases(&strict, a, resolved);
         for (strict.items) |cand| if (self.indexFind(cand, px)) |c| return c;
+
+        // Sources outside the theme chain. This sits before the broad pass so
+        // `steam_icon_<appid>` gets the *game's* art instead of the fallback
+        // that maps every Steam icon name to the client logo.
+        if (self.extraPath(resolved, kind == .app)) |p| return .{ .path = p, .dir_size = 0, .svg = false };
+        if (!std.mem.eql(u8, name, resolved)) {
+            if (self.extraPath(name, kind == .app)) |p| return .{ .path = p, .dir_size = 0, .svg = false };
+        }
 
         // Broad: the decorated spellings — `short` segment, vendor prefixes.
         var broad: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -808,6 +835,55 @@ pub const IconCache = struct {
         self.mu.lockUncancelable(self.io);
         defer self.mu.unlock(self.io);
         return self.index.findExact(name, px);
+    }
+
+    /// Materialize and remember an icon from outside the theme chain. The map
+    /// keeps the path alive for the process (a theme switch must not force an
+    /// AppImage extraction or a PE parse again), and a second caller that lost
+    /// a race keeps the winner's copy.
+    fn extraPathCheap(self: *Self, name: []const u8) ?[]const u8 {
+        if (name.len == 0) return null;
+        self.mu.lockUncancelable(self.io);
+        if (self.extra_paths.get(name)) |p| {
+            self.mu.unlock(self.io);
+            return p;
+        }
+        self.mu.unlock(self.io);
+
+        const owned = icon_extra.cheapPathFor(self.gpa, self.io, name) orelse return null;
+        return self.storeExtraPath(name, owned);
+    }
+
+    fn storeExtraPath(self: *Self, name: []const u8, owned: []u8) ?[]const u8 {
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        if (self.extra_paths.get(name)) |existing| {
+            self.gpa.free(owned);
+            return existing;
+        }
+        const key = self.gpa.dupe(u8, name) catch {
+            self.gpa.free(owned);
+            return null;
+        };
+        self.extra_paths.put(key, owned) catch {
+            self.gpa.free(key);
+            self.gpa.free(owned);
+            return null;
+        };
+        return owned;
+    }
+
+    fn extraPath(self: *Self, name: []const u8, allow_run: bool) ?[]const u8 {
+        if (name.len == 0) return null;
+        self.mu.lockUncancelable(self.io);
+        if (self.extra_paths.get(name)) |p| {
+            self.mu.unlock(self.io);
+            return p;
+        }
+        self.mu.unlock(self.io);
+
+        const owned = icon_extra.pathFor(self.gpa, self.io, name, allow_run) orelse return null;
+        return self.storeExtraPath(name, owned);
     }
 
     /// The icon name the application directories advertise for `app_id`:

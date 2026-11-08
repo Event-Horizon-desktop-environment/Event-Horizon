@@ -1,7 +1,7 @@
 //! Hyprland animation entries with Zoolander's inline curve editor.
 //!
-//! Each Hyprland `animation = "name, on, speed, curve[, style]"` entry gets
-//! one compact row: label, the `speed, curve[, style]` summary, a curve
+//! Each Hyprland `hl.animation({ leaf = … })` entry gets one compact row:
+//! label, the `speed, curve[, style]` summary, a curve
 //! thumbnail, the enable switch and a chevron. Opening a row reveals its
 //! editor in place — a speed stepper with a Default reset, a draggable
 //! cubic-Bézier curve graph with the shipped Hyprland curve presets and a
@@ -42,7 +42,7 @@ const pill_h: i32 = 24;
 const step_box_w: i32 = 116;
 const step_box_h: i32 = 28;
 const step_zone: i32 = 32;
-/// Hyprland's own default for an `animation` line's speed factor.
+/// Hyprland's own default for an animation entry's speed factor.
 const speed_default: f64 = 3.0;
 const speed_min: f64 = 0.1;
 const speed_max: f64 = 10.0;
