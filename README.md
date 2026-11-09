@@ -130,6 +130,7 @@ The manual build expects these development packages:
 | `librsvg` | SVG icon rendering |
 | `libwebp` | Wallpaper thumbnails |
 | `libpipewire-0.3` | Audio Center and tests |
+| `pam` (libpam) | Lock screen authentication |
 | `curl` or `wget`, `tar`, `xz` | Downloading the bundled Zig toolchain when the system Zig is missing or too old |
 | `zenity` (runtime; `kdialog` or `yad` also work) | Wallpaper folder picker and file dialogs |
 
@@ -138,17 +139,17 @@ Representative install commands (package names vary by release):
 ```bash
 # Arch Linux
 sudo pacman -S --needed zig pkgconf wayland wayland-protocols libxkbcommon \
-  cairo pango librsvg libwebp pipewire curl xz zenity
+  cairo pango librsvg libwebp pipewire pam curl xz zenity
 
 # Fedora
 sudo dnf install zig pkgconf-pkg-config wayland-devel wayland-protocols-devel \
   libxkbcommon-devel cairo-devel pango-devel librsvg2-devel libwebp-devel \
-  pipewire-devel curl xz zenity
+  pipewire-devel pam-devel curl xz zenity
 
 # Debian / Ubuntu
 sudo apt install pkg-config libwayland-dev libwayland-bin wayland-protocols \
   libxkbcommon-dev libcairo2-dev libpango1.0-dev librsvg2-dev libwebp-dev \
-  libpipewire-0.3-dev curl xz-utils zenity
+  libpipewire-0.3-dev libpam0g-dev curl xz-utils zenity
 ```
 
 On Debian and Ubuntu, `wayland-scanner` comes from `libwayland-bin`. Without
@@ -242,6 +243,8 @@ horizon &
 | `horizon-wallpaper` | default | Wallpaper renderer |
 | `horizon-clipstack` | `clipstack` | Clipboard history daemon |
 | `horizon-clipstack-pick` | `clipstack-pick` | Clipboard picker (`Super+V`) |
+| `horizon-idle` | `idle` | Idle timeouts, DPMS, suspend and hibernate |
+| `horizon-lock` | `lock` | Session lock screen (PAM) |
 | `horizonClipboardDaemon` | `clipboard` | Selection owner for screenshot copies |
 | `horizon-audio-center` | `audio-center` | PipeWire mixer and routing app |
 
@@ -277,6 +280,7 @@ eh-ipc ping
 eh-ipc version
 eh-ipc status          # per-component state: running, idle, restarting, disabled
 eh-ipc help
+eh-ipc lock            # start the lock screen (horizon-lock)
 eh-ipc overview-toggle # toggle the overview (also bound to Super+Tab in the shell)
 eh-ipc overview-open   # idempotent open
 eh-ipc overview-close  # idempotent close
@@ -319,6 +323,42 @@ hand edits are supported. The loader merges, in order:
 3. `~/.config/Event-Horizon/<component>/<component>.toml`
 
 Later layers win. Run `horizon-settings` to edit everything with the UI.
+
+### Idle, sleep and the lock screen
+
+`horizon-idle` reads `[power]` and `[idle.behavior.*]`. With no explicit
+behaviour entries it derives two timers from `[power]`: the display blanks at
+`display_sleep_timeout` (minutes), and the machine suspends at
+`idle_suspend_timeout` (minutes) after locking a few seconds earlier. Explicit
+entries win:
+
+```toml
+[idle.behavior.lock]
+timeout = 300           # seconds
+command = "lock"
+
+[idle.behavior.sleep]
+timeout = 1800
+command = "suspend"     # or "hibernate"
+resume_command = "dpms:on"
+
+[idle.behavior.custom]
+timeout = 60
+command = "notify-send idle"
+```
+
+Built-in commands are `lock`, `suspend`/`sleep`, `hibernate`, `dpms:off`,
+`dpms:on`, `dpms:standby` and `dpms:suspend`; anything else runs through
+`/bin/sh -c`. DPMS uses `wlopm`, `hyprctl` or `swaymsg` when one is installed.
+`horizon-idle` also watches logind's `PrepareForSleep` signal and starts the
+lock screen before an externally requested suspend.
+
+`horizon-lock` uses the `ext-session-lock-v1` protocol on every output and
+authenticates through PAM. The service defaults to `login`; set
+`EH_LOCK_PAM_SERVICE` for a dedicated stack. It is started by `horizon-idle`
+or on demand (`horizon-lock`) and exits after a successful unlock. The lock
+screen uses the configured `[wallpaper]` image and the `[time]` clock format
+(`use_24h`, `show_seconds`, `show_date`), so it matches the desktop.
 
 For testing against a separate profile without touching your live config:
 

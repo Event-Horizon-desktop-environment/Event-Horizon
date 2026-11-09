@@ -37,9 +37,16 @@ pub const table = [_]Component{
     .{ .name = "settings", .argv0 = "horizon-settings", .policy = .on_demand },
     .{ .name = "disks", .argv0 = "horizon-disks", .policy = .on_demand },
     .{ .name = "live-wallpaper", .argv0 = "horizon-live-wallpaper", .policy = .on_demand },
+    // Idle timeouts (lock / DPMS / suspend / hibernate). Always on: without
+    // it the machine never sleeps, and `horizon-lock` has nothing to spawn.
+    .{ .name = "idle", .argv0 = "horizon-idle", .policy = .always },
+    // The lock screen is started by `horizon-idle` (or by the user), never by
+    // the supervisor at boot. It stays listed so IPC can address it by name.
+    .{ .name = "lock", .argv0 = "horizon-lock", .policy = .on_demand },
 };
 
-pub fn nextBackoffMs(restarts: u32) u64 {    return switch (restarts) {
+pub fn nextBackoffMs(restarts: u32) u64 {
+    return switch (restarts) {
         0, 1, 2 => 0,
         3 => 1000,
         4 => 5000,
@@ -75,15 +82,15 @@ pub fn indexOf(name: []const u8) ?usize {
 
 test "spawn: table completeness + backoff ladder" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 13), table.len);
+    try t.expectEqual(@as(usize, 15), table.len);
     var always: usize = 0;
     var demand: usize = 0;
     for (table) |c| {
         if (c.policy == .always) always += 1;
         if (c.policy == .on_demand) demand += 1;
     }
-    try t.expectEqual(@as(usize, 9), always);
-    try t.expectEqual(@as(usize, 4), demand);
+    try t.expectEqual(@as(usize, 10), always);
+    try t.expectEqual(@as(usize, 5), demand);
     try t.expectEqual(@as(u64, 0), nextBackoffMs(0));
     try t.expectEqual(@as(u64, 1000), nextBackoffMs(3));
     try t.expectEqual(@as(u64, 30000), nextBackoffMs(9));

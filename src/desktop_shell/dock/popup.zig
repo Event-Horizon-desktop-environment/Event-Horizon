@@ -52,6 +52,7 @@ const mixer_card = @import("../widgets/volume_mixer.zig");
 const lay_card = @import("../widgets/popup/layout/layout_popup.zig");
 const wc_session = @import("../widgets/world_clock/session.zig");
 const wc_panel = @import("../widgets/world_clock/panel.zig");
+const power_card = @import("../widgets/power_confirm.zig");
 const schema = @import("../../config/schema.zig");
 const overlay = @import("../../config/overlay.zig");
 const ns = @import("../common/namespaces.zig");
@@ -115,7 +116,10 @@ pub fn isDesktopActionId(id: i32) bool {
 /// entirely by state the dock pushes into it.
 /// `.launcher` — the start menu, and `.world_clock` — the world clock's
 /// panel, which are the two that hold the keyboard while they are up.
-pub const Kind = enum { none, app, tray, calendar, weather, launcher, media_player, bluetooth, vpn, volume_mixer, layout, world_clock };
+/// `.power` is the standalone fullscreen confirmation overlay; unlike every
+/// other kind it is anchored on all four edges and sized by the compositor
+/// rather than by the dock.
+pub const Kind = enum { none, app, tray, calendar, weather, launcher, media_player, bluetooth, vpn, volume_mixer, layout, world_clock, power };
 const gap_above_dock: f64 = 6.0;
 
 /// `zwlr_layer_shell_v1`'s value for "give this surface the keyboard". The
@@ -165,6 +169,16 @@ const mx_empty_snapshot: mixer_card.Snapshot = .{};
 fn epochMs() u64 {
     var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
     if (std.os.linux.clock_gettime(.REALTIME, &ts) != 0) return 0;
+    const s: u64 = @intCast(@max(ts.sec, 0));
+    const n: u64 = @intCast(@max(ts.nsec, 0));
+    return s * 1000 + n / 1_000_000;
+}
+
+/// The power countdown runs off the monotonic clock, never wall time: a clock
+/// step must not shorten or extend the sixty seconds before the action fires.
+fn monotonicMs() u64 {
+    var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+    if (std.os.linux.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
     const s: u64 = @intCast(@max(ts.sec, 0));
     const n: u64 = @intCast(@max(ts.nsec, 0));
     return s * 1000 + n / 1_000_000;
@@ -264,6 +278,16 @@ pub const Host = struct {
     /// (the media card keeps a parsed `Hover` instead — its zones are few
     /// enough to name).
     widget_ptr: ?[2]f64 = null,
+
+    /// `.power` — which session action the overlay is asking about (1 log
+    /// out, 2 restart, 3 shut down), when the sixty-second clock started, the
+    /// last whole second painted, and the pointer position the card draws its
+    /// hover states from.
+    power_idx: i32 = 0,
+    power_start_ms: u64 = 0,
+    power_last_sec: i32 = 60,
+    power_hover: power_card.Pick = .none,
+    power_ptr: ?[2]f64 = null,
 
     /// `.app` — the slot's launch id, and the handles the window rows point
     /// at. Handles are kept as *identity keys*: a click always resolves them
@@ -383,6 +407,11 @@ pub const Host = struct {
         self.vpn_click = .{};
         self.widget_cfg = null;
         self.widget_ptr = null;
+        self.power_idx = 0;
+        self.power_start_ms = 0;
+        self.power_last_sec = 60;
+        self.power_hover = .none;
+        self.power_ptr = null;
         self.launcher = null;
         self.wc = null;
         self.wc_us = 1.0;
@@ -457,6 +486,13 @@ pub const Host = struct {
     /// faster than the menu changes. The media card answers the same question
     /// about its own controls instead of about rows.
     pub fn hoverAt(self: *Self, x: i32, y: i32, us: f64) bool {
+        if (self.kind == .power) {
+            const want = self.powerPick(x, y);
+            if (want == self.power_hover) return false;
+            self.power_hover = want;
+            self.power_ptr = .{ @floatFromInt(x), @floatFromInt(y) };
+            return true;
+        }
         if (self.kind == .media_player) return self.mediaHoverAt(x, y);
         if (self.kind == .volume_mixer) return self.mixerHoverAt(x, y);
         if (self.kind == .bluetooth or self.kind == .vpn or self.kind == .layout) return self.widgetHoverAt(x, y);
@@ -476,6 +512,12 @@ pub const Host = struct {
     }
 
     pub fn clearHover(self: *Self) bool {
+        if (self.kind == .power) {
+            if (self.power_hover == .none and self.power_ptr == null) return false;
+            self.power_hover = .none;
+            self.power_ptr = null;
+            return true;
+        }
         if (self.kind == .media_player) return self.setMediaHover(.none);
         if (self.kind == .volume_mixer) {
             if (self.widget_ptr == null and !self.mx_view.on_popup) return false;
@@ -1019,6 +1061,76 @@ pub const Host = struct {
         return settled;
     }
 
+    /// The standalone power confirmation. It is a fullscreen overlay layer
+    /// surface on all four edges — the reference power menu's shape — so the
+    /// dim and the card own the whole output and nothing from the launcher's
+    /// surface shows through. `power_idx` is 2/3/4/5 for hibernate, log out,
+    /// restart and shut down; `us` is the dock's UI scale, which the card's
+    /// geometry follows just like the other popups.
+    pub fn openPower(
+        self: *Self,
+        compositor: ?*wl.wl_compositor,
+        shell: ?*wl.zwlr_layer_shell_v1,
+        power_idx: i32,
+        colors: chrome.Chrome,
+        us: f64,
+    ) bool {
+        if (!power_card.isConfirmable(power_idx)) return false;
+        if (!self.surface.create(compositor, shell, null, .overlay, ns.desktop_widgets)) return false;
+        self.surface.setAnchor(layer.Anchor.top | layer.Anchor.bottom | layer.Anchor.left | layer.Anchor.right);
+        self.surface.setExclusiveZone(-1);
+        self.surface.setKeyboardInteractivity(kb_exclusive);
+        self.surface.setMargins(0, 0, 0, 0);
+        self.surface.setSize(0, 0);
+        self.scale = if (us > 0.0) us else 1.0;
+        self.card_colors = colors;
+        self.power_idx = power_idx;
+        self.power_start_ms = monotonicMs();
+        self.power_last_sec = 60;
+        self.power_hover = .none;
+        self.power_ptr = null;
+        self.shm.setReleaseHook(onShmRelease, self);
+        self.surface.commit();
+        self.open = true;
+        self.kind = .power;
+        return true;
+    }
+
+    /// Whole seconds left on the sixty-second countdown, floored at zero.
+    pub fn powerRemaining(self: *const Self) i32 {
+        if (self.power_start_ms == 0) return 0;
+        const elapsed = monotonicMs() -| self.power_start_ms;
+        if (elapsed >= 60_000) return 0;
+        return 60 - @as(i32, @intCast(elapsed / 1000));
+    }
+
+    /// The countdown reached zero: the caller should run the action.
+    pub fn powerExpired(self: *const Self) bool {
+        return self.kind == .power and self.power_start_ms != 0 and
+            monotonicMs() -| self.power_start_ms >= 60_000;
+    }
+
+    /// True when the painted second changed, so a 1 Hz tick only repaints on
+    /// the frames that actually show a different number.
+    pub fn powerTick(self: *Self) bool {
+        if (self.kind != .power) return false;
+        const sec = self.powerRemaining();
+        if (sec == self.power_last_sec) return false;
+        self.power_last_sec = sec;
+        return true;
+    }
+
+    pub fn powerPick(self: *const Self, x: i32, y: i32) power_card.Pick {
+        return power_card.pick(
+            @floatFromInt(self.buf_w),
+            @floatFromInt(self.buf_h),
+            self.power_idx,
+            @floatFromInt(x),
+            @floatFromInt(y),
+            self.scale,
+        );
+    }
+
     /// The start menu's surface: exactly as big as the panel, anchored into
     /// the bottom-left corner and pushed out by the two margins `place`
     /// worked out. Being the panel rather than a window onto it is the whole
@@ -1508,6 +1620,23 @@ pub const Host = struct {
                     wc_panel.paint(cr, s, &self.wc_geom, self.card_colors, wc_bg, epochMs());
                     cairo.cairo_restore(cr);
                 }
+            },
+            .power => {
+                // A fullscreen overlay: the card paints its own dim across the
+                // whole buffer, then the confirmation card centred in it. The
+                // pointer is the same surface coordinate the hit test uses.
+                const p = self.power_ptr orelse .{ -1.0, -1.0 };
+                power_card.paint(
+                    cr,
+                    @floatFromInt(self.buf_w),
+                    @floatFromInt(self.buf_h),
+                    self.power_idx,
+                    p[0],
+                    p[1],
+                    self.powerRemaining(),
+                    self.card_colors,
+                    self.scale,
+                );
             },
             else => {
                 cairo.cairo_translate(cr, @floatFromInt(self.menu_x), 0);

@@ -6,3 +6,5 @@
 /Reference
 /.zig-cache-release
 /.zig-out-release
+/PackageManager
+/Updater

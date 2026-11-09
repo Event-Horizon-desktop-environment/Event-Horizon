@@ -24,19 +24,6 @@ const k_hint = "Esc to close";
 const k_empty_all = "No applications";
 const k_empty_filter = "No matching applications";
 
-const power_titles = [layout.power_count][]const u8{
-    "",
-    "End this session?",
-    "Restart this computer?",
-    "Shut down this computer?",
-    // The nightlight toggle never opens the card; the slot is here so the
-    // table stays indexed by the footer's button order.
-    "",
-};
-const power_body = "Unsaved work will be lost.";
-const btn_cancel = "Cancel";
-const btn_go = "Continue";
-
 // Text
 
 pub fn makeLayout(cr: ?*cairo.cairo_t, desc: []const u8) text.Layout {
@@ -440,11 +427,12 @@ pub const View = struct {
     caret_on: bool = false,
     scroll: f64 = 0,
     list_mode: bool = false,
-    /// Night mode is on: the footer's last button draws the moon instead of
-    /// the sun (C++ `s_nightlight_active`).
+    /// Night mode is on: the footer's nightlight button draws the moon instead
+    /// of the sun (C++ `s_nightlight_active`).
     night_on: bool = false,
-    /// Power button awaiting confirmation, or -1.
-    confirm: i32 = -1,
+    /// Redeye (idle inhibit) is on: the footer's eye button takes the accent
+    /// tint and a lit background, so the on/off state reads at a glance.
+    redeye_on: bool = false,
 
     /// The row a right press opened the menu on, or -1 when it is closed.
     ctx_row: i32 = -1,
@@ -484,7 +472,6 @@ pub fn paint(cr: ?*cairo.cairo_t, v: View, card_alpha: f64) void {
     paintBody(c, v);
     paintFooter(c, v);
     if (v.ctx_row >= 0) paintCtxMenu(c, v);
-    if (v.confirm >= 0) paintConfirm(c, v);
 
     cairo.cairo_restore(c);
 }
@@ -620,10 +607,10 @@ fn paintFooterSeparator(cr: *cairo.cairo_t, v: View) void {
     cairo.cairo_stroke(cr);
 }
 
-/// The Material names of the four power actions, the order the C++ panel
-/// kept: lock, log out, restart, shut down.
+/// The Material names of the six power actions, in strip order: lock, sleep,
+/// hibernate, log out, restart, shut down.
 const power_glyphs = [layout.nightlight_idx][]const u8{
-    "lock", "logout", "restart_alt", "power_settings_new",
+    "lock", "dark_mode", "download", "logout", "restart_alt", "power_settings_new",
 };
 
 /// One footer button: the hover pill plus its glyph. The glyphs come from
@@ -632,18 +619,27 @@ const power_glyphs = [layout.nightlight_idx][]const u8{
 fn paintFooterButton(cr: *cairo.cairo_t, v: View, i: usize) void {
     const r = v.geo.power[i];
     const hot = v.hover_power == @as(i32, @intCast(i));
+    const redeye_on = i == layout.redeye_idx and v.redeye_on;
     helpers.roundedRect(cr, r.x, r.y, r.w, r.h, layout.power_r);
     if (hot) {
         cairo.cairo_set_source_rgba(cr, v.colors.accent.r, v.colors.accent.g, v.colors.accent.b, 0.20);
+        cairo.cairo_fill(cr);
+    } else if (redeye_on) {
+        // The active toggle keeps a lit accent plate even when idle, the same
+        // "on" cue the pear tile and the dock widget use.
+        cairo.cairo_set_source_rgba(cr, v.colors.accent.r, v.colors.accent.g, v.colors.accent.b, 0.14);
         cairo.cairo_fill(cr);
     } else {
         cairo.cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.03);
         cairo.cairo_fill(cr);
     }
     // The nightlight button is the moon while night mode is on and the sun
-    // while it is off, exactly the C++ `dark_mode`/`light_mode` swap.
+    // while it is off, exactly the C++ `dark_mode`/`light_mode` swap. The
+    // redeye button is the eye either way; its accent tint carries the state.
     const name = if (i == layout.nightlight_idx)
         (if (v.night_on) "dark_mode" else "light_mode")
+    else if (i == layout.redeye_idx)
+        "visibility"
     else
         power_glyphs[i];
     _ = svg_icons.draw(
@@ -652,10 +648,10 @@ fn paintFooterButton(cr: *cairo.cairo_t, v: View, i: usize) void {
         r.x + r.w * 0.5,
         r.y + r.h * 0.5,
         power_glyph_px,
-        1.0,
-        1.0,
-        1.0,
-        if (hot) 0.92 else 0.62,
+        if (redeye_on) v.colors.accent.r else 1.0,
+        if (redeye_on) v.colors.accent.g else 1.0,
+        if (redeye_on) v.colors.accent.b else 1.0,
+        if (hot) 0.92 else if (redeye_on) 0.95 else 0.62,
         false,
     );
 }
@@ -949,52 +945,6 @@ pub fn paintFallback(c: ?*cairo.cairo_t, name: []const u8, x: f64, y: f64, box: 
     const w = runWidth(&l);
     const h: f64 = @floatFromInt(l.pixelSize().h);
     drawRun(cr, &l, x + (box - w) * 0.5, y + (box - h) * 0.5, 0.80);
-}
-
-// The confirmation card
-
-pub fn paintConfirm(c: ?*cairo.cairo_t, v: View) void {
-    const cr = c orelse return;
-    const g = v.geo;
-    const m = layout.modalOf(g);
-    const idx: usize = @intCast(@max(0, v.confirm));
-
-    cairo.cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.45);
-    cairo.cairo_paint(cr);
-
-    helpers.roundedRect(cr, m.box.x, m.box.y, m.box.w, m.box.h, 24.0);
-    cairo.cairo_set_source_rgba(cr, v.colors.dock_fill.r * 0.35, v.colors.dock_fill.g * 0.35, v.colors.dock_fill.b * 0.35, 0.98);
-    cairo.cairo_fill_preserve(cr);
-    cairo.cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.14);
-    cairo.cairo_set_line_width(cr, 1.0);
-    cairo.cairo_stroke(cr);
-
-    var buf: [40]u8 = undefined;
-    var title = makeLayout(cr, fontDesc(&buf, "SemiBold", 16.0));
-    defer title.destroy();
-    title.setText(power_titles[idx]);
-    drawRun(cr, &title, m.box.x + (m.box.w - runWidth(&title)) * 0.5, m.title_y, 0.95);
-
-    var body = makeLayout(cr, fontDesc(&buf, "", 13.0));
-    defer body.destroy();
-    body.setText(power_body);
-    drawRun(cr, &body, m.box.x + (m.box.w - runWidth(&body)) * 0.5, m.body_y, 0.60);
-
-    var lab = makeLayout(cr, fontDesc(&buf, "SemiBold", 14.0));
-    defer lab.destroy();
-
-    helpers.roundedRect(cr, m.cancel.x, m.cancel.y, m.cancel.w, m.cancel.h, 12.0);
-    cairo.cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.10);
-    cairo.cairo_fill(cr);
-    lab.setText(btn_cancel);
-    drawRun(cr, &lab, m.cancel.x + (m.cancel.w - runWidth(&lab)) * 0.5, m.cancel.y + (m.cancel.h - @as(f64, @floatFromInt(lab.pixelSize().h))) * 0.5, 0.85);
-
-    helpers.roundedRect(cr, m.confirm.x, m.confirm.y, m.confirm.w, m.confirm.h, 12.0);
-    cairo.cairo_set_source_rgba(cr, v.colors.accent.r, v.colors.accent.g, v.colors.accent.b, 0.92);
-    cairo.cairo_fill(cr);
-    lab.setText(btn_go);
-    const on_light = (v.colors.accent.r + v.colors.accent.g + v.colors.accent.b) / 3.0 > 0.55;
-    drawRun(cr, &lab, m.confirm.x + (m.confirm.w - runWidth(&lab)) * 0.5, m.confirm.y + (m.confirm.h - @as(f64, @floatFromInt(lab.pixelSize().h))) * 0.5, if (on_light) 0.12 else 0.98);
 }
 
 // Drawn icons

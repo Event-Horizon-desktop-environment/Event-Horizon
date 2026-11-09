@@ -166,6 +166,8 @@ test {
     _ = @import("desktop_shell/overview/paint.zig");
     _ = @import("desktop_shell/osd/paint.zig");
     _ = @import("desktop_shell/lockscreen/paint.zig");
+    _ = @import("desktop_shell/lockscreen/auth.zig");
+    _ = @import("desktop_shell/lockscreen/state.zig");
     _ = @import("desktop_shell/notifications/toast_paint.zig");
     _ = @import("desktop_shell/shared/popup_menu_paint.zig");
     _ = @import("m3/controls.zig");
@@ -324,6 +326,7 @@ test {
     _ = @import("ux/live_gallery.zig");
     _ = @import("ux/filebrowser_sort.zig");
     _ = @import("desktop_shell/widgets/weather.zig");
+    _ = @import("desktop_shell/widgets/power_confirm.zig");
     _ = @import("desktop_shell/widgets/media/media_paint.zig");
     _ = @import("desktop_shell/widgets/media/media_popup.zig");
     _ = @import("desktop_shell/widgets/shared/pill.zig");

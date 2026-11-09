@@ -164,6 +164,7 @@ pub const SlotKind = enum(u8) {
     clipstack = 21,
     pear_center = 22,
     audio_center = 23,
+    redeye = 24,
 };
 
 pub const PaintSlot = struct {

@@ -41,6 +41,8 @@ INSTALL_BINARIES=(
     horizonClipboardDaemon
     horizon-clipstack
     horizon-clipstack-pick
+    horizon-idle
+    horizon-lock
 )
 
 DO_DEPS=1

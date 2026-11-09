@@ -126,6 +126,7 @@ pub fn widgetMeta(id: []const u8) struct { title: []const u8, glyph: []const u8 
         .{ .id = "vpn", .title = "VPN", .glyph = "vpn_key" },
         .{ .id = "battery", .title = "Battery", .glyph = "battery_full" },
         .{ .id = "bluetooth", .title = "Bluetooth", .glyph = "bluetooth" },
+        .{ .id = "redeye", .title = "Redeye", .glyph = "visibility" },
     };
     for (table) |e| {
         if (std.mem.eql(u8, e.id, id)) return .{ .title = e.title, .glyph = e.glyph };
@@ -166,6 +167,7 @@ pub fn widgetDesc(id: []const u8) []const u8 {
         .{ .id = "vpn", .desc = "VPN connection popup with connect/disconnect" },
         .{ .id = "battery", .desc = "Battery percentage and charging state from UPower" },
         .{ .id = "bluetooth", .desc = "Bluetooth adapter status, connected devices, and power toggle" },
+        .{ .id = "redeye", .desc = "Redeye toggle: keeps the screen awake while it is on" },
         .{ .id = "layout", .desc = "Hyprland + MangoWM window layout switcher (click to swap live)" },
         .{ .id = "rail_settings", .desc = "Settings rail on the desktop; click a category to open the settings window on that page" },
     };

@@ -38,6 +38,8 @@ pub const Kind = enum {
     trash,
     volume_mixer,
     vpn,
+    /// Idle-inhibit (redeye) toggle: an eye glyph, accent-lit while on.
+    redeye,
     layout,
     battery,
     bluetooth,
@@ -299,6 +301,8 @@ fn appendToken(
         try out.append(alloc, .{ .kind = .volume_mixer, .key = w });
     } else if (std.mem.eql(u8, impl, "vpn")) {
         try out.append(alloc, .{ .kind = .vpn, .key = w });
+    } else if (std.mem.eql(u8, impl, "redeye")) {
+        try out.append(alloc, .{ .kind = .redeye, .key = w });
     } else if (std.mem.eql(u8, impl, "battery")) {
         try out.append(alloc, .{ .kind = .battery, .key = w });
     } else if (std.mem.eql(u8, impl, "bluetooth")) {
@@ -1269,7 +1273,7 @@ test "widgets: only the kinds whose arm paints one own a pill" {
     // audio center and every widget whose `paint_*_slot` calls `paint_pill`
     // itself. `layout` sits here because its own painter draws the pill the
     // same way bluetooth's and battery's do.
-    try t.expectEqual(@as(usize, 18), owned);
+    try t.expectEqual(@as(usize, 19), owned);
 }
 
 test "widgets: gap rules" {

@@ -57,6 +57,33 @@ pub const Inhibitor = struct {
 pub const SessionLock = struct {
     manager: ?*session_lock.ext_session_lock_manager_v1 = null,
     lock_obj: ?*session_lock.ext_session_lock_v1 = null,
+    /// Set once the compositor has presented the first locked frame on every
+    /// output. This is the only safe moment to suspend: before it, unlocked
+    /// pixels may still be on screen.
+    locked_event: bool = false,
+    /// The compositor refused the lock (another client holds it, or it has no
+    /// ext-session-lock support). Set before `locked` is ever sent.
+    finished_event: bool = false,
+    on_locked: ?*const fn (ctx: *anyopaque) void = null,
+    on_finished: ?*const fn (ctx: *anyopaque) void = null,
+    ctx: *anyopaque = undefined,
+
+    fn onLocked(data: ?*anyopaque, _: ?*session_lock.ext_session_lock_v1) callconv(.c) void {
+        const self: *SessionLock = @ptrCast(@alignCast(data orelse return));
+        self.locked_event = true;
+        if (self.on_locked) |h| h(self.ctx);
+    }
+
+    fn onFinished(data: ?*anyopaque, _: ?*session_lock.ext_session_lock_v1) callconv(.c) void {
+        const self: *SessionLock = @ptrCast(@alignCast(data orelse return));
+        self.finished_event = true;
+        if (self.on_finished) |h| h(self.ctx);
+    }
+
+    const lock_listener = session_lock.ext_session_lock_v1_listener{
+        .locked = onLocked,
+        .finished = onFinished,
+    };
 
     pub fn setManager(self: *SessionLock, mgr: ?*session_lock.ext_session_lock_manager_v1) void {
         self.manager = mgr;
@@ -67,13 +94,24 @@ pub const SessionLock = struct {
         const l = session_lock.ext_session_lock_manager_v1_lock(self.manager);
         if (l == null) return false;
         self.lock_obj = l;
+        self.locked_event = false;
+        self.finished_event = false;
+        _ = session_lock.ext_session_lock_v1_add_listener(l, &lock_listener, self);
         return true;
     }
 
+    /// Destroy a lock that never reached the locked event. Calling the plain
+    /// destroy after `locked` is a protocol error; `unlock` handles that case.
     pub fn unlock(self: *SessionLock) void {
         if (self.lock_obj) |l| {
-            session_lock.ext_session_lock_v1_destroy(l);
+            if (self.locked_event) {
+                session_lock.ext_session_lock_v1_unlock_and_destroy(l);
+            } else {
+                session_lock.ext_session_lock_v1_destroy(l);
+            }
             self.lock_obj = null;
+            self.locked_event = false;
+            self.finished_event = false;
         }
     }
 
@@ -133,6 +171,14 @@ pub const IdleService = struct {
     pub fn addBehavior(self: *IdleService, b: IdleBehavior) !void {
         try self.behaviors.append(self.alloc, b);
         self.armOne(&self.behaviors.items[self.behaviors.items.len - 1]);
+    }
+
+    /// Drop every listener but keep the notifier/seat. A config reload uses
+    /// this before it rebuilds the list; the notification objects must go
+    /// first because their listener data points at the old entries.
+    pub fn reset(self: *IdleService) void {
+        self.clearNotifications();
+        self.behaviors.clearRetainingCapacity();
     }
 
     fn armOne(self: *IdleService, b: *IdleBehavior) void {

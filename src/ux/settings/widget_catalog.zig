@@ -28,6 +28,7 @@ pub const ids = [_][]const u8{
     "vpn",
     "battery",
     "bluetooth",
+    "redeye",
     // `kDockWidgetPickIds` in the C++ keeps it last too.
     "layout",
 };

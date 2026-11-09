@@ -46,6 +46,9 @@ pub extern fn pango_cairo_create_layout(cr: ?*cairo.cairo_t) ?*PangoLayout;
 pub extern fn pango_layout_set_text(layout: ?*PangoLayout, text: [*c]const u8, length: c_int) void;
 pub extern fn pango_layout_get_pixel_size(layout: ?*PangoLayout, width: ?*c_int, height: ?*c_int) void;
 pub extern fn pango_cairo_show_layout(cr: ?*cairo.cairo_t, layout: ?*PangoLayout) void;
+/// Adds the layout's glyph outlines to the current cairo path. Used to clip a
+/// backdrop fill to the text so the glyphs themselves can be glass.
+pub extern fn pango_cairo_layout_path(cr: ?*cairo.cairo_t, layout: ?*PangoLayout) void;
 extern fn pango_font_description_from_string(str: [*c]const u8) ?*PangoFontDescription;
 pub extern fn pango_font_description_free(desc: ?*PangoFontDescription) void;
 pub extern fn pango_layout_set_font_description(layout: ?*PangoLayout, desc: ?*const PangoFontDescription) void;
@@ -64,6 +67,9 @@ pub extern fn pango_font_description_set_absolute_size(desc: ?*PangoFontDescript
 /// Selects an OpenType feature by tag — `Glyph` asks for `liga` so the ligature
 /// that turns a name like `close` into a single icon renders.
 pub extern fn pango_attr_font_features_new(features: [*c]const u8) ?*PangoAttribute;
+/// Tracking, in Pango units (1/1024 px). Negative values tighten the run,
+/// which is how the lock-screen clock matches the design's `-.045em`.
+pub extern fn pango_attr_letter_spacing_new(spacing: c_int) ?*PangoAttribute;
 
 /// Pango's unit scale: one pixel is 1024 font units, so sizes and widths must
 /// be multiplied by this before handing them to pango.

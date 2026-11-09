@@ -40,15 +40,33 @@ pub const Date = struct {
 /// The machine's current local date, or 1970-01-01 when the clock cannot be
 /// read — a wrong date on a calendar is bad, a panicked shell is worse.
 pub fn today() Date {
+    return now().date;
+}
+
+/// Date plus time of day, converted once through the C library. The lock
+/// screen repaints its clock from this every second.
+pub const WallClock = struct {
+    date: Date = .{},
+    hour: u8 = 0,
+    minute: u8 = 0,
+    second: u8 = 0,
+};
+
+pub fn now() WallClock {
     var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
     if (linux.clock_gettime(.REALTIME, &ts) != 0) return .{};
     const t: i64 = @intCast(ts.sec);
     var out: CTm = undefined;
     if (localtime_r(&t, &out) == null) return .{};
     return .{
-        .year = 1900 + @as(i32, @intCast(out.tm_year)),
-        .month = @intCast(std.math.clamp(@as(i32, out.tm_mon) + 1, 1, 12)),
-        .day = @intCast(std.math.clamp(@as(i32, out.tm_mday), 1, 31)),
+        .date = .{
+            .year = 1900 + @as(i32, @intCast(out.tm_year)),
+            .month = @intCast(std.math.clamp(@as(i32, out.tm_mon) + 1, 1, 12)),
+            .day = @intCast(std.math.clamp(@as(i32, out.tm_mday), 1, 31)),
+        },
+        .hour = @intCast(std.math.clamp(@as(i32, out.tm_hour), 0, 23)),
+        .minute = @intCast(std.math.clamp(@as(i32, out.tm_min), 0, 59)),
+        .second = @intCast(std.math.clamp(@as(i32, out.tm_sec), 0, 60)),
     };
 }
 

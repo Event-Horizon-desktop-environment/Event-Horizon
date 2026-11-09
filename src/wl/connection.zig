@@ -209,6 +209,7 @@ pub const Connection = struct {
         virtual_keyboard_manager: ?*wl.zwp_virtual_keyboard_manager_v1 = null,
         activation: ?*wl.xdg_activation_v1 = null,
         idle_inhibit_manager: ?*wl.zwp_idle_inhibit_manager_v1 = null,
+        idle_notifier: ?*wl.ext_idle_notifier_v1 = null,
         session_lock_manager: ?*wl.ext_session_lock_manager_v1 = null,
         gamma_manager: ?*wl.zwlr_gamma_control_manager_v1 = null,
         workspace_manager: ?*wl.ext_workspace_manager_v1 = null,
@@ -306,6 +307,10 @@ pub const Connection = struct {
             } else if (std.mem.eql(u8, g.interface, "zwp_idle_inhibit_manager_v1")) {
                 if (bound.idle_inhibit_manager == null) {
                     bound.idle_inhibit_manager = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.zwp_idle_inhibit_manager_v1_interface, 1));
+                }
+            } else if (std.mem.eql(u8, g.interface, "ext_idle_notifier_v1")) {
+                if (bound.idle_notifier == null) {
+                    bound.idle_notifier = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.ext_idle_notifier_v1_interface, @min(g.version, 2)));
                 }
             } else if (std.mem.eql(u8, g.interface, "ext_workspace_manager_v1")) {
                 if (bound.workspace_manager == null) {

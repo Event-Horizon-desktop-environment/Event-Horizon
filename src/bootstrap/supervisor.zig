@@ -61,6 +61,15 @@ pub const Supervisor = struct {
         }
     }
 
+    /// Start one named component on demand (IPC `lock`, for example). Returns
+    /// true when it is running, already running, or owned elsewhere; false
+    /// when the binary is not installed beside us or the spawn failed.
+    pub fn startNamed(self: *Supervisor, name: []const u8) bool {
+        const i = spawn_mod.indexOf(name) orelse return false;
+        self.spawn(i);
+        return self.pids[i] != 0 or self.states[i] == .external;
+    }
+
     /// Apply one settings gate: suppress (and SIGTERM when running) or
     /// release back to `.always` duty. Returns true when the gate is open.
     pub fn setWanted(self: *Supervisor, name: []const u8, want: bool) bool {
@@ -78,7 +87,6 @@ pub const Supervisor = struct {
     pub fn applyGates(self: *Supervisor, gates: spawn_mod.Gates) void {
         _ = self.setWanted("dock", spawn_mod.wanted("dock", gates));
         _ = self.setWanted("taskbar", spawn_mod.wanted("taskbar", gates));
-
     }
 
     pub fn runningCount(self: *const Supervisor) usize {
@@ -314,6 +322,13 @@ test "supervisor: finds a live process by argv[0] basename" {
     var c = child;
     c.kill(std.testing.io);
     try t.expect(found);
+}
+
+test "supervisor: startNamed rejects an unknown component" {
+    const t = std.testing;
+    var s = Supervisor.init(t.allocator, std.testing.io) catch return;
+    defer s.deinit();
+    try t.expect(!s.startNamed("no-such-component"));
 }
 
 test "supervisor: settings gate suppresses and releases" {

@@ -20,6 +20,7 @@ const std = @import("std");
 const seat_mod = @import("../../wl/seat.zig");
 const cat = @import("../../services/app_catalog.zig");
 const autostart = @import("../../services/autostart.zig");
+const hypr_ipc = @import("../../backends/hyprland_ipc.zig");
 const layout = @import("../widgets/launcher_layout.zig");
 const paint = @import("../widgets/launcher_paint.zig");
 const measure = @import("../widgets/shared/measure_scratch.zig");
@@ -69,6 +70,9 @@ pub const Op = enum {
     /// Flip the nightlight from the footer toggle. The host owns the switch
     /// (the config write and the reload) and repaints.
     toggle_night,
+    /// Flip redeye (idle inhibit) from the footer toggle. The host owns the
+    /// service and repaints.
+    toggle_redeye,
     /// The rail's Reload-shell button: the host re-reads its config and
     /// repaints. The panel stays up.
     reload_shell,
@@ -153,7 +157,6 @@ pub const Menu = struct {
     sel_pill: i32 = -1,
     focused: bool = true,
     caret_on: bool = true,
-    confirm: i32 = -1,
     gen: u64 = 0,
 
     /// The row a right press opened the menu on, or -1 while it is closed.
@@ -184,6 +187,9 @@ pub const Menu = struct {
     /// night mode is on and the sun while it is off (C++ parity). Owned by
     /// the host's config; the menu only carries it to the paint.
     night_on: bool = false,
+    /// Redeye (idle inhibit) state shown by the footer's eye toggle. The host
+    /// mirrors its redeye service into this before every open and repaint.
+    redeye_on: bool = false,
 
     const Self = @This();
 
@@ -233,7 +239,6 @@ pub const Menu = struct {
         self.hover_row = -1;
         self.hover_pill = -1;
         self.hover_power = -1;
-        self.confirm = -1;
         self.ctx_row = -1;
         self.ctx_hover = -1;
         self.ctx_pinned = false;
@@ -305,6 +310,11 @@ pub const Menu = struct {
         self.night_on = on;
     }
 
+    /// The redeye (idle inhibit) state the footer toggle paints.
+    pub fn setRedeye(self: *Self, on: bool) void {
+        self.redeye_on = on;
+    }
+
     pub fn view(self: *Self) paint.View {
         return .{
             .geo = self.geo,
@@ -332,7 +342,7 @@ pub const Menu = struct {
             .scroll = self.current,
             .list_mode = self.list_mode,
             .night_on = self.night_on,
-            .confirm = self.confirm,
+            .redeye_on = self.redeye_on,
             .ctx_row = self.ctx_row,
             .ctx_ax = self.ctx_ax,
             .ctx_ay = self.ctx_ay,
@@ -457,11 +467,6 @@ pub const Menu = struct {
         // the natural space the layout is authored in.
         const lx = sx / self.fit;
         const ly = sy / self.fit;
-        // The confirmation card owns the panel while it is up, and nothing
-        // about it depends on the pointer. Saying "nothing changed" here is
-        // not a shortcut — it is what keeps a pointer sweeping over the card
-        // from redrawing the whole panel per motion event.
-        if (self.confirm >= 0) return false;
         const g = self.geo;
         // The menu owns the pointer while it is up: the rows behind it stop
         // lighting, which is also what keeps an open menu from retiring the
@@ -580,20 +585,6 @@ pub const Menu = struct {
         const lx = sx / self.fit;
         const ly = sy / self.fit;
         const g = self.geo;
-        if (self.confirm >= 0) {
-            return switch (layout.modalHit(g, lx, ly)) {
-                .confirm => blk: {
-                    const idx = self.confirm;
-                    self.confirm = -1;
-                    break :blk .{ .op = .run_power, .hit = idx };
-                },
-                // Cancel, and any click on the scrim behind the card.
-                else => blk: {
-                    self.confirm = -1;
-                    break :blk Decision{};
-                },
-            };
-        }
         if (self.style == .rail) return self.clickRail(lx, ly, press);
         if (press.btn == 3) {
             // A right press on a row asks for that row's menu, and asks again
@@ -641,11 +632,12 @@ pub const Menu = struct {
             },
             .power => {
                 const i: i32 = @intCast(layout.powerIndexAt(g, lx, ly) orelse return .{});
-                // Locking is not worth a modal; the three session actions
-                // are; the nightlight toggle just flips.
-                if (i == 0) return .{ .op = .run_power, .hit = i };
+                // Lock and sleep are not worth a confirmation; hibernate and
+                // the session-ending actions are; the nightlight and redeye
+                // toggles just flip.
+                if (i == 0 or i == 1) return .{ .op = .run_power, .hit = i };
                 if (i == layout.nightlight_idx) return .{ .op = .toggle_night, .hit = i };
-                self.confirm = i;
+                if (i == layout.redeye_idx) return .{ .op = .toggle_redeye, .hit = i };
                 return .{ .op = .ask_power, .hit = i };
             },
             // Clicking the panel around the list keeps it open, the way the
@@ -689,7 +681,7 @@ pub const Menu = struct {
             _ = self.pickPill(@intCast(i));
             return .{ .op = .repaint };
         }
-        if (layout.railSessAt(g, lx, ly)) |i| return self.sessionAction(i);
+        if (layout.railSessAt(g, lx, ly)) |i| return sessionAction(i);
         if (g.search.contains(lx, ly)) {
             self.focused = true;
             return .{ .op = .focus_field };
@@ -708,18 +700,12 @@ pub const Menu = struct {
     /// power, theme. The two that end the session confirm the way the
     /// reference panel's footer does; the two that stay in the panel leave
     /// the note to the host, which knows what actually happened.
-    fn sessionAction(self: *Self, i: usize) Decision {
+    fn sessionAction(i: usize) Decision {
         return switch (i) {
             0 => .{ .op = .run_power, .hit = 0 },
-            1 => blk: {
-                self.confirm = 1;
-                break :blk .{ .op = .ask_power, .hit = 1 };
-            },
+            1 => .{ .op = .ask_power, .hit = 3 },
             2 => .{ .op = .reload_shell },
-            3 => blk: {
-                self.confirm = 3;
-                break :blk .{ .op = .ask_power, .hit = 3 };
-            },
+            3 => .{ .op = .ask_power, .hit = 5 },
             4 => .{ .op = .toggle_theme },
             else => .{},
         };
@@ -744,21 +730,6 @@ pub const Menu = struct {
     pub fn key(self: *Self, ev: *const seat_mod.KeyEvent) Decision {
         const xkb = seat_mod.xkb;
         if (ev.state != 1) return .{};
-
-        if (self.confirm >= 0) {
-            return switch (ev.sym) {
-                xkb.XKB_KEY_Escape => blk: {
-                    self.confirm = -1;
-                    break :blk .{ .op = .repaint };
-                },
-                xkb.XKB_KEY_Return, xkb.XKB_KEY_KP_Enter => blk: {
-                    const idx = self.confirm;
-                    self.confirm = -1;
-                    break :blk .{ .op = .run_power, .hit = idx };
-                },
-                else => .{},
-            };
-        }
 
         if (self.style == .rail) return self.keyRail(ev);
 
@@ -839,10 +810,10 @@ pub const Menu = struct {
                     _ = self.pickPill(if (i == 0) -1 else i);
                     return .{ .op = .repaint };
                 },
-                xkb.XKB_KEY_l => return self.sessionAction(0),
-                xkb.XKB_KEY_o => return self.sessionAction(1),
-                xkb.XKB_KEY_r => return self.sessionAction(2),
-                xkb.XKB_KEY_p => return self.sessionAction(3),
+                xkb.XKB_KEY_l => return sessionAction(0),
+                xkb.XKB_KEY_o => return sessionAction(1),
+                xkb.XKB_KEY_r => return sessionAction(2),
+                xkb.XKB_KEY_p => return sessionAction(3),
                 else => return .{},
             }
         }
@@ -1120,11 +1091,20 @@ pub const Menu = struct {
     /// Ask the session manager to do what button `idx` stands for. The order
     /// inside each group is "the tool this desktop is most likely to have";
     /// the first one that spawns wins and the rest are not tried.
-    pub fn runPower(io: std.Io, idx: i32) void {
+    pub fn runPower(io: std.Io, gpa: std.mem.Allocator, idx: i32) void {
         const lock = [_][]const []const u8{
+            &[_][]const u8{ "eh-ipc", "lock" },
             &[_][]const u8{ "loginctl", "lock-session" },
             &[_][]const u8{"hyprlock"},
-            &[_][]const u8{"swaylock"},
+            &[_][]const u8{ "swaylock", "-f" },
+        };
+        const sleep = [_][]const []const u8{
+            &[_][]const u8{ "systemctl", "suspend" },
+            &[_][]const u8{ "loginctl", "suspend" },
+        };
+        const hibernate = [_][]const []const u8{
+            &[_][]const u8{ "systemctl", "hibernate" },
+            &[_][]const u8{ "loginctl", "hibernate" },
         };
         const reboot = [_][]const []const u8{
             &[_][]const u8{ "systemctl", "reboot" },
@@ -1136,9 +1116,11 @@ pub const Menu = struct {
         };
         switch (idx) {
             0 => firstOf(io, &lock),
-            1 => logout(io),
-            2 => firstOf(io, &reboot),
-            3 => firstOf(io, &halt),
+            1 => firstOf(io, &sleep),
+            2 => firstOf(io, &hibernate),
+            3 => logout(io, gpa),
+            4 => firstOf(io, &reboot),
+            5 => firstOf(io, &halt),
             else => {},
         }
     }
@@ -1154,26 +1136,45 @@ fn firstOf(io: std.Io, cands: []const []const []const u8) void {
 /// Ending a session has no portable command — each compositor has its own
 /// exit request — so the running one is sniffed from its own environment
 /// variable and anything else falls back to asking the session manager to
-/// terminate the login that owns the display.
-fn logout(io: std.Io) void {
+/// terminate the login that owns the display. This is the reference
+/// `app_drawer_power_exec`'s case 1 ported to Zig: Hyprland goes through its
+/// IPC socket (the plain `dispatch exit` form is rejected under its Lua
+/// config provider), Mango answers `mmsg -q`, and Niri/Sway keep their own
+/// quit verbs with a logind fallback when the tool is absent.
+fn logout(io: std.Io, gpa: std.mem.Allocator) void {
     if (env("HYPRLAND_INSTANCE_SIGNATURE") != null) {
-        const hypr = [_][]const []const u8{&[_][]const u8{ "hyprctl", "dispatch", "exit" }};
-        firstOf(io, &hypr);
+        var map = std.process.Environ.Map.init(gpa);
+        defer map.deinit();
+        if (env("HYPRLAND_INSTANCE_SIGNATURE")) |sig| map.put("HYPRLAND_INSTANCE_SIGNATURE", sig) catch {};
+        if (env("XDG_RUNTIME_DIR")) |rt| map.put("XDG_RUNTIME_DIR", rt) catch {};
+        const command: []const u8 = if (hypr_ipc.usesLuaConfig(gpa, io, &map))
+            "dispatch hl.dsp.exit()"
+        else
+            "dispatch exit";
+        if (hypr_ipc.ipcRequest(gpa, io, &map, command)) |reply| gpa.free(reply);
         return;
     }
     if (env("NIRI_SOCKET") != null) {
-        const niri = [_][]const []const u8{&[_][]const u8{ "niri", "msg", "action", "quit" }};
-        firstOf(io, &niri);
-        return;
+        if (spawnOk(io, &.{ "niri", "msg", "action", "quit" })) return;
     }
     if (env("SWAYSOCK") != null) {
-        const sway = [_][]const []const u8{&[_][]const u8{ "swaymsg", "exit" }};
-        firstOf(io, &sway);
-        return;
+        if (spawnOk(io, &.{ "swaymsg", "exit" })) return;
+    }
+    if (env("MANGO_INSTANCE_SIGNATURE") != null) {
+        if (spawnOk(io, &.{ "mmsg", "-q" })) return;
+    }
+    // The same fallback the reference uses: end the session that owns this
+    // display, not every session the user has open.
+    if (env("XDG_SESSION_ID")) |sid| {
+        if (spawnOk(io, &.{ "loginctl", "terminate-session", sid })) return;
     }
     const user = env("USER") orelse return;
-    const fall = [_][]const []const u8{&[_][]const u8{ "loginctl", "terminate-user", user }};
-    firstOf(io, &fall);
+    _ = spawnOk(io, &.{ "loginctl", "terminate-user", user });
+}
+
+fn spawnOk(io: std.Io, argv: []const []const u8) bool {
+    autostart.spawnDetached(io, argv) catch return false;
+    return true;
 }
 
 /// Pretend the scroll's easing began right at boot, so one tick lands on the
@@ -1264,43 +1265,44 @@ test "launcher-menu: pills filter, the escape hatch is the search box, and the m
     try t.expectEqual(@as(usize, 3), m.hits.items.len);
     try t.expect(!m.pickPill(0));
 
-    // A grid cell is a launch; the power strip opens the confirmation card,
-    // and once it is up the list behind it is unreachable.
+    // A grid cell is a launch; the power strip asks the host to open the
+    // standalone confirmation overlay. The model itself owns no modal state,
+    // so the list stays live until the host closes it.
     const g = m.geo;
     try t.expectEqual(Op.launch, m.click(g.body.x + 4, g.body.y + 4, .{ .btn = 1 }).op);
     const ask = m.click(g.power[2].x + 4, g.power[2].y + 4, .{ .btn = 1 });
     try t.expectEqual(Op.ask_power, ask.op);
     try t.expectEqual(@as(i32, 2), ask.hit);
-    try t.expectEqual(@as(i32, 2), m.confirm);
-    // The card owns the panel now: the list under it does not light up, and
-    // neither does anything else, so no motion is worth a frame.
-    try t.expect(!m.hoverAt(g.body.x + 4, g.body.y + 4));
-    try t.expectEqual(@as(i32, -1), m.hover_row);
 
-    // Confirming hands the button back to the caller and clears the card.
-    const modal = layout.modalOf(g);
-    const go = m.click(modal.confirm.x + 4, modal.confirm.y + 4, .{ .btn = 1 });
-    try t.expectEqual(Op.run_power, go.op);
-    try t.expectEqual(@as(i32, 2), go.hit);
-    try t.expectEqual(@as(i32, -1), m.confirm);
-
-    // The lock button fires straight away.
+    // Lock and sleep fire straight away; hibernate asks first.
     try t.expectEqual(Op.run_power, m.click(g.power[0].x + 4, g.power[0].y + 4, .{ .btn = 1 }).op);
-    // The nightlight toggle (last, past the separator) flips without a
-    // modal and without touching the confirmation card.
+    const sleeper = m.click(g.power[1].x + 4, g.power[1].y + 4, .{ .btn = 1 });
+    try t.expectEqual(Op.run_power, sleeper.op);
+    try t.expectEqual(@as(i32, 1), sleeper.hit);
+    const hib = m.click(g.power[2].x + 4, g.power[2].y + 4, .{ .btn = 1 });
+    try t.expectEqual(Op.ask_power, hib.op);
+    try t.expectEqual(@as(i32, 2), hib.hit);
+    // The nightlight toggle (last, past the separator) flips without asking.
     const night = m.click(g.power[layout.nightlight_idx].x + 4, g.power[layout.nightlight_idx].y + 4, .{ .btn = 1 });
     try t.expectEqual(Op.toggle_night, night.op);
     try t.expectEqual(@as(i32, layout.nightlight_idx), night.hit);
-    try t.expectEqual(@as(i32, -1), m.confirm);
-    // List mode and the night state ride the view straight to the paint.
+    // The redeye toggle sits after the nightlight and also flips without asking.
+    const redeye = m.click(g.power[layout.redeye_idx].x + 4, g.power[layout.redeye_idx].y + 4, .{ .btn = 1 });
+    try t.expectEqual(Op.toggle_redeye, redeye.op);
+    try t.expectEqual(@as(i32, layout.redeye_idx), redeye.hit);
+    // List mode and the toggle states ride the view straight to the paint.
     m.setListMode(true);
     try t.expect(m.view().list_mode);
     m.setNight(true);
     try t.expect(m.view().night_on);
+    m.setRedeye(true);
+    try t.expect(m.view().redeye_on);
     m.setListMode(false);
     m.setNight(false);
+    m.setRedeye(false);
     try t.expect(!m.view().list_mode);
     try t.expect(!m.view().night_on);
+    try t.expect(!m.view().redeye_on);
     // Clicking the panel around the list keeps the menu open.
     try t.expectEqual(Op.none, m.click(4.0, 400.0, .{ .btn = 1 }).op);
 
@@ -1711,24 +1713,15 @@ test "launcher-menu: the rail wraps its arrows, clamps its pages, and answers th
     try t.expectEqual(Op.reload_shell, m.key(&keyChord(xkb.XKB_KEY_r, false, true)).op);
     try t.expectEqual(@as(usize, 0), m.query.items.len);
 
-    // Alt+O is Log out and Alt+P is Power: both ask first, and the card owns
-    // the keys while it is up — Escape cancels, Return runs it.
+    // Alt+O is Log out and Alt+P is Power: both hand the host the action to
+    // confirm on its standalone overlay. Escape and Return belong to that
+    // overlay now, not to the launcher model.
     const ask = m.key(&keyChord(xkb.XKB_KEY_o, false, true));
     try t.expectEqual(Op.ask_power, ask.op);
-    try t.expectEqual(@as(i32, 1), ask.hit);
-    try t.expectEqual(@as(i32, 1), m.confirm);
-    try t.expectEqual(Op.repaint, m.key(&keyTap(xkb.XKB_KEY_Escape)).op);
-    try t.expectEqual(@as(i32, -1), m.confirm);
-    _ = m.key(&keyChord(xkb.XKB_KEY_o, false, true));
-    const go = m.key(&keyTap(xkb.XKB_KEY_Return));
-    try t.expectEqual(Op.run_power, go.op);
-    try t.expectEqual(@as(i32, 1), go.hit);
-    try t.expectEqual(@as(i32, -1), m.confirm);
+    try t.expectEqual(@as(i32, 3), ask.hit);
     const power = m.key(&keyChord(xkb.XKB_KEY_p, false, true));
     try t.expectEqual(Op.ask_power, power.op);
-    try t.expectEqual(@as(i32, 3), power.hit);
-    _ = m.key(&keyTap(xkb.XKB_KEY_Escape));
-    try t.expectEqual(@as(i32, -1), m.confirm);
+    try t.expectEqual(@as(i32, 5), power.hit);
 }
 
 test "launcher-menu: the rail's pointer is its highlight and its strip is its session" {
@@ -1784,28 +1777,15 @@ test "launcher-menu: the rail's pointer is its highlight and its strip is its se
     // and the theme toggle stay in the panel, Power asks.
     const sx = g.sess[0].x + g.sess[0].w * 0.5;
     try t.expectEqual(Op.run_power, m.click(sx, sessionY(g, 0), .{ .btn = 1 }).op);
+    // Log out and Power hand the action to the standalone overlay; the model
+    // keeps no confirmation state of its own.
     const ask = m.click(sx, sessionY(g, 1), .{ .btn = 1 });
     try t.expectEqual(Op.ask_power, ask.op);
-    try t.expectEqual(@as(i32, 1), ask.hit);
-    try t.expectEqual(@as(i32, 1), m.confirm);
-    // The card owns the panel: the pointer lights nothing while it is up and
-    // a press on the scrim behind it only cancels.
-    try t.expect(!m.hoverAt(row_x, g.body.y + row_h * 0.5));
-    const dismiss = m.click(4.0, 4.0, .{ .btn = 1 });
-    try t.expectEqual(Op.none, dismiss.op);
-    try t.expectEqual(@as(i32, -1), m.confirm);
-    // Confirming with the pointer runs the button the card was asked for.
-    _ = m.click(sx, sessionY(g, 1), .{ .btn = 1 });
-    const card = layout.modalOf(m.geo);
-    const go = m.click(card.confirm.x + 4.0, card.confirm.y + 4.0, .{ .btn = 1 });
-    try t.expectEqual(Op.run_power, go.op);
-    try t.expectEqual(@as(i32, 1), go.hit);
-    try t.expectEqual(@as(i32, -1), m.confirm);
+    try t.expectEqual(@as(i32, 3), ask.hit);
     try t.expectEqual(Op.reload_shell, m.click(sx, sessionY(g, 2), .{ .btn = 1 }).op);
     const power = m.click(sx, sessionY(g, 3), .{ .btn = 1 });
     try t.expectEqual(Op.ask_power, power.op);
-    try t.expectEqual(@as(i32, 3), power.hit);
-    _ = m.key(&keyTap(xkb.XKB_KEY_Escape));
+    try t.expectEqual(@as(i32, 5), power.hit);
     try t.expectEqual(Op.toggle_theme, m.click(sx, sessionY(g, 4), .{ .btn = 1 }).op);
 
     // A right press on a row opens the pin menu in the rail's own space, and

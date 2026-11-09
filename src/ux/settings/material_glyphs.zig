@@ -21,6 +21,7 @@ pub const entries = [_]struct { id: []const u8, glyph: []const u8 }{
     .{ .id = "wifi", .glyph = "wifi" },
     .{ .id = "bluetooth", .glyph = "bluetooth" },
     .{ .id = "battery", .glyph = "battery_full" },
+    .{ .id = "redeye", .glyph = "visibility" },
     .{ .id = "volume", .glyph = "volume_up" },
 };
 

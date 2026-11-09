@@ -214,6 +214,8 @@ fn appendToken(
         try out.append(alloc, .{ .kind = .bluetooth, .key = token });
     } else if (std.mem.eql(u8, dw.implType(cfg, token), "vpn")) {
         try out.append(alloc, .{ .kind = .vpn, .key = token });
+    } else if (std.mem.eql(u8, dw.implType(cfg, token), "redeye")) {
+        try out.append(alloc, .{ .kind = .redeye, .key = token });
     } else if (std.mem.eql(u8, dw.implType(cfg, token), "layout")) {
         try out.append(alloc, .{ .kind = .layout, .key = token });
     } else if (std.mem.eql(u8, dw.implType(cfg, token), "overview")) {

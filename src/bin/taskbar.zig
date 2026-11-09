@@ -84,7 +84,6 @@ const pear_host = eh.pear_host;
 const pear_slot = eh.pear_slot;
 const pear_config = eh.pear_config;
 const pear_brightness = eh.pear_brightness;
-const wl_session = eh.wl_session;
 const launcher_menu = eh.dock_launcher_menu;
 const mpris_client = eh.mpris_client;
 const media_paint = eh.widget_media_paint;
@@ -392,8 +391,7 @@ const Taskbar = struct {
     // family — a strip-wide rule, not a per-instance one.
     clock_tick_sig: i32 = 0,
     pear_backlight: pear_brightness.Backlight = .{},
-    redeye_inhibit: wl_session.Inhibitor = .{},
-    redeye_on: bool = false,
+    redeye: eh.redeye.Service = .{},
 
     // World clock — its own widget face plus its own popup surface (a
     // sibling of the spotlight palette: taskbar-owned layer surface,
@@ -568,7 +566,7 @@ const Taskbar = struct {
             self.wc_shm.deinit();
         }
         self.pear_backlight.deinit(gpa);
-        self.redeye_inhibit.deinit();
+        self.redeye.deinit();
         self.freeCcLive();
         self.cc_snap_bt.deinit(gpa);
         if (self.media_init) self.media.deinit();
@@ -1892,6 +1890,7 @@ const Taskbar = struct {
             .battery => .battery,
             .bluetooth => .bluetooth,
             .vpn => .vpn,
+            .redeye => .redeye,
             .layout => .layout,
             .world_clock => .world_clock,
             .overview => .overview,
@@ -2373,6 +2372,18 @@ const Taskbar = struct {
             .battery => self.paintWidgetFace(c, slot, .battery, x, y, w, h, icon_px, hovered, pressed),
             .bluetooth => self.paintWidgetFace(c, slot, .bluetooth, x, y, w, h, icon_px, hovered, pressed),
             .vpn => self.paintWidgetFace(c, slot, .vpn, x, y, w, h, icon_px, hovered, pressed),
+            .redeye => {
+                // Idle-inhibit toggle: the Lucide eye, accent-lit while the
+                // inhibitor is held.
+                d.kind = .redeye;
+                d.lucide = "visibility";
+                if (self.redeye.isEnabled()) {
+                    d.text_rgb = mc.accent;
+                    d.pill_rgb = mc.accent;
+                    d.pill_alpha = 0.20;
+                }
+                dwp.paintSlot(c, x, y, w, h, icon_px, d);
+            },
             .layout => self.paintWidgetFace(c, slot, .layout, x, y, w, h, icon_px, hovered, pressed),
             .world_clock => self.paintWidgetFace(c, slot, .world_clock, x, y, w, h, icon_px, hovered, pressed),
             .volume_mixer => {
@@ -2865,6 +2876,7 @@ const Taskbar = struct {
         if (keep and self.popup_init and self.popup.kind == .launcher) {
             self.launcher.setColors(chrome.of(&self.app.loaded.cfg));
             self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
+            self.launcher.setRedeye(self.redeye.isEnabled());
         } else {
             self.closePopup();
         }
@@ -2878,6 +2890,7 @@ const Taskbar = struct {
             self.launcher.setListMode(self.app.loaded.cfg.appearance.launchpad_view_mode == 1);
         }
         self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
+        self.launcher.setRedeye(self.redeye.isEnabled());
         // The world-clock list lives in `<leaf>/world_clock.json`, inside the
         // settings dir this reload was triggered by, so a save from
         // Settings > Time must land in the bar's widget too. `reload` keeps
@@ -3454,6 +3467,16 @@ const Taskbar = struct {
             .battery => {},
             .bluetooth => self.showBluetoothCard(idx, cx),
             .vpn => self.showVpn(idx),
+            .redeye => {
+                const on = !self.redeye.isEnabled();
+                self.redeye.setEnabled(
+                    on,
+                    if (self.bars.items.len > 0) self.bars.items[0].surface.wl_surface else null,
+                );
+                if (!self.app.conn.flush()) logz.log("redeye: flush failed", .{});
+                self.repaint();
+                logz.log("redeye: {s}", .{if (on) "on" else "off"});
+            },
             .clipstack => {
                 // The bar's PATH does not carry the install dir: resolve the
                 // picker next to /proc/self/exe like the other self-launches.
@@ -4027,6 +4050,18 @@ const Taskbar = struct {
         if (button != 272) return;
         switch (self.popup.kind) {
             .launcher => return,
+            .power => {
+                const seat = self.app.bound.seat_obj orelse return;
+                switch (self.popup.powerPick(
+                    @intFromFloat(@round(seat.pointer_x)),
+                    @intFromFloat(@round(seat.pointer_y)),
+                )) {
+                    .confirm => self.confirmPower(),
+                    .cancel, .close => self.closePower(),
+                    .none => {},
+                }
+                return;
+            },
             .calendar => {
                 const seat = self.app.bound.seat_obj orelse return;
                 const x: i32 = @intFromFloat(@round(seat.pointer_x));
@@ -5579,7 +5614,7 @@ const Taskbar = struct {
             .dnd = cfg.notifications.do_not_disturb,
             .night = cfg.night_light.enabled,
             .dark = pearIsDark(cfg, self.pear.pconfig),
-            .redeye = self.redeye_on,
+            .redeye = self.redeye.isEnabled(),
             .brightness_pct = self.pear_backlight.pct(self.app.gpa, self.app.io),
         };
     }
@@ -5879,11 +5914,11 @@ const Taskbar = struct {
                 }
             },
             .toggle_redeye => {
-                const on = !self.redeye_on;
-                self.redeye_on = on;
-                if (self.bars.items.len > 0) {
-                    self.redeye_inhibit.setInhibited(self.bars.items[0].surface.wl_surface, on);
-                }
+                const on = !self.redeye.isEnabled();
+                self.redeye.setEnabled(
+                    on,
+                    if (self.bars.items.len > 0) self.bars.items[0].surface.wl_surface else null,
+                );
                 if (!self.app.conn.flush()) logz.log("pear: flush failed after redeye", .{});
                 self.pearRefresh();
                 logz.log("pear: redeye {s}", .{if (on) "on" else "off"});
@@ -6843,6 +6878,7 @@ const Taskbar = struct {
             self.launcher.setListMode(self.app.loaded.cfg.appearance.launchpad_view_mode == 1);
         }
         self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
+        self.launcher.setRedeye(self.redeye.isEnabled());
         self.refreshLauncherIcons();
         self.launcher.open();
         const layer_w: f64 = @floatFromInt(@max(1, bar.w));
@@ -6883,6 +6919,36 @@ const Taskbar = struct {
         self.launcher.reset();
     }
 
+    /// The standalone power confirmation owns a fullscreen overlay surface,
+    /// so the launcher's surface (if any) is gone before this opens.
+    fn openPower(self: *Taskbar, idx: i32) void {
+        self.popup.reset();
+        if (!self.popup.openPower(
+            self.app.bound.compositor,
+            self.app.bound.layer_shell,
+            idx,
+            chrome.of(&self.app.loaded.cfg),
+            self.uiScale(),
+        )) {
+            self.popup.reset();
+            return;
+        }
+        if (!self.app.conn.flush()) logz.log("power: flush failed after open", .{});
+    }
+
+    fn closePower(self: *Taskbar) void {
+        self.popup.reset();
+        if (!self.app.conn.flush()) logz.log("power: flush failed after close", .{});
+    }
+
+    fn confirmPower(self: *Taskbar) void {
+        const idx = self.popup.power_idx;
+        if (idx < 2 or idx > 5) return;
+        self.popup.reset();
+        if (!self.app.conn.flush()) logz.log("power: flush failed after confirm", .{});
+        launcher_menu.Menu.runPower(self.app.io, self.app.gpa, idx);
+    }
+
     fn applyLauncher(self: *Taskbar, d: launcher_menu.Decision) void {
         switch (d.op) {
             .none => {},
@@ -6914,7 +6980,7 @@ const Taskbar = struct {
             .run_power => {
                 self.closeLauncher();
                 self.closePopup();
-                launcher_menu.Menu.runPower(self.app.io, d.hit);
+                launcher_menu.Menu.runPower(self.app.io, self.app.gpa, d.hit);
             },
             .toggle_night => {
                 // Same key the pear tile writes; the supervisor's gamma
@@ -6927,7 +6993,21 @@ const Taskbar = struct {
                     if (!self.app.reload()) logz.log("launcher: nightlight saved, reload deferred", .{});
                 } else logz.log("launcher: nightlight write failed", .{});
                 self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
+                self.launcher.setRedeye(self.redeye.isEnabled());
                 self.popupRefresh();
+            },
+            .toggle_redeye => {
+                // Shared service with the pear tile: flipping one is visible
+                // through the other after the next repaint.
+                const on = !self.redeye.isEnabled();
+                self.redeye.setEnabled(
+                    on,
+                    if (self.bars.items.len > 0) self.bars.items[0].surface.wl_surface else null,
+                );
+                if (!self.app.conn.flush()) logz.log("launcher: flush failed after redeye", .{});
+                self.launcher.setRedeye(self.redeye.isEnabled());
+                self.popupRefresh();
+                logz.log("launcher: redeye {s}", .{if (on) "on" else "off"});
             },
             .ctx_pin => {
                 if (self.launcher.hitEntry(d.hit)) |e| {
@@ -6963,7 +7043,13 @@ const Taskbar = struct {
                 } else logz.log("launcher: theme write failed", .{});
                 self.popupRefresh();
             },
-            .repaint, .focus_field, .ask_power => self.popupRefresh(),
+            .repaint, .focus_field => self.popupRefresh(),
+            // Power is confirmed on the standalone overlay, not in the panel.
+            .ask_power => {
+                self.closeLauncher();
+                self.closePopup();
+                self.openPower(d.hit);
+            },
         }
     }
 
@@ -7504,6 +7590,15 @@ const Taskbar = struct {
                 else => {},
             }
         }
+        if (self.popup_init and self.popup.kind == .power) {
+            if (ev.state != 1) return;
+            switch (ev.sym) {
+                seat_mod.xkb.XKB_KEY_Escape => self.closePower(),
+                seat_mod.xkb.XKB_KEY_Return, seat_mod.xkb.XKB_KEY_KP_Enter => self.confirmPower(),
+                else => {},
+            }
+            return;
+        }
         if (!self.popup_init or self.popup.kind != .launcher) return;
         self.applyLauncher(self.launcher.key(ev));
     }
@@ -7723,6 +7818,15 @@ const Taskbar = struct {
             if (self.bounce_key.len > 0) self.repaint();
         }
         self.thumbsTick();
+        // The power overlay's countdown: repaint on a changed second and run
+        // the action when the sixty seconds are up.
+        if (self.popup_init and self.popup.kind == .power) {
+            if (self.popup.powerExpired()) {
+                self.confirmPower();
+            } else if (self.popup.powerTick()) {
+                self.popupRefresh();
+            }
+        }
         if (self.popup_init and self.popup.kind == .media_player) {
             self.syncMediaPopup();
             self.popupRefresh();
@@ -8100,7 +8204,7 @@ pub fn main(init: std.process.Init) !u8 {
     tb.wc_init = true;
     tb.wc.reduce_motion = if (getenvStr("EH_REDUCED_MOTION")) |v| !std.mem.eql(u8, v, "0") else false;
     tb.wc.load();
-    tb.redeye_inhibit.setManager(a.bound.idle_inhibit_manager);
+    tb.redeye.setManager(a.bound.idle_inhibit_manager);
     tb.media = mpris_client.Client.init(gpa);
     tb.media_init = true;
     tb.notif_push = notify_push.Publisher.init(gpa);

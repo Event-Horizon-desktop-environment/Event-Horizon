@@ -180,6 +180,12 @@ pub fn reapChildren() void {
 /// taskbar.cpp. Group changes leave parentage alone, so the app stays our
 /// direct child and `reapChildren` collects it exactly as before.
 pub fn spawnDetached(io: std.Io, argv: []const []const u8) !void {
+    _ = try spawnDetachedPid(io, argv);
+}
+
+/// Same as `spawnDetached`, but returns the child pid so a caller that needs
+/// to terminate it later (the sleep delay inhibitor) can.
+pub fn spawnDetachedPid(io: std.Io, argv: []const []const u8) !?std.posix.pid_t {
     const child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
@@ -195,4 +201,5 @@ pub fn spawnDetached(io: std.Io, argv: []const []const u8) !void {
         spawned.append(std.heap.page_allocator, pid) catch {};
     }
     reapChildren();
+    return child.id;
 }

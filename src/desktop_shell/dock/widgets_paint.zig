@@ -122,6 +122,8 @@ pub fn iconCandidates(kind: Kind, dark: bool) []const []const u8 {
         .spotlight => &.{ "system-search", "edit-find" },
         .app_menu => &.{ "open-menu", "view-more", "application-menu" },
         .vpn => &.{ "network-vpn", "preferences-system-network" },
+        // The redeye toggle draws the Lucide eye; no themed icon owns it.
+        .redeye => &.{},
         .clipstack => &.{ "edit-paste", "content-paste" },
         .world_clock => &.{ "preferences-system-time", "clock" },
         .clock => &.{ "preferences-system-time", "clock" },
@@ -216,7 +218,7 @@ pub const Draw = struct {
 pub fn iconAvail(kind: Kind, icon_px: f64) f64 {
     const box = switch (kind) {
         .tray => @min(icon_px * 0.6, icon_px - 8.0),
-        .vpn, .bluetooth, .battery => icon_px * 0.52,
+        .vpn, .bluetooth, .battery, .redeye => icon_px * 0.52,
         .weather => std.math.clamp(icon_px * 0.42, 13.0, 18.0),
         .media => icon_px * 0.78,
         // 6 px total means 3 px of breathing room per side: 44 px slots

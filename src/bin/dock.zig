@@ -76,7 +76,6 @@ const lay_card = eh.widget_layout_popup;
 /// source.
 const svg_icons = eh.svg_icons;
 const redeye_svc = eh.redeye;
-const wl_session = eh.wl_session;
 const chrome_colors = eh.widget_chrome_colors;
 const overlay = eh.overlay;
 const local_time = eh.desktop_local_time;
@@ -645,8 +644,7 @@ const Dock = struct {
     pear_backlight: pear_brightness.Backlight = .{},
     /// Idle inhibitor behind the pear redeye toggle (manager bound at boot
     /// from the Wayland registry; the dock surface is inhibited while on).
-    redeye_inhibit: wl_session.Inhibitor = .{},
-    redeye_on: bool = false,
+    redeye: redeye_svc.Service = .{},
     /// Cached pill runtime (`controlcenter/slot.zig`): net/bt/audio/mic
     /// status behind the dock's control-center glyphs. Refreshed on the
     /// animation tick behind the 260 ms gate in `pollCcRuntime`.
@@ -2198,7 +2196,7 @@ const Dock = struct {
         self.clearWsSurfs();
         if (self.ws_surfs_init) self.ws_surfs.deinit();
         self.pear_backlight.deinit(self.app.gpa);
-        self.redeye_inhibit.deinit();
+        self.redeye.deinit();
         self.freeCcLive();
         self.cc_snap_bt.deinit(self.app.gpa);
         // Join before the allocator goes: the VPN worker borrows it. The
@@ -4003,6 +4001,9 @@ const Dock = struct {
             // ships no logo we could find, and never the first letter of
             // `__app_menu__`.
             if (i < self.icons.len) d.icon = self.icons[i];
+            // The redeye toggle must always be the state-carrying eye, never a
+            // theme icon that happens to share the token name.
+            if (s.kind == .redeye) d.icon = null;
             d.trash_full = self.trash_full;
             if (s.kind == .app_menu and (d.icon == null or d.icon.?.pixels.len == 0)) {
                 d.dots = 3;
@@ -4199,6 +4200,15 @@ const Dock = struct {
                     d.lucide = "tune";
                 } else if (s.kind == .clipstack) {
                     d.lucide = "content_paste";
+                } else if (s.kind == .redeye) {
+                    // Idle-inhibit toggle: the eye is the glyph; the accent
+                    // tint and a lit pill carry the on state.
+                    d.lucide = "visibility";
+                    if (self.redeye.isEnabled()) {
+                        d.text_rgb = chrome.accent;
+                        d.pill_rgb = chrome.accent;
+                        d.pill_alpha = 0.20;
+                    }
                 } else if (s.kind == .overview) {
                     // Artwork is embedded and drawn by `drawContent`; the
                     // dashboard glyph only covers a librsvg failure.
@@ -4373,6 +4383,16 @@ const Dock = struct {
                 @intFromFloat(@round(pos[0])),
                 @intFromFloat(@round(pos[1])),
             );
+            return;
+        }
+        // The redeye widget is a pure toggle: it owns no app window and no
+        // popup, only the shared idle inhibitor.
+        if (s.kind == .redeye) {
+            const on = !self.redeye.isEnabled();
+            self.redeye.setEnabled(on, self.surface.wl_surface);
+            if (!self.app.conn.flush()) logz.log("redeye: flush failed", .{});
+            self.repaint();
+            logz.log("redeye: {s}", .{if (on) "on" else "off"});
             return;
         }
         // The settings gear is the one slot whose target is a shell component
@@ -4717,6 +4737,40 @@ const Dock = struct {
         for (entries) |e| try p.pushBorrowed(e.label, e.id, e.enabled);
     }
 
+    /// Put the standalone power confirmation up. It owns a fullscreen overlay
+    /// surface of its own, so the launcher (if it was up) is torn down first
+    /// and the dim/card no longer share the start menu's surface.
+    fn openPower(self: *Dock, idx: i32) void {
+        self.popup.reset();
+        if (!self.popup.openPower(
+            self.app.bound.compositor,
+            self.app.bound.layer_shell,
+            idx,
+            chrome_colors.of(&self.app.loaded.cfg),
+            self.menuScale(),
+        )) {
+            self.popup.reset();
+            return;
+        }
+        if (!self.app.conn.flush()) logz.log("power: flush failed after open", .{});
+    }
+
+    fn closePower(self: *Dock) void {
+        self.popup.reset();
+        if (!self.app.conn.flush()) logz.log("power: flush failed after close", .{});
+    }
+
+    /// The card's confirm button, Return, or the sixty-second expiry all land
+    /// here. The action runs after the surface is gone so a restart cannot
+    /// leave a half-torn-down overlay behind.
+    fn confirmPower(self: *Dock) void {
+        const idx = self.popup.power_idx;
+        if (idx < 2 or idx > 5) return;
+        self.popup.reset();
+        if (!self.app.conn.flush()) logz.log("power: flush failed after confirm", .{});
+        launcher_menu.Menu.runPower(self.app.io, self.app.gpa, idx);
+    }
+
     fn closeMenu(self: *Dock) void {
         if (self.popup.kind == .launcher) {
             // The model outlives the surface, so it has to be told: a query
@@ -4761,7 +4815,7 @@ const Dock = struct {
             },
             .run_power => {
                 self.closeMenu();
-                launcher_menu.Menu.runPower(self.app.io, d.hit);
+                launcher_menu.Menu.runPower(self.app.io, self.app.gpa, d.hit);
             },
             .toggle_night => {
                 // The drawer and the pear tile write the same key; the
@@ -4775,6 +4829,16 @@ const Dock = struct {
                 } else logz.log("launcher: nightlight write failed", .{});
                 self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
                 self.popupRefresh();
+            },
+            .toggle_redeye => {
+                // The footer's eye toggle and the pear tile share one service,
+                // so either switch reflects the other on the next repaint.
+                const on = !self.redeye.isEnabled();
+                self.redeye.setEnabled(on, self.surface.wl_surface);
+                if (!self.app.conn.flush()) logz.log("launcher: flush failed after redeye", .{});
+                self.launcher.setRedeye(self.redeye.isEnabled());
+                self.popupRefresh();
+                logz.log("launcher: redeye {s}", .{if (on) "on" else "off"});
             },
             .ctx_pin => {
                 // The menu is already gone from the model; the strip is what
@@ -4819,9 +4883,15 @@ const Dock = struct {
                 } else logz.log("launcher: theme write failed", .{});
                 self.popupRefresh();
             },
-            // `.repaint`, `.focus_field` and `.ask_power` all leave the panel
-            // up with different pixels under the same surface.
-            .repaint, .focus_field, .ask_power => self.popupRefresh(),
+            // `.repaint` and `.focus_field` leave the panel up with different
+            // pixels under the same surface.
+            .repaint, .focus_field => self.popupRefresh(),
+            // A power button is confirmed on the standalone overlay, not
+            // inside the launcher's panel.
+            .ask_power => {
+                self.closeMenu();
+                self.openPower(d.hit);
+            },
         }
     }
 
@@ -4947,6 +5017,17 @@ const Dock = struct {
     /// slots use; a press the shell does not dispatch reaches this as null.
     fn popupClick(self: *Dock, btn: ?u8) void {
         const seat = self.app.bound.seat_obj orelse return;
+        if (self.popup.kind == .power) {
+            switch (self.popup.powerPick(
+                @intFromFloat(@round(seat.pointer_x)),
+                @intFromFloat(@round(seat.pointer_y)),
+            )) {
+                .confirm => self.confirmPower(),
+                .cancel, .close => self.closePower(),
+                .none => {},
+            }
+            return;
+        }
         if (self.popup.kind == .launcher) {
             // The launcher's surface *is* the card, so surface coordinates
             // and the seat's pointer position are the same numbers.
@@ -5333,6 +5414,7 @@ const Dock = struct {
             self.launcher.setListMode(self.app.loaded.cfg.appearance.launchpad_view_mode == 1);
         }
         self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
+        self.launcher.setRedeye(self.redeye.isEnabled());
         self.refreshLauncherIcons();
         self.launcher.open();
 
@@ -6220,9 +6302,8 @@ const Dock = struct {
                 }
             },
             .toggle_redeye => {
-                const on = !self.redeye_on;
-                self.redeye_on = on;
-                self.redeye_inhibit.setInhibited(self.surface.wl_surface, on);
+                const on = !self.redeye.isEnabled();
+                self.redeye.setEnabled(on, self.surface.wl_surface);
                 if (!self.app.conn.flush()) logz.log("pear: flush failed after redeye", .{});
                 self.pearRefresh();
                 logz.log("pear: redeye {s}", .{if (on) "on" else "off"});
@@ -6362,7 +6443,7 @@ const Dock = struct {
             .dnd = cfg.notifications.do_not_disturb,
             .night = cfg.night_light.enabled,
             .dark = pearIsDark(cfg, self.pear.pconfig),
-            .redeye = self.redeye_on,
+            .redeye = self.redeye.isEnabled(),
             .brightness_pct = self.pear_backlight.pct(self.app.gpa, self.app.io),
         };
     }
@@ -6829,7 +6910,9 @@ const Dock = struct {
             // A surface that appears under a still pointer gets an enter and
             // no motion at all, so the launcher's first hover — and the media
             // card's — has to be worked out here rather than waited for.
-            if (self.popup.kind == .launcher or self.popup.kind == .media_player or self.popup.kind == .world_clock) {
+            if (self.popup.kind == .launcher or self.popup.kind == .media_player or
+                self.popup.kind == .world_clock or self.popup.kind == .power)
+            {
                 Dock.onMotion(ctx, x, y);
                 return;
             }
@@ -7215,6 +7298,15 @@ const Dock = struct {
             if (ev.keycode == 42 or ev.keycode == 54) self.wc_shift_down = pressed;
             const text = if (ev.utf8_len > 0) ev.utf8[0..@min(@as(usize, ev.utf8_len), ev.utf8.len)] else "";
             self.applyWcOutcome(wc_panel.key(&self.wc, &self.popup.wc_geom, ev.sym, text, pressed, self.wc_shift_down, Dock.epochMs()));
+            return;
+        }
+        if (self.popup.kind == .power) {
+            if (ev.state != 1) return;
+            switch (ev.sym) {
+                seat_mod.xkb.XKB_KEY_Escape => self.closePower(),
+                seat_mod.xkb.XKB_KEY_Return, seat_mod.xkb.XKB_KEY_KP_Enter => self.confirmPower(),
+                else => {},
+            }
             return;
         }
         if (self.popup.kind != .launcher) return;
@@ -7804,6 +7896,7 @@ const Dock = struct {
             self.launcher.setListMode(self.app.loaded.cfg.appearance.launchpad_view_mode == 1);
         }
         self.launcher.setNight(self.app.loaded.cfg.night_light.enabled);
+        self.launcher.setRedeye(self.redeye.isEnabled());
         if (self.popup.kind == .launcher) self.popupRefresh();
         // The settings app may have just rewritten `[weather]`/`[time]`, so
         // drop the 15-minute cache and refetch on the next tick rather than
@@ -7974,6 +8067,15 @@ const Dock = struct {
         // The world clock's own second, if the widget is on the strip: the
         // face rotates every 5 s, slides, and the panel (when up) advances.
         const wc_due = self.tickWorldClock();
+        // The power overlay owns its own second: repaint only when the
+        // painted number changes, and fire the action at sixty seconds.
+        if (self.popup.kind == .power) {
+            if (self.popup.powerExpired()) {
+                self.confirmPower();
+            } else if (self.popup.powerTick()) {
+                self.popupRefresh();
+            }
+        }
         const wx_changed = self.pollWeather();
         const now_ms: u64 = @intCast(@divTrunc(anim.monotonicNs(), std.time.ns_per_ms));
         // Live backends (throttled inside) + `signatureChanged`: repaint the
@@ -8431,7 +8533,7 @@ pub fn main(init: std.process.Init) !u8 {
     dock.wc_init = true;
     dock.wc.load();
     // Idle-inhibit manager behind the pear redeye toggle.
-    dock.redeye_inhibit.setManager(a.bound.idle_inhibit_manager);
+    dock.redeye.setManager(a.bound.idle_inhibit_manager);
     dock.toplevels = foreign.Tracker.init(gpa);
     dock.toplevels.on_changed = Dock.onToplevelsChanged;
     dock.toplevels.changed_ctx = &dock;

@@ -30,6 +30,7 @@ pub const ids = [_][]const u8{
     "vpn",
     "battery",
     "bluetooth",
+    "redeye",
     // Kept last, matching the pick order.
     "layout",
 };

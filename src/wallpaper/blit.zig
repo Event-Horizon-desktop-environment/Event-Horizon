@@ -4,9 +4,27 @@ const repetition = @import("../compat/repetition.zig");
 pub const Fit = enum { stretch, fit, fill };
 
 pub fn blitCover(dst: []u32, dw: i32, dh: i32, src: []const u8, sw: i32, sh: i32, mode: Fit) void {
-    if (dw <= 0 or dh <= 0 or sw <= 0 or sh <= 0) return;
-    if (src.len < @as(usize, @intCast(sw * sh * 4))) return;
     if (dst.len < @as(usize, @intCast(dw * dh))) return;
+    blitCoverStride(dst.ptr, @intCast(dw), dw, dh, src, sw, sh, mode);
+}
+
+/// Same as `blitCover`, for a destination whose rows are padded. `wl_shm`
+/// strides are 256-byte aligned, so the lock surface's row length is usually
+/// wider than its width; writing through `dst[i] = y * width + x` sheared the
+/// wallpaper by the padding on every output that is not a multiple of 64px.
+pub fn blitCoverStride(
+    dst: [*]u32,
+    dst_stride: usize,
+    dw: i32,
+    dh: i32,
+    src: []const u8,
+    sw: i32,
+    sh: i32,
+    mode: Fit,
+) void {
+    if (dw <= 0 or dh <= 0 or sw <= 0 or sh <= 0) return;
+    if (dst_stride < @as(usize, @intCast(dw))) return;
+    if (src.len < @as(usize, @intCast(sw * sh * 4))) return;
     const dwf: f64 = @floatFromInt(dw);
     const dhf: f64 = @floatFromInt(dh);
     const swf: f64 = @floatFromInt(sw);
@@ -44,7 +62,7 @@ pub fn blitCover(dst: []u32, dw: i32, dh: i32, src: []const u8, sw: i32, sh: i32
             const g: u32 = src[si + 1];
             const b: u32 = src[si + 2];
             const a: u32 = src[si + 3];
-            const di: usize = @intCast(y * dw + x);
+            const di: usize = @as(usize, @intCast(y)) * dst_stride + @as(usize, @intCast(x));
             if (mode == .stretch) {
                 const fx: i32 = @intCast(@divTrunc(@as(i64, x) * @as(i64, sw), @as(i64, dw)));
                 const fy: i32 = @intCast(@divTrunc(@as(i64, y) * @as(i64, sh), @as(i64, dh)));
@@ -92,6 +110,28 @@ test "blit: cover samples the full source width, not a squeezed slice" {
     try t.expectEqual(@as(u32, 0xFFA02800), dst[1 * 4 + 3]);
     // No smear: the top row spans more than one source column.
     try t.expect(dst[0] != dst[3]);
+}
+
+test "blit: padded destination rows stay aligned" {
+    const t = std.testing;
+    // 2x2 source, one colour per column. The destination stride is wider than
+    // the width (as wl_shm's 256-byte alignment makes it for most outputs);
+    // the second row must land at `stride`, not at `width`.
+    const src = [_]u8{
+        255, 0, 0,   255, 255, 0, 0,   255,
+        0,   0, 255, 255, 0,   0, 255, 255,
+    };
+    const stride = 4;
+    var dst: [stride * 2]u32 = @as([(stride * 2)]u32, @splat(0));
+    blitCoverStride(&dst, stride, 2, 2, &src, 2, 2, .stretch);
+    try t.expectEqual(@as(u32, 0xFFFF0000), dst[0]);
+    try t.expectEqual(@as(u32, 0xFFFF0000), dst[1]);
+    // Padded columns are untouched.
+    try t.expectEqual(@as(u32, 0), dst[2]);
+    try t.expectEqual(@as(u32, 0), dst[3]);
+    // Row two is red, blue — proving no vertical shear.
+    try t.expectEqual(@as(u32, 0xFF0000FF), dst[stride]);
+    try t.expectEqual(@as(u32, 0xFF0000FF), dst[stride + 1]);
 }
 
 test "blit: solid fill + stretch + premult" {

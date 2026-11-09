@@ -48,6 +48,8 @@ const ModuleOptions = struct {
     c_sources: bool = false,
     /// Link PipeWire. Required by the Audio Center and the tests.
     pipewire: bool = false,
+    /// Link PAM. Only the lock screen and the test module authenticate.
+    pam: bool = false,
 };
 
 const Binary = struct {
@@ -155,6 +157,21 @@ const binaries = [_]Binary{
         .options = .{ .pango = true },
         .imports_eh = true,
     },
+    .{
+        .name = "horizon-lock",
+        .root = "src/bin/lock.zig",
+        .step = "lock",
+        .description = "Build only horizon-lock",
+        .options = .{ .pam = true },
+        .imports_eh = true,
+    },
+    .{
+        .name = "horizon-idle",
+        .root = "src/bin/idle.zig",
+        .step = "idle",
+        .description = "Build only horizon-idle",
+        .imports_eh = true,
+    },
 };
 
 /// Ask pkg-config for one module and apply its include paths and libraries
@@ -206,6 +223,7 @@ const CImports = struct {
     wayland: *std.Build.Module,
     polkit: *std.Build.Module,
     spawn: *std.Build.Module,
+    pam: *std.Build.Module,
 
     fn addTo(self: CImports, mod: *std.Build.Module) void {
         mod.addImport("c_stdlib", self.stdlib);
@@ -215,6 +233,7 @@ const CImports = struct {
         mod.addImport("c_wayland", self.wayland);
         mod.addImport("c_polkit", self.polkit);
         mod.addImport("c_spawn", self.spawn);
+        mod.addImport("c_pam", self.pam);
     }
 };
 
@@ -253,6 +272,7 @@ fn linkShellLibraries(b: *std.Build, mod: *std.Build.Module, options: ModuleOpti
     addPkgConfig(b, mod, "libwebp");
     if (options.pango) addPkgConfig(b, mod, "pangocairo");
     if (options.pipewire) addPkgConfig(b, mod, "libpipewire-0.3");
+    if (options.pam) addPkgConfig(b, mod, "pam");
 }
 
 fn genProtocol(
@@ -393,6 +413,9 @@ pub fn build(b: *std.Build) void {
     const c_spawn_src = c_files.add("c_spawn.c",
         \\#include <spawn.h>
     );
+    const c_pam_src = c_files.add("c_pam.c",
+        \\#include <security/pam_appl.h>
+    );
     const c_wayland_src = c_files.add("c_wayland.c",
         \\#include <wayland-client.h>
         \\#include <wayland-client-protocol.h>
@@ -427,6 +450,7 @@ pub fn build(b: *std.Build) void {
         .wayland = cImportModule(b, "c_wayland", c_wayland_src, target, optimize, &protocol_includes, "wayland-client", false),
         .polkit = cImportModule(b, "c_polkit", c_polkit_src, target, optimize, &.{}, null, false),
         .spawn = cImportModule(b, "c_spawn", c_spawn_src, target, optimize, &.{}, null, true),
+        .pam = cImportModule(b, "c_pam", c_pam_src, target, optimize, &.{}, "pam", false),
     };
 
     // The supervisor. It pulls in the shell modules directly, so it needs
@@ -495,7 +519,7 @@ pub fn build(b: *std.Build) void {
         optimize,
         &protocol_codes,
         &protocol_includes,
-        .{ .pango = true, .c_sources = true, .pipewire = true },
+        .{ .pango = true, .c_sources = true, .pipewire = true, .pam = true },
         c_imports,
     );
     const unit_tests = b.addTest(.{ .root_module = test_mod });

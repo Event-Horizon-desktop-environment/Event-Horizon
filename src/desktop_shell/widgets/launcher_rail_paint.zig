@@ -123,7 +123,6 @@ pub fn paint(cr: ?*cairo.cairo_t, v: ref.View, card_alpha: f64) void {
     // even that.
     paintTooltip(c, v, panel, ink);
     if (v.ctx_row >= 0) ref.paintCtxMenu(c, v);
-    if (v.confirm >= 0) ref.paintConfirm(c, v);
 
     cairo.cairo_restore(c);
 }

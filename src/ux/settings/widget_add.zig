@@ -50,8 +50,8 @@ pub const max_candidates = catalog.ids.len;
 /// Desktop-widget ids the Add flow offers on the Desktop Widgets tab
 /// (C++ `is_desktop_widget_id` + `kDesktopOnlyPickIds`).
 pub const desktop_ids = [_][]const u8{
-    "clock", "weather", "weather_fancy", "calendar", "system_monitor",
-    "media", "media_compact", "world_clock", "fetch",
+    "clock", "weather",       "weather_fancy", "calendar", "system_monitor",
+    "media", "media_compact", "world_clock",   "fetch",
 };
 
 pub const State = struct {
@@ -752,7 +752,7 @@ test "widget-add: layout grows to fit content" {
     // Chrome + clipped grid exactly fills the panel height.
     const chrome = pad + header_h + gap_search + search_h + gap_grid + footer_h + pad;
     try t.expectEqual(@as(i32, lay.ph), chrome + lay.grid_clip_h);
-    // 24 ids / 2 cols = 12 rows; at ~76px each they overflow the viewport cap,
+    // 25 ids / 2 cols = 13 rows; at ~76px each they overflow the viewport cap,
     // so the grid is clipped and scrollable.
     try t.expect(lay.grid_scroll_max > 0);
     try t.expect(lay.card_w >= 170);

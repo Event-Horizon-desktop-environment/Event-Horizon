@@ -746,6 +746,7 @@ fn registerHandlers(svc: *ipc_server.Service) void {
     svc.registerHandler("status", statusHandler) catch {};
     svc.registerHandler("help", helpHandler) catch {};
     svc.registerHandler("screenshot", screenshotHandler) catch {};
+    svc.registerHandler("lock", lockHandler) catch {};
     svc.registerHandler("overview", overviewHandler) catch {};
     svc.registerHandler("overview-toggle", overviewToggleHandler) catch {};
     svc.registerHandler("overview-open", overviewOpenHandler) catch {};
@@ -764,7 +765,17 @@ fn versionHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![
 
 fn helpHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
     _ = args;
-    return alloc.dupe(u8, "ok ping version status help screenshot overview overview-toggle overview-open overview-close");
+    return alloc.dupe(u8, "ok ping version status help screenshot lock overview overview-toggle overview-open overview-close");
+}
+
+/// `lock` → start the on-demand `horizon-lock` component. The dock's power
+/// menu and spotlight both try `eh-ipc lock` first, so this is what makes
+/// that row work; the supervisor owns the pid and reaps it on its tick.
+fn lockHandler(alloc: std.mem.Allocator, args: []const []const u8) anyerror![]u8 {
+    _ = args;
+    const sup = g_supervisor orelse return alloc.dupe(u8, "error supervisor not running");
+    if (!sup.startNamed("lock")) return alloc.dupe(u8, "error lock not installed");
+    return alloc.dupe(u8, "ok");
 }
 
 /// `screenshot [args...]` → `EventHorizon --eh-screenshot <args...>`.

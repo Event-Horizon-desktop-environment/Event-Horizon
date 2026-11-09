@@ -39,10 +39,13 @@ pub const footer_bottom_margin: f64 = 8.0;
 pub const power_sz: f64 = 32.0;
 pub const power_r: f64 = 8.0;
 pub const power_gap: f64 = 4.0;
-/// Four power actions plus the nightlight toggle, which the paint sets off
-/// with a hairline separator (`C++ kFooterBtnCount = 5`).
-pub const power_count: usize = 5;
-pub const nightlight_idx: usize = power_count - 1;
+/// Six power actions plus the nightlight and redeye toggles, which the paint
+/// sets off with a hairline separator (`C++ kFooterBtnCount = 5`, plus the
+/// idle-inhibit toggle and the sleep/hibernate pair this tree adds).
+pub const power_count: usize = 8;
+pub const nightlight_idx: usize = power_count - 2;
+/// Idle-inhibit (redeye) toggle, the last footer button.
+pub const redeye_idx: usize = power_count - 1;
 
 pub const Rect = struct {
     x: f64 = 0,
@@ -114,9 +117,9 @@ pub const Geo = struct {
         return @max(0.0, contentHeight(n, list_mode) - self.body.h);
     }
 
-    /// X of the hairline the paint draws between the power group and the
-    /// nightlight toggle — where the C++ panel put its separator: just past
-    /// the last power button's right edge.
+    /// X of the hairline the paint draws between the power group and the two
+    /// toggles — where the C++ panel put its separator: just past the last
+    /// power button's right edge.
     pub fn powerSeparatorX(self: Geo) f64 {
         return self.power[nightlight_idx - 1].x + power_sz + power_gap * 1.5;
     }
@@ -450,47 +453,6 @@ pub fn ctxPick(r: Rect, lx: f64, ly: f64) i32 {
     return if (i >= 0 and i < ctx_items) i else -1;
 }
 
-/// The confirmation card that stands between a power button and the action
-/// it asks for. Fixed height, centred in the panel.
-pub const Modal = struct {
-    box: Rect = .{},
-    title_y: f64 = 0,
-    body_y: f64 = 0,
-    cancel: Rect = .{},
-    confirm: Rect = .{},
-};
-
-pub const ModalBtn = enum { none, cancel, confirm };
-
-pub const modal_h: f64 = 192.0;
-pub const modal_w_max: f64 = 400.0;
-pub const modal_btn_h: f64 = 48.0;
-pub const modal_gap: f64 = 10.0;
-pub const modal_pad: f64 = 20.0;
-
-pub fn modalOf(g: Geo) Modal {
-    const w = @min(modal_w_max, g.w - 32.0);
-    const x = (g.w - w) * 0.5;
-    const y = (g.h - modal_h) * 0.5;
-    const inner_w = w - modal_pad * 2.0;
-    const half = (inner_w - modal_gap) * 0.5;
-    const btn_y = y + modal_h - modal_pad - modal_btn_h;
-    return .{
-        .box = .{ .x = x, .y = y, .w = w, .h = modal_h },
-        .title_y = y + modal_pad,
-        .body_y = y + modal_pad + 36.0 + 8.0,
-        .cancel = .{ .x = x + modal_pad, .y = btn_y, .w = half, .h = modal_btn_h },
-        .confirm = .{ .x = x + modal_pad + half + modal_gap, .y = btn_y, .w = half, .h = modal_btn_h },
-    };
-}
-
-pub fn modalHit(g: Geo, lx: f64, ly: f64) ModalBtn {
-    const m = modalOf(g);
-    if (m.cancel.contains(lx, ly)) return .cancel;
-    if (m.confirm.contains(lx, ly)) return .confirm;
-    return .none;
-}
-
 const utf8_cont: u8 = 0xC0;
 
 pub fn runeCount(s: []const u8) usize {
@@ -566,12 +528,13 @@ test "launcher-layout: the stacked regions land on whole numbers" {
     try t.expectApproxEqAbs(@as(f64, 496.0), g.body.h, 1e-9);
     try t.expectApproxEqAbs(@as(f64, 129.666666), g.cell_w, 1e-4);
     try t.expectApproxEqAbs(@as(f64, 137.666666), g.cell_pitch, 1e-4);
-    try t.expectApproxEqAbs(@as(f64, 341.0), g.power[0].x, 1e-9);
+    try t.expectApproxEqAbs(@as(f64, 287.0), g.power[0].x, 1e-9);
     try t.expectApproxEqAbs(@as(f64, 636.0), g.power[0].y, 1e-9);
-    // Five buttons: the nightlight toggle is last, with the separator just
-    // past the fourth button's right edge.
-    try t.expectApproxEqAbs(@as(f64, 485.0), g.power[nightlight_idx].x, 1e-9);
-    try t.expectApproxEqAbs(@as(f64, 487.0), g.powerSeparatorX(), 1e-9);
+    // Eight buttons: nightlight and redeye are last, with the separator just
+    // past the sixth action button's right edge.
+    try t.expectApproxEqAbs(@as(f64, 503.0), g.power[nightlight_idx].x, 1e-9);
+    try t.expectApproxEqAbs(@as(f64, 539.0), g.power[redeye_idx].x, 1e-9);
+    try t.expectApproxEqAbs(@as(f64, 505.0), g.powerSeparatorX(), 1e-9);
 }
 
 test "launcher-layout: zones stack without overlapping" {
