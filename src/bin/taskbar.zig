@@ -1825,9 +1825,15 @@ const Taskbar = struct {
         self.runs = list.toOwnedSlice(gpa) catch &.{};
     }
 
+    /// How often the trash directory is re-read. One entry is enough to
+    /// answer "empty or not", so the read is O(1) and the can can follow the
+    /// filesystem closely instead of lagging five seconds behind every
+    /// `gio trash`.
+    const kTrashPollMs: u64 = 1000;
+
     fn pollTrashFs(self: *Taskbar, now_ms: u64) bool {
         if (now_ms < self.trash_next_ms) return false;
-        self.trash_next_ms = now_ms + 5000;
+        self.trash_next_ms = now_ms + kTrashPollMs;
         var full = false;
         const home = self.app.home orelse "/tmp";
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -8266,6 +8272,9 @@ pub fn main(init: std.process.Init) !u8 {
     bootMark(boot_t0, "ipc");
 
     tb.boot_t0 = boot_t0;
+    // Prime the trash state before the first build so a can that already has
+    // something in it does not start out drawn empty.
+    _ = tb.pollTrashFs(nowMs());
     tb.rebuild();
     bootMark(boot_t0, "rebuild");
     tb.banner();

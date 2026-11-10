@@ -4556,6 +4556,13 @@ const Dock = struct {
                 };
                 break :blk true;
             },
+            .trash => blk: {
+                self.buildTrashMenu() catch |e| {
+                    logz.err("menu: trash build failed: {s}", .{@errorName(e)});
+                    break :blk false;
+                };
+                break :blk true;
+            },
             else => false,
         };
         if (!built or self.popup.items.items.len == 0) {
@@ -4701,6 +4708,16 @@ const Dock = struct {
         ) catch return .{};
         defer app_launch.freeDirs(gpa, dirs);
         return desktop_actions.forAppId(alloc, self.app.io, dirs, target);
+    }
+
+    /// The trash can's right-click menu: Open Trash / Empty Trash. Empty is
+    /// disabled while the trash is empty, the same gating the taskbar uses.
+    fn buildTrashMenu(self: *Dock) !void {
+        const p = &self.popup;
+        p.kind = .app;
+        try p.pushAction("Open Trash", .open_trash, true);
+        try p.pushSeparator();
+        try p.pushAction("Empty Trash", .empty_trash, self.trash_full);
     }
 
     /// `popup_open_for_tray`: read the item's `com.canonical.dbusmenu`. A
@@ -4985,6 +5002,8 @@ const Dock = struct {
                 }
                 self.flushOrLog("menu: fullscreen");
             },
+            .open_trash => self.openTrash(),
+            .empty_trash => self.emptyTrash(),
         }
     }
 
@@ -7910,12 +7929,18 @@ const Dock = struct {
     const kWeatherIntervalMs: i64 = 15 * 60 * 1000;
     const kWeatherRetryMs: i64 = 60 * 1000;
 
+    /// How often the trash directory is re-read. One entry is enough to
+    /// answer "empty or not", so the read is O(1) even for a large trash and
+    /// the can can afford to follow the filesystem closely instead of
+    /// lagging five seconds behind every `gio trash`.
+    const kTrashPollMs: u64 = 1000;
+
     /// Picks the trash can's empty/full artwork. The trash directory is a
-    /// plain filesystem read, throttled to the same 5 s cadence the taskbar
-    /// uses. Returns true when the state changed, so the caller repaints.
+    /// plain filesystem read, throttled to `kTrashPollMs`. Returns true when
+    /// the state changed, so the caller repaints.
     fn pollTrashFs(self: *Dock, now_ms: u64) bool {
         if (now_ms < self.trash_next_ms) return false;
-        self.trash_next_ms = now_ms + 5000;
+        self.trash_next_ms = now_ms + kTrashPollMs;
         var full = false;
         const home = self.app.home orelse "/tmp";
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -7936,6 +7961,30 @@ const Dock = struct {
         if (full == self.trash_full) return false;
         self.trash_full = full;
         return true;
+    }
+
+    /// The trash menu's Open Trash row: the same `xdg-open trash:///` the
+    /// taskbar runs.
+    fn openTrash(self: *Dock) void {
+        if (!app_launch.launchExec(self.app.gpa, self.app.io, "xdg-open trash:///")) {
+            logz.err("trash: could not start xdg-open", .{});
+        }
+    }
+
+    /// The trash menu's Empty Trash row. `gio` runs detached so the dock's
+    /// input path never blocks; the icon flips immediately and the five-second
+    /// filesystem poll settles it either way.
+    fn emptyTrash(self: *Dock) void {
+        const home = self.app.home orelse return;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const trash_path = std.fmt.bufPrint(&path_buf, "{s}/.local/share/Trash", .{home}) catch return;
+        autostart_mod.spawnDetached(self.app.io, &.{ "gio", "trash", "--empty", trash_path }) catch {
+            logz.err("trash: gio trash --empty failed to spawn", .{});
+            return;
+        };
+        self.trash_full = false;
+        self.trash_next_ms = 0;
+        self.repaint();
     }
 
     /// Drains the weather worker and starts the next fetch when one is due.
@@ -8597,6 +8646,9 @@ pub fn main(init: std.process.Init) !u8 {
     // (see below): the model is built tray-less here and the section fills
     // in on the rebuild after the late start. No bus is not fatal — the
     // dock just runs with no tray section until the watcher answers.
+    // Prime the trash state before the first build so a can that already has
+    // something in it does not start out drawn empty.
+    _ = dock.pollTrashFs(Dock.nowMs());
     dock.buildModel();
     const want = dock.desiredSize();
 

@@ -72,6 +72,8 @@ pub const Action = enum(i32) {
     minimize_all = 5,
     toggle_maximize = 6,
     toggle_fullscreen = 7,
+    open_trash = 8,
+    empty_trash = 9,
 };
 
 /// A row id back to its `Action`. Ids outside the enum are the window band,
