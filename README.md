@@ -81,4 +81,4 @@ The color engine is a port of [material-color-utilities](https://github.com/mate
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GPL. See [LICENSE](LICENSE).
