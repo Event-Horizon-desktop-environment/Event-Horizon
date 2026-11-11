@@ -21,14 +21,15 @@ commands:
     steps:
       - run:
           name: Install dependencies
-          # Same set as build.sh's Fedora list. Zig itself is fetched by
-          # build.sh (0.16.0+), not taken from dnf.
+          # build.sh's Fedora list plus pam-devel: build.zig always
+          # translates security/pam_appl.h and asks pkg-config for pam.pc.
+          # Zig itself is fetched by build.sh (0.16.0+), not taken from dnf.
           command: |
             dnf install -y \
               git pkgconf-pkg-config curl xz tar gzip \
               wayland-devel wayland-protocols-devel \
               cairo-devel pango-devel libxkbcommon-devel \
-              librsvg2-devel libwebp-devel pipewire-devel
+              librsvg2-devel libwebp-devel pipewire-devel pam-devel
 
 jobs:
   build:

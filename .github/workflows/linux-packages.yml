@@ -36,10 +36,12 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
+          # PAM is not in build.sh's dependency list, but build.zig always
+          # translates security/pam_appl.h and asks pkg-config for pam.pc.
           dnf -y install git pkgconf-pkg-config curl xz tar gzip \
             which findutils wayland-devel wayland-protocols-devel \
             cairo-devel pango-devel libxkbcommon-devel \
-            librsvg2-devel libwebp-devel pipewire-devel
+            librsvg2-devel libwebp-devel pipewire-devel pam-devel
       - name: Build, test, and stage install
         # Zig's bundled Clang does not consistently search the host's standard
         # include directory in translate-c; these native headers live under
