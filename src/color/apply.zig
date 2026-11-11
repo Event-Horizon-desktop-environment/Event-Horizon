@@ -754,6 +754,12 @@ pub const Applier = struct {
                         if (std.fmt.bufPrint(&b2, "{s}/themes/midnight.theme.css", .{vd})) |css| {
                             bumpMtimeNow(self.io, css);
                         } else |_| {}
+                        // The transparent variant is generated but never
+                        // enabled here; bump it too so Vesktop reloads it
+                        // if the user has switched to it manually.
+                        if (std.fmt.bufPrint(&b2, "{s}/themes/midnight-transparent.theme.css", .{vd})) |css_t| {
+                            bumpMtimeNow(self.io, css_t);
+                        } else |_| {}
                     }
                 } else |_| {}
             }

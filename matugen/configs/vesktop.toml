@@ -1,3 +1,7 @@
 [templates.vesktop]
 input_path = 'SHELL_DIR/matugen/templates/vesktop.css'
 output_path = '~/.config/vesktop/themes/midnight.theme.css'
+
+[templates.vesktop_transparent]
+input_path = 'SHELL_DIR/matugen/templates/vesktop-transparent.css'
+output_path = '~/.config/vesktop/themes/midnight-transparent.theme.css'

@@ -520,6 +520,7 @@ test {
     _ = @import("ux/settings2/ui_subtab.zig");
     _ = @import("ux/settings2/ui_widgets.zig");
     _ = @import("ux/settings2/updater_tab.zig");
+    _ = @import("ux/settings2/updater_service.zig");
     _ = @import("ux/settings2/users_tab.zig");
     _ = @import("ux/settings2/wallpaper_persist.zig");
     _ = @import("ux/settings2/wallpaper_scan.zig");

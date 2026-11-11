@@ -24,6 +24,8 @@ const mon_page = @import("monitors_page.zig");
 const wallpaper_tab = @import("wallpaper_tab.zig");
 const wallpaper_persist = @import("wallpaper_persist.zig");
 const bing_tab = @import("bing_tab.zig");
+const updater_tab = @import("updater_tab.zig");
+const updater_service = @import("updater_service.zig");
 const icons_themes_tab = @import("icons_themes_tab.zig");
 const themes_tab = @import("themes_tab.zig");
 const color_themes_tab = @import("color_themes_tab.zig");
@@ -215,6 +217,11 @@ pub const Win = struct {
     bing: bing_tab.Page = .{},
     /// The Bing worker's eventfd, watched so a finished job repaints.
     bing_wake_fd: i32 = -1,
+    /// The Updates page. Owns its worker service and the flow's session
+    /// state; `Content.upd` borrows it while tab 51 is up.
+    upd: updater_tab.Page = .{},
+    /// The update worker's eventfd, watched so progress and results repaint.
+    upd_wake_fd: i32 = -1,
     /// The Icons tab's page. Owns the theme list, the preview cache and the
     /// Apply/Cancel backup; `Content.icons` borrows it while tab 44 is up.
     icons: icons_themes_tab.Page = .{},
@@ -311,6 +318,10 @@ pub const Win = struct {
         // worker's wake eventfd (set below).
         self.bing.init(self.gpa, self.io);
         self.content.bing = &self.bing;
+        // Updates page: worker for GitHub checks, downloads and pkexec
+        // installs; the window owns the preference flush and the restart.
+        self.upd.init(self.gpa, self.io);
+        self.content.upd = &self.upd;
         // Icons page: same deal — the theme list and preview rasterization
         // need the allocator and io, nothing else from the window.
         self.icons.init(self.gpa, self.io);
@@ -404,6 +415,15 @@ pub const Win = struct {
             if (bfd >= 0) {
                 self.loop.watchFd(bfd, std.posix.POLL.IN, onBingWake, @ptrCast(self)) catch {};
                 self.bing_wake_fd = bfd;
+            }
+        }
+
+        // Update worker wake: download progress ticks and job results.
+        {
+            const ufd = self.upd.svc.wakeFd();
+            if (ufd >= 0) {
+                self.loop.watchFd(ufd, std.posix.POLL.IN, onUpdaterWake, @ptrCast(self)) catch {};
+                self.upd_wake_fd = ufd;
             }
         }
 
@@ -515,6 +535,7 @@ pub const Win = struct {
         self.tm.deinit();
         self.acc.deinit();
         self.tpl.deinit();
+        self.upd.deinit();
         self.bing.deinit();
         self.wall.deinit();
         self.dapps.deinit();
@@ -599,6 +620,11 @@ pub const Win = struct {
             // Nightlight seeds from `[nightlight]` — the gamma client is
             // fed by this file's writes (runner `NightHost`).
             nightlight_persist.load(a.allocator(), &self.settings, &loaded.cfg.night_light);
+        }
+        // Updates page preferences live in `general/general.toml` next to the
+        // icon theme; they have no schema entry, so read the page's own file.
+        if (self.state_dir) |st| {
+            general_persist.loadUpdaterPrefs(self.gpa, self.io, st, &self.settings);
         }
     }
 
@@ -1048,6 +1074,16 @@ pub const Win = struct {
         self.repaint();
     }
 
+    /// Update worker eventfd: progress ticks while a package downloads, and
+    /// one ping per finished job. `syncUpdater` drains the results.
+    fn onUpdaterWake(fd: i32, revents: i16, ctx: *anyopaque) void {
+        const self: *Win = @ptrCast(@alignCast(ctx));
+        var buf: [8]u8 = undefined;
+        _ = linux.read(fd, &buf, buf.len);
+        if ((revents & std.posix.POLL.IN) == 0) return;
+        self.repaint();
+    }
+
     /// `wallpaper_detect_folder_picker_cmd`: honour an explicit mode, else
     /// pick whichever of kdialog/qarma is actually installed (KDE first when
     /// the desktop says so). Empty means "no dialog tool here".
@@ -1163,6 +1199,57 @@ pub const Win = struct {
             .edit_keywords => self.editBingKeywords(),
         }
         self.repaint();
+    }
+
+    /// Borrow this frame's update preferences and pull in anything the worker
+    /// published. Runs every frame before relayout, so a download that
+    /// finishes while the user is on another tab still updates the page.
+    fn syncUpdater(self: *Win) void {
+        // Only the visible page may start a check: the settings window is the
+        // only place this runs, and an automatic GitHub round trip should not
+        // fire because the user opened an unrelated tab.
+        const visible = self.content.updPage() != null;
+        self.upd.sync(.{
+            .auto_check = self.settings.updater_auto_check and visible,
+            .check_hours = self.settings.updater_check_hours,
+        });
+        self.upd.drain();
+    }
+
+    /// One Updates-page press. The page already moved its session state and
+    /// launched any worker job; this is only preferences, the restart and the
+    /// release-page link.
+    fn onUpdaterAction(self: *Win, act: updater_tab.Action) void {
+        switch (act) {
+            .repaint => {},
+            .toggle_auto => {
+                self.settings.updater_auto_check = !self.settings.updater_auto_check;
+                self.flushUpdaterTab();
+            },
+            .set_freq => |hours| {
+                self.settings.updater_check_hours = hours;
+                self.flushUpdaterTab();
+            },
+            .restart => {
+                if (!updater_service.restartShell(self.io)) {
+                    logz.err("settings: restart shell failed", .{});
+                }
+            },
+            .open_releases => {
+                if (!updater_service.openReleasesPage(self.io)) {
+                    logz.log("settings: could not open the releases page", .{});
+                }
+            },
+        }
+        self.repaint();
+    }
+
+    /// Write the Updates page preferences back to `general/general.toml`.
+    fn flushUpdaterTab(self: *Win) void {
+        const state = self.state_dir orelse return;
+        general_persist.save(self.gpa, self.io, state, &self.settings) catch |e| {
+            logz.err("settings: update preferences save failed: {s}", .{@errorName(e)});
+        };
     }
 
     /// One Bluetooth-tab press. The page has already run the BlueZ writes
@@ -2118,6 +2205,7 @@ pub const Win = struct {
         // first; `syncBing` first because a landed daily fetch writes the
         // wallpaper image the wallpaper page then borrows.
         _ = self.syncBing();
+        self.syncUpdater();
         self.syncPalette();
         self.syncWallpaper();
         // Borrow this frame's auto-reconnect flag into the Bluetooth page so
@@ -2847,6 +2935,10 @@ pub const Win = struct {
             },
             .bing => |act| {
                 self.onBingAction(act);
+                return;
+            },
+            .updater => |act| {
+                self.onUpdaterAction(act);
                 return;
             },
             .bluetooth => |act| {

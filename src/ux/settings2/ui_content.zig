@@ -12,6 +12,7 @@ const mon_tab = @import("monitors_tab_helpers.zig");
 const mon_page = @import("monitors_page.zig");
 const wallpaper_tab = @import("wallpaper_tab.zig");
 const bing_tab = @import("bing_tab.zig");
+const updater_tab = @import("updater_tab.zig");
 const icons_themes_tab = @import("icons_themes_tab.zig");
 const themes_tab = @import("themes_tab.zig");
 const color_themes_tab = @import("color_themes_tab.zig");
@@ -325,6 +326,10 @@ pub const Hit = union(enum) {
     /// A Bing-tab press. Same shape as `wallpaper`: `applyHit` returns false
     /// so the window routes it to `Win.onBingAction`.
     bing: bing_tab.Action,
+    /// An Updates-page press (tab 51). Same shape again: the page owns the
+    /// worker launches and its session state; the window routes it to
+    /// `Win.onUpdaterAction` for persistence and the restart.
+    updater: updater_tab.Action,
     /// A Bluetooth-tab press. Same shape again: `applyHit` returns false so
     /// the window routes it to `Win.onBluetoothAction`, which owns the
     /// auto-reconnect persistence.
@@ -422,6 +427,8 @@ pub const Content = struct {
     wall: ?*wallpaper_tab.Page = null,
     /// The Bing Wallpaper page when it owns tab 34 (same delegation as `wall`).
     bing: ?*bing_tab.Page = null,
+    /// The Updates page when it owns tab 51 (same delegation as `bing`).
+    upd: ?*updater_tab.Page = null,
     /// The Bluetooth page when it owns tab 47 (same delegation as `wall`/
     /// `bing`): the ADAPTER/DISCOVERY/DEVICES card stack, all self-painted
     /// from live BlueZ.
@@ -540,6 +547,22 @@ pub const Content = struct {
 
     /// Content-column geometry for the Bing page.
     pub fn bingGeo(self: *const Content) bing_tab.Geo {
+        return .{
+            .content_x = self.content_x,
+            .content_w = self.content_w,
+            .win_h = self.win_h,
+        };
+    }
+
+    /// The Updates page when it owns tab 51, else null.
+    pub fn updPage(self: *const Content) ?*updater_tab.Page {
+        if (self.upd == null) return null;
+        if (self.active_tab != updater_tab.tab_id) return null;
+        return self.upd;
+    }
+
+    /// Content-column geometry for the Updates page.
+    pub fn updGeo(self: *const Content) updater_tab.Geo {
         return .{
             .content_x = self.content_x,
             .content_w = self.content_w,
@@ -847,6 +870,12 @@ pub const Content = struct {
         if (self.bingPage()) |bp| {
             self.placed_len = 0;
             self.total_h = bp.totalHeight(self.bingGeo());
+            return;
+        }
+        // Updates page: a custom page with no placed rows.
+        if (self.updPage()) |up| {
+            self.placed_len = 0;
+            self.total_h = up.totalHeight(self.updGeo());
             return;
         }
         // Bluetooth tab: likewise — the card stack and its device rows are
@@ -1237,6 +1266,13 @@ pub const Content = struct {
             }
             return .none;
         }
+        // Updates page: same one-place delegation.
+        if (self.updPage()) |up| {
+            if (up.hit(self.updGeo(), px, self.unscroll(py))) |act| {
+                return .{ .updater = act };
+            }
+            return .none;
+        }
         // Bluetooth tab: no placed rows either — the page's own hit test.
         if (self.btPage()) |tp| {
             if (tp.hit(self.btGeo(), px, self.unscroll(py))) |act| {
@@ -1597,6 +1633,9 @@ pub const Content = struct {
             // rather than applied here.
             .wallpaper => return false,
             .bing => return false,
+            // The Updates page starts its own worker jobs; the window owns
+            // the preference flush and the shell restart.
+            .updater => return false,
             // The Bluetooth page runs its own BlueZ writes; the window owns
             // the auto-reconnect persistence, so this routes there too.
             .bluetooth => return false,
@@ -1904,6 +1943,20 @@ pub const Content = struct {
             bp.paint(
                 c,
                 self.bingGeo(),
+                self.pointer_x,
+                self.pointer_ly,
+                g_ov,
+            );
+            cairo_restore(c);
+            return;
+        }
+
+        // Updates page: likewise paints the whole scrollable region itself.
+        if (self.updPage()) |up| {
+            updater_tab.paint(
+                up,
+                c,
+                self.updGeo(),
                 self.pointer_x,
                 self.pointer_ly,
                 g_ov,

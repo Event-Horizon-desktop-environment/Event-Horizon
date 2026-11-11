@@ -497,6 +497,9 @@ pub const Settings = struct {
     avatar_path: []const u8 = "",
     autostart_enabled: bool = true,
     updater_auto_check: bool = true,
+    /// Updates page frequency: 1, 3, 6 or 24 hours. Persisted next to
+    /// `updater_auto_check` in `general/general.toml`.
+    updater_check_hours: u8 = 6,
 
     // Widget section lists per bar (left/center/right), mirroring the
     // `[dock]`/`[taskbar]`/`[panel]` `left_widgets` & co. arrays. Borrowed

@@ -1,3 +1,7 @@
 [templates.ehequibop]
 input_path = 'SHELL_DIR/matugen/templates/vesktop.css'
 output_path = 'CONFIG_DIR/equibop/themes/event-discord.css'
+
+[templates.ehequibop_transparent]
+input_path = 'SHELL_DIR/matugen/templates/vesktop-transparent.css'
+output_path = 'CONFIG_DIR/equibop/themes/event-discord-transparent.css'
