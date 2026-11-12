@@ -209,6 +209,23 @@ const Offer = struct {
 
 pub const DataProvider = *const fn (ctx: *anyopaque, mime: []const u8, alloc: std.mem.Allocator) ?[]u8;
 
+/// Which outgoing source a `cancelled` event names. The clipboard and the
+/// primary selection are replaced independently by the compositor, so the
+/// callback must not confuse them: cancelling the primary source (which
+/// happens on every text selection on the desktop) must not take down the
+/// clipboard source or drop its payload.
+pub const Cancelled = enum { clipboard, primary, stale };
+
+pub fn classifyCancelled(clipboard: ?*anyopaque, primary: ?*anyopaque, src: *anyopaque) Cancelled {
+    if (clipboard) |s| {
+        if (s == src) return .clipboard;
+    }
+    if (primary) |s| {
+        if (s == src) return .primary;
+    }
+    return .stale;
+}
+
 pub const Service = struct {
     alloc: std.mem.Allocator,
     backend: Backend = .ext,
@@ -285,22 +302,23 @@ pub const Service = struct {
     /// Destroy the outgoing source and its offer bookkeeping but leave the
     /// owned payload store alone — the C++ `build_source_and_set_selection`
     /// "destroy the previous outgoing source without touching
-    /// outgoingData_" (clipboard.cpp:415-419). A cancelled source goes
-    /// through `clearSource` instead, which also drops the payload
-    /// (`handle_source_cancelled`, clipboard.cpp:403-410).
+    /// outgoingData_" (clipboard.cpp:415-419). A cancelled source is handled
+    /// by `onSourceCancelled`, which drops the payload only once both
+    /// selections are gone (`handle_source_cancelled`, clipboard.cpp:403-410).
+    fn destroySourcePtr(self: *Service, s: *anyopaque) void {
+        switch (self.backend) {
+            .ext => wl.ext_data_control_source_v1_destroy(@ptrCast(s)),
+            .wlr => wl.zwlr_data_control_source_v1_destroy(@ptrCast(s)),
+        }
+    }
+
     fn destroySourceOnly(self: *Service) void {
         if (self.source) |s| {
-            switch (self.backend) {
-                .ext => wl.ext_data_control_source_v1_destroy(@ptrCast(s)),
-                .wlr => wl.zwlr_data_control_source_v1_destroy(@ptrCast(s)),
-            }
+            self.destroySourcePtr(s);
             self.source = null;
         }
         if (self.source_primary) |s| {
-            switch (self.backend) {
-                .ext => wl.ext_data_control_source_v1_destroy(@ptrCast(s)),
-                .wlr => wl.zwlr_data_control_source_v1_destroy(@ptrCast(s)),
-            }
+            self.destroySourcePtr(s);
             self.source_primary = null;
         }
         for (self.source_mimes.items) |m| self.alloc.free(m);
@@ -425,8 +443,37 @@ pub const Service = struct {
         }
     }
 
-    fn onSourceCancelled(self: *Service) void {
-        self.clearSource();
+    /// One outgoing source was replaced by another client. The clipboard and
+    /// the primary selection each have their own source, and they are
+    /// cancelled independently: a text selection anywhere on the desktop
+    /// replaces the primary source while the clipboard must keep working.
+    /// Tearing down both sources here (the old behavior) silently dropped the
+    /// clipboard payload every time the primary selection changed, which made
+    /// copies fail intermittently until the user copied again.
+    fn onSourceCancelled(self: *Service, src: *anyopaque) void {
+        switch (classifyCancelled(self.source, self.source_primary, src)) {
+            .clipboard => {
+                self.source = null;
+                self.destroySourcePtr(src);
+            },
+            .primary => {
+                self.source_primary = null;
+                self.destroySourcePtr(src);
+            },
+            // Cancellation for a source this service already replaced (for
+            // example one queued before the last `buildOwnedSourceBoth`).
+            // The proxy is destroyed locally, so just release it.
+            .stale => {
+                self.destroySourcePtr(src);
+                return;
+            },
+        }
+        if (self.source == null and self.source_primary == null) {
+            self.clearOwned();
+            for (self.source_mimes.items) |m| self.alloc.free(m);
+            self.source_mimes.clearRetainingCapacity();
+            self.provider = null;
+        }
         self.notifyChanged();
     }
 
@@ -921,9 +968,8 @@ pub const Service = struct {
         self.onSourceSend(mime, fd);
     }
     fn extCancelled(data: ?*anyopaque, src: ?*wl.ext_data_control_source_v1) callconv(.c) void {
-        _ = src;
         const self: *Self = @ptrCast(@alignCast(data orelse return));
-        self.onSourceCancelled();
+        self.onSourceCancelled(@ptrCast(src orelse return));
     }
 
     fn wlrDataOffer(data: ?*anyopaque, dev: ?*wl.zwlr_data_control_device_v1, id: ?*wl.zwlr_data_control_offer_v1) callconv(.c) void {
@@ -947,9 +993,8 @@ pub const Service = struct {
         self.onSourceSend(mime, fd);
     }
     fn wlrCancelled(data: ?*anyopaque, src: ?*wl.zwlr_data_control_source_v1) callconv(.c) void {
-        _ = src;
         const self: *Self = @ptrCast(@alignCast(data orelse return));
-        self.onSourceCancelled();
+        self.onSourceCancelled(@ptrCast(src orelse return));
     }
 
     const ext_device_listener = wl.ext_data_control_device_v1_listener{
@@ -995,6 +1040,21 @@ pub const Service = struct {
         self.onSelection(if (id) |o| @ptrCast(o) else null, true);
     }
 };
+
+test "clipboard: cancelled only names one of the two sources" {
+    const t = std.testing;
+    const a: *anyopaque = @ptrFromInt(0x1000);
+    const b: *anyopaque = @ptrFromInt(0x2000);
+    const other: *anyopaque = @ptrFromInt(0x3000);
+    try t.expectEqual(Cancelled.clipboard, classifyCancelled(a, b, a));
+    try t.expectEqual(Cancelled.primary, classifyCancelled(a, b, b));
+    try t.expectEqual(Cancelled.stale, classifyCancelled(a, b, other));
+    // A primary-selection cancellation must never be mistaken for the
+    // clipboard source, even once that source is already gone.
+    try t.expectEqual(Cancelled.clipboard, classifyCancelled(a, null, a));
+    try t.expectEqual(Cancelled.stale, classifyCancelled(a, null, b));
+    try t.expectEqual(Cancelled.stale, classifyCancelled(null, null, a));
+}
 
 test "clipboard: mime preference order" {
     const t = std.testing;
