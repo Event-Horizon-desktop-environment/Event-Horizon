@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+# Example (user/session-managed) OpenRC script for Event Horizon.
+# This is NOT a typical system service. Prefer starting `horizon` from your compositor autostart.
+# If you use a per-user OpenRC/session supervisor, adapt paths and environment accordingly.
+
+description="Event Horizon desktop shell (user session example)"
+command="/usr/bin/horizon"
+command_user="CHANGE_ME:CHANGE_ME"
+supervisor=supervise-daemon
+
+# Required in a real setup: run inside an active Wayland user session with
+# XDG_RUNTIME_DIR, WAYLAND_DISPLAY, DBUS_SESSION_BUS_ADDRESS, etc. set.
+# Starting from compositor config (exec-once) is usually the correct approach.

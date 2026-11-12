@@ -205,7 +205,13 @@ fn addPkgConfigIncludesToTranslateC(b: *std.Build, tc: *std.Build.Step.Translate
     var it = std.mem.tokenizeAny(u8, cflags, " \t\r\n");
     while (it.next()) |flag| {
         if (std.mem.startsWith(u8, flag, "-I") and flag.len > 2) {
-            tc.addSystemIncludePath(.{ .cwd_relative = b.dupe(flag[2..]) });
+            const path = b.dupe(flag[2..]);
+            tc.addSystemIncludePath(.{ .cwd_relative = path });
+            // Some pkg-config files only export a library subdir (e.g. .../include/cairo)
+            // while headers are included as <cairo/cairo.h>. Also expose the parent dir.
+            if (std.fs.path.dirname(path)) |parent| {
+                tc.addSystemIncludePath(.{ .cwd_relative = b.dupe(parent) });
+            }
         }
     }
     // pkg-config drops -I for the default system include dir, and translate-c

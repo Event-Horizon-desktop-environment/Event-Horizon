@@ -21,11 +21,13 @@ Pick the guide for your distribution. Each one is a complete walkthrough from a 
 | Your distro | Guide |
 |---|---|
 | Arch, CachyOS, EndeavourOS, Manjaro, Garuda | [docs/install/arch.md](docs/install/arch.md) |
+| Artix Linux (and other Arch-based, OpenRC/runit/dinit/s6) | [docs/install/artix.md](docs/install/artix.md) |
 | Fedora, and RHEL-like systems | [docs/install/fedora.md](docs/install/fedora.md) |
 | Debian, Ubuntu, Mint, Pop!_OS, PikaOS | [docs/install/debian.md](docs/install/debian.md) |
+| openSUSE / SUSE-family | [docs/install/opensuse.md](docs/install/opensuse.md) |
 | NixOS | [docs/install/nixos.md](docs/install/nixos.md) |
-| Gentoo | [docs/install/gentoo.md](docs/install/gentoo.md) |
-| Void Linux | [docs/install/void.md](docs/install/void.md) |
+| Gentoo (OpenRC/systemd) | [docs/install/gentoo.md](docs/install/gentoo.md) |
+| Void Linux (runit) | [docs/install/void.md](docs/install/void.md) |
 
 If you just want the short version and you already have the development packages, it is three commands:
 

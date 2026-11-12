@@ -14,7 +14,7 @@
       {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            zig
+            zig_0_16
             pkg-config
             wayland
             wayland-protocols
