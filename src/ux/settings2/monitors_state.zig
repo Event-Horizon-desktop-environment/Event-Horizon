@@ -1982,12 +1982,12 @@ pub const State = struct {
         }
     }
 
-    /// Detached `systemctl --user restart …` for both portal services.
+    /// Detached restart for portal services (best-effort, systemd user session).
     pub fn restartPortals(self: *State) void {
         autostart.spawnDetached(self.io, &.{
             "/bin/sh",
             "-c",
-            "systemctl --user restart xdg-desktop-portal && systemctl --user restart xdg-desktop-portal-hyprland",
+            "if command -v systemctl >/dev/null 2>&1; then systemctl --user restart xdg-desktop-portal xdg-desktop-portal-hyprland 2>/dev/null || true; fi",
         }) catch return;
     }
 };
