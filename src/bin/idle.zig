@@ -223,11 +223,14 @@ const Idle = struct {
         return lock_state.lockedNow(self.app.io, self.app.gpa, self.runtime_dir);
     }
 
-    /// Hold a logind sleep delay inhibitor while the session is unlocked.
+    /// Hold a logind/elogind sleep delay inhibitor while the session is unlocked.
     /// logind sends `PrepareForSleep(true)` and then checks for delay
     /// inhibitors *in the same call*, so an inhibitor taken from the signal
     /// handler is always too late. Holding one for as long as the desktop is
     /// visible is what buys the lock client time to present its first frame.
+    ///
+    /// On non-systemd systems, falls back to `elogind-inhibit` when available;
+    /// if no inhibitor tool exists, sleep may race the lock (best-effort).
     fn ensureInhibitor(self: *Idle) void {
         if (self.inhibit_pid >= 0) {
             if (pidAlive(self.inhibit_pid)) return;
@@ -245,27 +248,32 @@ const Idle = struct {
             "while kill -0 {d} 2>/dev/null; do sleep 10; done",
             .{linux.getpid()},
         ) catch "sleep infinity";
-        const argv = [_][]const u8{
-            "systemd-inhibit",
-            "--what=sleep",
-            "--mode=delay",
-            "--who=Event Horizon",
-            "--why=Lock the session before sleeping",
-            "/bin/sh",
-            "-c",
-            watchdog,
-        };
-        const pid = eh.autostart.spawnDetachedPid(self.app.io, &argv) catch {
-            self.inhibit_retry_ms = nowMs() + 30_000;
-            if (!self.inhibit_logged) {
-                self.inhibit_logged = true;
-                logz.err("idle: cannot start systemd-inhibit; sleep may race the lock", .{});
-            }
-            return;
-        };
-        if (pid) |p| {
-            self.inhibit_pid = p;
-            logz.log("idle: holding a sleep delay inhibitor (pid {d})", .{p});
+
+        const inhibit_bins = [_][]const u8{ "systemd-inhibit", "elogind-inhibit" };
+        inline for (inhibit_bins) |bin| {
+            const argv = [_][]const u8{
+                bin,
+                "--what=sleep",
+                "--mode=delay",
+                "--who=Event Horizon",
+                "--why=Lock the session before sleeping",
+                "/bin/sh",
+                "-c",
+                watchdog,
+            };
+            if (eh.autostart.spawnDetachedPid(self.app.io, &argv)) |pid| {
+                if (pid) |p| {
+                    self.inhibit_pid = p;
+                    logz.log("idle: holding a sleep delay inhibitor via {s} (pid {d})", .{ bin, p });
+                }
+                return;
+            } else |_| {}
+        }
+
+        self.inhibit_retry_ms = nowMs() + 30_000;
+        if (!self.inhibit_logged) {
+            self.inhibit_logged = true;
+            logz.err("idle: cannot start systemd-inhibit/elogind-inhibit; sleep may race the lock", .{});
         }
     }
 
