@@ -21,16 +21,23 @@ Pick the guide for your distribution. Each one is a complete walkthrough from a 
 | Your distro | Guide |
 |---|---|
 | Arch, CachyOS, EndeavourOS, Manjaro, Garuda | [docs/install/arch.md](docs/install/arch.md) |
+| Artix Linux (and other Arch-based, OpenRC/runit/dinit/s6) | [docs/install/artix.md](docs/install/artix.md) |
 | Fedora, and RHEL-like systems | [docs/install/fedora.md](docs/install/fedora.md) |
 | Debian, Ubuntu, Mint, Pop!_OS, PikaOS | [docs/install/debian.md](docs/install/debian.md) |
+| openSUSE / SUSE-family | [docs/install/opensuse.md](docs/install/opensuse.md) |
+| NixOS | [docs/install/nixos.md](docs/install/nixos.md) |
+| Gentoo (OpenRC/systemd) | [docs/install/gentoo.md](docs/install/gentoo.md) |
+| Void Linux (runit) | [docs/install/void.md](docs/install/void.md) |
 
 If you just want the short version and you already have the development packages, it is three commands:
 
 ```bash
-git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
+git clone https://github.com/visadaking/Event-Horizon.git
 cd Event-Horizon
 ./build.sh
 ```
+
+> **Note:** `./build.sh` installs to `/usr` and expects a mutable FHS layout. On NixOS (and other source-based or non-FHS setups) prefer the distro-specific guide (e.g. `--no-install` builds, Nix dev shell/flake, or local install paths).
 
 The script builds an optimized binary tuned for your CPU and then installs it to `/usr`. It asks for your password once, at the very end. Do not run it with `sudo` yourself.
 
