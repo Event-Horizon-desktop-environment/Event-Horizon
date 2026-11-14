@@ -489,9 +489,9 @@ pub const Settings = struct {
     audio_engine_rate_hz: i32 = 48000,
     /// Engine page combo contents (`[audio] engine_rate_values` /
     /// `engine_quantum_values`); 0 length means the page's built-ins.
-    audio_rate_values: [16]i32 = [_]i32{0} ** 16,
+    audio_rate_values: [16]i32 = @splat(0),
     audio_rate_values_len: u8 = 0,
-    audio_quantum_values: [16]i32 = [_]i32{0} ** 16,
+    audio_quantum_values: [16]i32 = @splat(0),
     audio_quantum_values_len: u8 = 0,
 
     avatar_path: []const u8 = "",
