@@ -103,7 +103,11 @@ fn zoolanderSocketPresent() bool {
     const base = std.fs.path.basename(disp);
     if (base.len == 0) return false;
     var buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&buf, "{s}/zoolander-{s}.sock", .{ dir, base }) catch return false;
+    const path: [:0]const u8 = blk: {
+        const s = std.fmt.bufPrint(buf[0 .. buf.len - 1], "{s}/zoolander-{s}.sock", .{ dir, base }) catch return false;
+        buf[s.len] = 0;
+        break :blk buf[0..s.len :0];
+    };
     const rc = std.os.linux.access(path.ptr, std.posix.F_OK);
     return std.os.linux.errno(rc) == .SUCCESS;
 }
