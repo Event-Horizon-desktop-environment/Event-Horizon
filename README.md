@@ -32,7 +32,7 @@ Pick the guide for your distribution. Each one is a complete walkthrough from a 
 If you just want the short version and you already have the development packages, it is three commands:
 
 ```bash
-git clone [https://github.com/visadaking/Event-Horizon.git](https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git)
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 ./build.sh
 ```
