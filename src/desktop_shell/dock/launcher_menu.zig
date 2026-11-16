@@ -1108,10 +1108,14 @@ pub const Menu = struct {
         };
         const reboot = [_][]const []const u8{
             &[_][]const u8{ "systemctl", "reboot" },
+            &[_][]const u8{ "loginctl", "reboot" },
+            &[_][]const u8{ "reboot" },
             &[_][]const u8{ "shutdown", "-r", "now" },
         };
         const halt = [_][]const []const u8{
             &[_][]const u8{ "systemctl", "poweroff" },
+            &[_][]const u8{ "loginctl", "poweroff" },
+            &[_][]const u8{ "poweroff" },
             &[_][]const u8{ "shutdown", "-h", "now" },
         };
         switch (idx) {

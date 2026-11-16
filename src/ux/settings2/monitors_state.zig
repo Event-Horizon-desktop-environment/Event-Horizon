@@ -1692,6 +1692,10 @@ pub const State = struct {
                 if (saw_primary) e.primary = r.primary;
                 if (!r.vrr.empty()) e.vrr = r.vrr;
                 if (!r.hdr_policy.empty()) e.hdr_policy = r.hdr_policy;
+                // HDR can regress/crash when an output is moved/reconfigured to a
+                // non-HDR-capable monitor; never keep/apply HDR policy on outputs
+                // that don't advertise HDR capability.
+                if (!e.hdr_capable) e.hdr_policy.set("0");
                 if (!r.color_profile.empty()) e.color_profile = r.color_profile;
                 if (!r.resolution.empty()) e.resolution = r.resolution;
                 if (!r.refresh_rate.empty()) e.refresh_rate = r.refresh_rate;
@@ -1982,12 +1986,12 @@ pub const State = struct {
         }
     }
 
-    /// Detached `systemctl --user restart …` for both portal services.
+    /// Detached restart for portal services (best-effort, systemd user session).
     pub fn restartPortals(self: *State) void {
         autostart.spawnDetached(self.io, &.{
             "/bin/sh",
             "-c",
-            "systemctl --user restart xdg-desktop-portal && systemctl --user restart xdg-desktop-portal-hyprland",
+            "if command -v systemctl >/dev/null 2>&1; then systemctl --user restart xdg-desktop-portal xdg-desktop-portal-hyprland 2>/dev/null || true; fi",
         }) catch return;
     }
 };
