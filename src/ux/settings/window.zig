@@ -721,10 +721,15 @@ pub const Win = struct {
         );
         const kde = std.mem.indexOf(u8, dlow, "kde") != null or
             std.mem.indexOf(u8, dlow, "plasma") != null;
-        const have_kdialog = isExecutable("/usr/bin/kdialog") or isExecutable("/bin/kdialog");
+        const have_kdialog = isExecutable("/usr/bin/kdialog") or isExecutable("/bin/kdialog") or isExecutable("/run/current-system/sw/bin/kdialog") or isExecutable("/usr/local/bin/kdialog") or
+            isExecutable("/run/current-system/sw/bin/kdialog") or isExecutable("/usr/local/bin/kdialog");
         if (kde and have_kdialog) return kdialog_cmd;
         if (have_kdialog) return kdialog_cmd;
-        if (isExecutable("/usr/bin/qarma") or isExecutable("/bin/qarma")) return qarma_cmd;
+        if (isExecutable("/usr/bin/qarma") or isExecutable("/bin/qarma") or isExecutable("/run/current-system/sw/bin/qarma") or isExecutable("/usr/local/bin/qarma") or
+            isExecutable("/run/current-system/sw/bin/qarma") or isExecutable("/usr/local/bin/qarma")) return qarma_cmd;
+        if (isExecutable("/usr/bin/zenity") or isExecutable("/bin/zenity") or isExecutable("/run/current-system/sw/bin/zenity") or isExecutable("/usr/local/bin/zenity") or
+            isExecutable("/run/current-system/sw/bin/zenity") or isExecutable("/usr/local/bin/zenity"))
+            return "zenity --file-selection --directory --title=\"Wallpaper folder\"";
         return "";
     }
 
@@ -895,10 +900,10 @@ pub const Win = struct {
         // says what is actually being picked, and zenity as the floor so the
         // button has a command to run on a bare system too.
         const cmd: []const u8 = blk: {
-            if (isExecutable("/usr/bin/kdialog") or isExecutable("/bin/kdialog")) {
+            if (isExecutable("/usr/bin/kdialog") or isExecutable("/bin/kdialog") or isExecutable("/run/current-system/sw/bin/kdialog") or isExecutable("/usr/local/bin/kdialog")) {
                 break :blk "kdialog --getexistingdirectory . --title \"Bing wallpaper folder\"";
             }
-            if (isExecutable("/usr/bin/qarma") or isExecutable("/bin/qarma")) {
+            if (isExecutable("/usr/bin/qarma") or isExecutable("/bin/qarma") or isExecutable("/run/current-system/sw/bin/qarma") or isExecutable("/usr/local/bin/qarma")) {
                 break :blk "qarma --file-selection --directory --title=\"Bing wallpaper folder\"";
             }
             break :blk "zenity --file-selection --directory --title=\"Bing wallpaper folder\"";
@@ -919,7 +924,7 @@ pub const Win = struct {
         const quoted = shellQuote(&esc, self.settings.bing_blocked_keywords) orelse return;
         var cmd_buf: [17000]u8 = undefined;
         const cmd: []const u8 = blk: {
-            if (isExecutable("/usr/bin/zenity") or isExecutable("/bin/zenity")) {
+            if (isExecutable("/usr/bin/zenity") or isExecutable("/bin/zenity") or isExecutable("/run/current-system/sw/bin/zenity") or isExecutable("/usr/local/bin/zenity")) {
                 break :blk std.fmt.bufPrint(
                     &cmd_buf,
                     "zenity --entry --title 'Blocked Keywords' " ++
@@ -928,7 +933,7 @@ pub const Win = struct {
                     .{quoted},
                 ) catch return;
             }
-            if (isExecutable("/usr/bin/kdialog") or isExecutable("/bin/kdialog")) {
+            if (isExecutable("/usr/bin/kdialog") or isExecutable("/bin/kdialog") or isExecutable("/run/current-system/sw/bin/kdialog") or isExecutable("/usr/local/bin/kdialog")) {
                 break :blk std.fmt.bufPrint(
                     &cmd_buf,
                     "kdialog --title 'Blocked Keywords' " ++
@@ -936,7 +941,7 @@ pub const Win = struct {
                     .{quoted},
                 ) catch return;
             }
-            if (isExecutable("/usr/bin/qarma") or isExecutable("/bin/qarma")) {
+            if (isExecutable("/usr/bin/qarma") or isExecutable("/bin/qarma") or isExecutable("/run/current-system/sw/bin/qarma") or isExecutable("/usr/local/bin/qarma")) {
                 break :blk std.fmt.bufPrint(
                     &cmd_buf,
                     "qarma --title 'Blocked Keywords' " ++

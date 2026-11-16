@@ -84,8 +84,8 @@ pub fn extraFor(entry: u8) i32 {
 // Per-entry hand-drawn curve state (see the module comment for why it is
 // session-only). `g_curve_set` says the entry shows a dragged table rather
 // than the preset behind its stored curve name.
-var g_curve_set = [_]bool{false} ** entry_count;
-var g_curve = [_][4]f64{.{ 0.25, 0.1, 0.25, 1.0 }} ** entry_count;
+var g_curve_set: [entry_count]bool = @splat(false);
+var g_curve: [entry_count][4]f64 = @splat(.{ 0.25, 0.1, 0.25, 1.0 });
 
 // Last painted open-row rect, so mouse motion can map into the curve graph
 // without the caller re-deriving the row geometry.

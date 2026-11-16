@@ -967,7 +967,7 @@ test "launcher: a partial-row scroll becomes a blit offset, not a snapped row" {
     var res = Resources.init(t.allocator, std.testing.io);
     defer res.deinit();
     const g = layout.Geo.of(layout.preferred_w, layout.preferred_h);
-    const hits = [_]usize{0} ** 40;
+    const hits: [40]usize = @splat(0);
 
     var v = View{ .geo = g, .res = &res, .hits = &hits };
     const pitch = layout.cell_h + layout.grid_gap;

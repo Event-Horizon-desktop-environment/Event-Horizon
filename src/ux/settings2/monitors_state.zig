@@ -1692,6 +1692,10 @@ pub const State = struct {
                 if (saw_primary) e.primary = r.primary;
                 if (!r.vrr.empty()) e.vrr = r.vrr;
                 if (!r.hdr_policy.empty()) e.hdr_policy = r.hdr_policy;
+                // HDR can regress/crash when an output is moved/reconfigured to a
+                // non-HDR-capable monitor; never keep/apply HDR policy on outputs
+                // that don't advertise HDR capability.
+                if (!e.hdr_capable) e.hdr_policy.set("0");
                 if (!r.color_profile.empty()) e.color_profile = r.color_profile;
                 if (!r.resolution.empty()) e.resolution = r.resolution;
                 if (!r.refresh_rate.empty()) e.refresh_rate = r.refresh_rate;

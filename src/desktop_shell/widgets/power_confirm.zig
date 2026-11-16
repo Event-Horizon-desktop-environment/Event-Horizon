@@ -218,7 +218,10 @@ pub fn paint(
         box(cr, pbar_x, pbar_y, pbar_w * fraction, 4.0, 2.0, colors.accent, 0.85);
     }
     var timer_buf: [16]u8 = undefined;
-    const timer_text = std.fmt.bufPrintZ(&timer_buf, "{d}s", .{remaining_sec}) catch "0s";
+    const timer_text: [:0]const u8 = if (std.fmt.bufPrint(timer_buf[0 .. timer_buf.len - 1], "{d}s", .{remaining_sec})) |s| blk: {
+        timer_buf[s.len] = 0;
+        break :blk timer_buf[0..s.len :0];
+    } else |_| "0s";
     centredText(cr, timer_text, g.cx + g.cw * 0.5, timer_y + 14.0 * us, 22.0 * us, true, 0.88, 0.92, 0.95, 0.85);
 
     // Cancel.

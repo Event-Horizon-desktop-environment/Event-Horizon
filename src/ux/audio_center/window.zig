@@ -621,7 +621,7 @@ pub const Win = struct {
     caps_at_ns: u64 = 0,
     /// Latency offset card: selected node index and editable field.
     lat_node: i32 = -1,
-    lat_field: [24]u8 = [_]u8{0} ** 24,
+    lat_field: [24]u8 = @splat(0),
     lat_len: usize = 0,
     lat_focus: bool = false,
     lat_ns: bool = false,
@@ -632,7 +632,7 @@ pub const Win = struct {
     /// Engine page: open custom-value dialog and its text field.
     emodal: EngineModal = .none,
     emodal_force: bool = false,
-    emodal_buf: [16]u8 = [_]u8{0} ** 16,
+    emodal_buf: [16]u8 = @splat(0),
     emodal_len: usize = 0,
     /// Latency unit toggle: the x offset of the frames/ns divider, measured by
     /// the last paint so the hit test picks the segment the user actually sees.
