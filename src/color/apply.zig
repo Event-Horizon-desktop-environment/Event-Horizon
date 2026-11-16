@@ -202,6 +202,9 @@ fn exeQt5(_: *const GateCtx) bool {
 fn exeQt6(_: *const GateCtx) bool {
     return exeOnPath("qt6ct");
 }
+fn exeCachyosPi(_: *const GateCtx) bool {
+    return exeOnPath("cachyos-pi");
+}
 fn exeKitty(_: *const GateCtx) bool {
     return exeOnPath("kitty");
 }
@@ -330,7 +333,7 @@ const Gate = struct {
 /// The kitty-theme gate file is the *only* difference between the native
 /// table (`kitty.toml`) and the external-matugen one (`kitty-theme.toml`);
 /// everything else is identical.
-fn gateTableWith(t: *const schema3.MatugenToggles, kitty_theme_file: []const u8) [37]Gate {
+fn gateTableWith(t: *const schema3.MatugenToggles, kitty_theme_file: []const u8) [38]Gate {
     return .{
         .{ .flag = t.niri, .file = "niri.toml", .pred = exeNiri },
         .{ .flag = t.hyprland, .file = "hyprland.toml", .pred = hyprSig },
@@ -369,16 +372,17 @@ fn gateTableWith(t: *const schema3.MatugenToggles, kitty_theme_file: []const u8)
         .{ .flag = t.horizon_files, .file = "horizon-files.toml", .pred = dirEh },
         .{ .flag = t.horizon_photo, .file = "horizon-photo.toml", .pred = dirEh },
         .{ .flag = t.horizon_calendar, .file = "horizon-calendar.toml", .pred = dirHcal },
+        .{ .flag = t.cachyos_pi, .file = "cachyos-pi.toml", .pred = exeCachyosPi },
     };
 }
 
 /// Native gate table: kitty's theme lives in `kitty.toml`.
-fn gateTable(t: *const schema3.MatugenToggles) [37]Gate {
+fn gateTable(t: *const schema3.MatugenToggles) [38]Gate {
     return gateTableWith(t, "kitty.toml");
 }
 
 /// External-matugen gate table: kitty's theme lives in `kitty-theme.toml`.
-fn gateTableExternal(t: *const schema3.MatugenToggles) [37]Gate {
+fn gateTableExternal(t: *const schema3.MatugenToggles) [38]Gate {
     return gateTableWith(t, "kitty-theme.toml");
 }
 
@@ -2129,7 +2133,7 @@ test "apply: gate table covers every toggles file gate" {
     // maps to exactly one bundled TOML.
     const toggles = schema3.MatugenToggles{};
     const table = gateTable(&toggles);
-    try std.testing.expectEqual(@as(usize, 37), table.len);
+    try std.testing.expectEqual(@as(usize, 38), table.len);
     for (table) |g| try std.testing.expect(g.flag);
 }
 
@@ -2873,7 +2877,7 @@ test "apply: external gate table differs from native only in the kitty file" {
     const toggles = schema3.MatugenToggles{};
     const nat = gateTable(&toggles);
     const ext = gateTableExternal(&toggles);
-    try t.expectEqual(@as(usize, 37), ext.len);
+    try t.expectEqual(@as(usize, 38), ext.len);
     for (nat, ext) |n, e| {
         try t.expectEqual(n.flag, e.flag);
         try t.expectEqual(n.pred, e.pred);

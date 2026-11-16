@@ -55,6 +55,7 @@ pub const MatugenToggles = struct {
     heroic: bool = true,
     fluxer: bool = true,
     owler: bool = true,
+    cachyos_pi: bool = true,
 };
 
 fn decodeToggles(_: std.mem.Allocator, t: *const T, m: *MatugenToggles) !void {
@@ -111,6 +112,7 @@ fn decodeToggles(_: std.mem.Allocator, t: *const T, m: *MatugenToggles) !void {
     setBool(t, "heroic", &m.heroic);
     setBool(t, "fluxer", &m.fluxer);
     setBool(t, "owler", &m.owler);
+    setBool(t, "cachyos_pi", &m.cachyos_pi);
 }
 
 pub const Appearance = struct {

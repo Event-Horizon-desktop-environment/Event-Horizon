@@ -115,7 +115,7 @@ pub const Config = struct {
 };
 
 // ---------------------------------------------------------------------------
-// The 37 templates. Order = the old tile order = the
+// The 38 templates. Order = the old tile order = the
 // `Settings.matugen_templates` layout; `appearance_persist` maps the array
 // to `appearance.toml` by name, so a permutation here would silently
 // retarget other rows' toggles — the tests below pin every slot.
@@ -170,6 +170,7 @@ pub const templates = [_]Config{
     .{ .label = "Horizon Files", .group = 6, .slot = 30, .input = "horizon-files-matugen.conf", .output = "CONFIG_DIR/event-horizon/horizon-files-matugen.conf", .check = .cfg_dir, .cfg_dir = "event-horizon" },
     .{ .label = "Horizon Photo", .group = 6, .slot = 33, .input = "horizon-photo-matugen.conf", .output = "CONFIG_DIR/event-horizon/horizon-photo-matugen.conf", .check = .cfg_dir, .cfg_dir = "event-horizon" },
     .{ .label = "Horizon Calendar", .group = 6, .slot = 34, .input = "horizon-calendar-matugen.conf", .output = "CONFIG_DIR/event-horizon/horizon-calendar-matugen.conf", .check = .cfg_dir, .cfg_dir = "horizon-calendar" },
+    .{ .label = "CachyOS Package Installer", .group = 6, .slot = 37, .input = "cachyos-pi-colors.json", .output = "CONFIG_DIR/CachyOS/cachyos-pi-colors.json", .check = .bin, .bin = "cachyos-pi" },
 };
 
 pub const template_count = templates.len;
@@ -184,7 +185,7 @@ pub fn bySlot(slot: usize) *const Config {
 }
 
 comptime {
-    if (template_count != 37) @compileError("templates_registry: the external template table must list all 37 matugen toggles");
+    if (template_count != 38) @compileError("templates_registry: the external template table must list all 38 matugen toggles");
 }
 
 // ---------------------------------------------------------------------------
@@ -569,11 +570,11 @@ fn fxMtime(ctx: ?*anyopaque, path: []const u8) i64 {
     return 0;
 }
 
-test "registry: 37 templates, unique slots, groups in range" {
+test "registry: 38 templates, unique slots, groups in range" {
     const t = std.testing;
-    var seen = @as([37]bool, @splat(false));
+    var seen = @as([38]bool, @splat(false));
     for (templates) |tpl| {
-        try t.expect(tpl.slot < 37);
+        try t.expect(tpl.slot < 38);
         try t.expect(!seen[tpl.slot]);
         seen[tpl.slot] = true;
         try t.expect(tpl.group < group_count);
@@ -602,6 +603,7 @@ test "registry: roster order and groups match the old tile order" {
     try t.expectEqualStrings("Horizon Calendar", bySlot(34).label);
     try t.expectEqualStrings("Fluxer", bySlot(35).label);
     try t.expectEqualStrings("Owler", bySlot(36).label);
+    try t.expectEqualStrings("CachyOS Package Installer", bySlot(37).label);
     // The first group is the compositors, as the mockup roster starts.
     for (templates[0..3]) |tpl| try t.expectEqual(@as(u8, 0), tpl.group);
     // Every group holds at least one template.
@@ -690,6 +692,13 @@ test "registry: detection mirrors the apply gate table" {
     try t.expect(detected(misc.probes(), st(31), env));
     try t.expect(detected(misc.probes(), st(36), env));
 
+    // The package installer needs its binary on PATH.
+    const pi = Fixture{
+        .vars = &.{ .{ "HOME", fx_home }, .{ "XDG_CONFIG_HOME", fx_cfg } },
+        .bins = &.{"cachyos-pi"},
+    };
+    try t.expect(detected(pi.probes(), st(37), env));
+
     // fluxer: binary names or the canary config dir.
     const flux = Fixture{
         .vars = &.{ .{ "HOME", fx_home }, .{ "XDG_CONFIG_HOME", fx_cfg } },
@@ -760,7 +769,7 @@ test "registry: resolvePath handles every token" {
 }
 
 test "registry: every template's output resolves against a plain env" {
-    // Catches typo'd tokens: all 37 outputs must resolve (or stay null only
+    // Catches typo'd tokens: all 38 outputs must resolve (or stay null only
     // when the env piece is genuinely absent — with a full env none may).
     const env = Env{
         .home = "/h",

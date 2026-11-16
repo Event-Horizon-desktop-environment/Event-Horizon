@@ -608,7 +608,7 @@ pub const Field = enum {
     zool_anim_leaf_windows_minimize_percent, // set_animation_leaf("windows_minimize").percent
 
     // -- matugen external-template toggles (`settings_tab_appearance`) --
-    // One variant per entry of `Settings.matugen_templates` (a [37]bool
+    // One variant per entry of `Settings.matugen_templates` (a [38]bool
     // array, so nothing reflects off a same-named Settings member); the
     // enum value's distance from `matugen_tpl_0` is the array index
     // (`tplIndex`). Declared after the Hyprland block on purpose: the block
@@ -651,6 +651,7 @@ pub const Field = enum {
     matugen_tpl_34, // Horizon Calendar
     matugen_tpl_35, // Fluxer
     matugen_tpl_36, // Owler
+    matugen_tpl_37, // CachyOS Package Installer
 
     /// The `hyprland_data` UI slot a Hyprland field drives, or null for a
     /// field that lives in `Settings`. The hypr block is contiguous, so a
@@ -689,14 +690,14 @@ pub const Field = enum {
     pub fn tplIndex(self: Field) ?usize {
         const n: usize = @intFromEnum(self);
         const first: usize = @intFromEnum(Field.matugen_tpl_0);
-        const last: usize = @intFromEnum(Field.matugen_tpl_36);
+        const last: usize = @intFromEnum(Field.matugen_tpl_37);
         if (n < first or n > last) return null;
         return n - first;
     }
 
     pub fn kind(self: Field) Kind {
         // The reflective `inline else` walk expands one arm per enum member
-        // (500-plus, including the 37 template toggles), each doing comptime
+        // (500-plus, including the 38 template toggles), each doing comptime
         // index work — past the default backwards-branch budget on its own.
         @setEvalBranchQuota(40_000);
         return switch (self) {
@@ -747,8 +748,8 @@ pub const Field = enum {
             .notifications_output => .str,
             inline else => |f| blk: {
                 // Template toggles have no same-named `Settings` member (one
-                // [37]bool array behind them): answer from the index and keep
-                // the 37 variants out of the reflective walk below — it sits
+                // [38]bool array behind them): answer from the index and keep
+                // the 38 variants out of the reflective walk below — it sits
                 // on the compiler's branch budget.
                 if (comptime f.tplIndex() != null) break :blk .bool;
                 // Hyprland slots have no `Settings` field; their kind comes

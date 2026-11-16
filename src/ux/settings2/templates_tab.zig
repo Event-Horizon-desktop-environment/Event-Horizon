@@ -1468,8 +1468,8 @@ test "templates page: segment counts and selection" {
     const t = std.testing;
     var s = app_mod.Settings{};
     var p = testPage(&s);
-    try t.expectEqual(@as(usize, 37), p.countFor(.all));
-    try t.expectEqual(@as(usize, 37), p.countFor(.enabled));
+    try t.expectEqual(@as(usize, 38), p.countFor(.all));
+    try t.expectEqual(@as(usize, 38), p.countFor(.enabled));
     try t.expectEqual(@as(usize, 0), p.countFor(.disabled));
     try t.expectEqual(@as(usize, 0), p.countFor(.off_system));
 

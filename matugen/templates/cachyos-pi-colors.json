@@ -1,0 +1,56 @@
+{
+  "name": "Event Horizon",
+  "dark": {
+    "window": "{{colors.surface_dim.dark.hex}}",
+    "sidebar": "{{colors.surface_container_lowest.dark.hex}}",
+    "surface": "{{colors.surface_container.dark.hex}}",
+    "surfaceHover": "{{colors.surface_container_high.dark.hex}}",
+    "surfaceAlt": "{{colors.surface_container_highest.dark.hex}}",
+    "border": "{{colors.outline_variant.dark.hex}}",
+    "text": "{{colors.on_surface.dark.hex}}",
+    "textMuted": "{{colors.on_surface_variant.dark.hex}}",
+    "accent": "{{colors.primary.dark.hex}}",
+    "accentHover": "{{colors.primary.dark.hex | lighten: 8}}",
+    "accentSoft": "{{colors.primary_container.dark.hex}}",
+    "onAccent": "{{colors.on_primary.dark.hex}}",
+    "danger": "{{colors.error.dark.hex}}",
+    "dangerSoft": "{{colors.error_container.dark.hex}}",
+    "warning": "{{colors.tertiary.dark.hex}}",
+    "warningSoft": "{{colors.tertiary_container.dark.hex}}",
+    "arch": "{{colors.secondary.dark.hex}}",
+    "archSoft": "{{colors.secondary_container.dark.hex}}"
+  },
+  "light": {
+    "window": "{{colors.surface.light.hex}}",
+    "sidebar": "{{colors.surface_container_low.light.hex}}",
+    "surface": "{{colors.surface_container_lowest.light.hex}}",
+    "surfaceHover": "{{colors.surface_container.light.hex}}",
+    "surfaceAlt": "{{colors.surface_container_high.light.hex}}",
+    "border": "{{colors.outline_variant.light.hex}}",
+    "text": "{{colors.on_surface.light.hex}}",
+    "textMuted": "{{colors.on_surface_variant.light.hex}}",
+    "accent": "{{colors.primary.light.hex}}",
+    "accentHover": "{{colors.primary.light.hex | lighten: -8}}",
+    "accentSoft": "{{colors.primary_container.light.hex}}",
+    "onAccent": "{{colors.on_primary.light.hex}}",
+    "danger": "{{colors.error.light.hex}}",
+    "dangerSoft": "{{colors.error_container.light.hex}}",
+    "warning": "{{colors.tertiary.light.hex}}",
+    "warningSoft": "{{colors.tertiary_container.light.hex}}",
+    "arch": "{{colors.secondary.light.hex}}",
+    "archSoft": "{{colors.secondary_container.light.hex}}"
+  },
+  "hero": {
+    "stops": [
+      "{{colors.primary.dark.hex}}",
+      "{{colors.tertiary.dark.hex}}",
+      "{{colors.secondary.dark.hex}}"
+    ],
+    "text": "{{colors.on_primary.dark.hex}}",
+    "sub": "{{colors.primary_container.light.hex}}",
+    "button": "{{colors.primary_container.light.hex}}",
+    "buttonHover": "{{colors.surface_container_lowest.light.hex}}",
+    "ink": "{{colors.on_primary_container.light.hex}}",
+    "image": "icons/cachyos-pi.png"
+  }
+}

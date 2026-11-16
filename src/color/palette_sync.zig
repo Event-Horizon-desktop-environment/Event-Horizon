@@ -276,7 +276,7 @@ test "palette-sync: the fingerprint tracks every input the renders read" {
     const with_ok = fingerprint(&cfg);
     try t.expect(with_ok != with_mode);
 
-    // One of the 37 output toggles.
+    // One of the 38 output toggles.
     cfg.appearance.matugen_outputs.hyprland = false;
     const with_toggle = fingerprint(&cfg);
     try t.expect(with_toggle != with_ok);
