@@ -364,7 +364,11 @@ fn buildRootHandle(b: *std.Build) std.Io.Dir {
 /// `userdata` (see Zig's `compiler/build_runner.zig`), which is the only
 /// handle exposed to `build()`. An explicit `-j` sets `graph.max_jobs`, so
 /// keep that as the override.
+///
+/// Zig 0.17 removed `graph.max_jobs` and changed the runner internals this
+/// relied on, so skip the optimization there and keep the default behavior.
 fn useAllCores(b: *std.Build) void {
+    if (comptime !@hasField(std.Build.Graph, "max_jobs")) return;
     if (b.graph.max_jobs != null) return;
     const count = std.Thread.getCpuCount() catch return;
     if (count == 0) return;

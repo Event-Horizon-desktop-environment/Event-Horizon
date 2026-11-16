@@ -465,9 +465,9 @@ pub const Page = struct {
     lat_focus: bool = false,
     /// Table of selectable Engine combo values (editable, persisted in
     /// `audio/audio.toml`).
-    rate_values: [k_max_values]i32 = [_]i32{0} ** k_max_values,
+    rate_values: [k_max_values]i32 = @splat(0),
     rate_values_len: usize = 0,
-    quantum_values: [k_max_values]i32 = [_]i32{0} ** k_max_values,
+    quantum_values: [k_max_values]i32 = @splat(0),
     quantum_values_len: usize = 0,
 
     // --- modal text entry (custom value / edit list) ----------------------
