@@ -23,7 +23,7 @@ commands:
           name: Install dependencies
           # build.sh's Fedora list plus pam-devel: build.zig always
           # translates security/pam_appl.h and asks pkg-config for pam.pc.
-          # Zig itself is fetched by build.sh (0.16.0+), not taken from dnf.
+          # Zig itself is fetched by build.sh (0.17.1+), not taken from dnf.
           command: |
             dnf install -y \
               git pkgconf-pkg-config curl xz tar gzip \
@@ -54,15 +54,15 @@ jobs:
             CPATH: /usr/include
           command: |
             set -euo pipefail
-            if [ -x "$HOME/.cache/event-horizon/zig-0.16.0/zig" ]; then
-              ZIG_BIN="$HOME/.cache/event-horizon/zig-0.16.0/zig"
+            if [ -x "$HOME/.cache/event-horizon/zig-0.17.1/zig" ]; then
+              ZIG_BIN="$HOME/.cache/event-horizon/zig-0.17.1/zig"
             else
               ZIG_BIN="$(command -v zig)"
             fi
             "$ZIG_BIN" build test
             rm -rf staging
-            DESTDIR="$PWD/staging" "$ZIG_BIN" build install --prefix=/usr
-            DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix=/usr/share
+            DESTDIR="$PWD/staging" "$ZIG_BIN" build install -Doptimize=ReleaseFast -Dcpu=x86_64_v2 --prefix /usr
+            DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix /usr/share
             sed -n 's/^[[:space:]]*pub const string = "\([^"]*\)";/\1/p' src/version.zig > .version
             test -s .version
       - persist_to_workspace:

@@ -50,14 +50,14 @@ jobs:
           CPATH: /usr/include
         run: |
           set -euo pipefail
-          # The build script downloads Zig 0.16.0 when the distro version is
+          # The build script downloads Zig 0.17.1 when the distro version is
           # missing or too old, and builds ReleaseFast for portable x86-64-v2.
           ./build.sh --skip-deps --cpu v2 --no-install
 
           # Use the script-downloaded Zig when it had to bootstrap one;
           # otherwise use the system Zig that passed build.sh's version check.
-          if [ -x "$HOME/.cache/event-horizon/zig-0.16.0/zig" ]; then
-            ZIG_BIN="$HOME/.cache/event-horizon/zig-0.16.0/zig"
+          if [ -x "$HOME/.cache/event-horizon/zig-0.17.1/zig" ]; then
+            ZIG_BIN="$HOME/.cache/event-horizon/zig-0.17.1/zig"
           else
             ZIG_BIN="$(command -v zig)"
           fi
@@ -72,7 +72,7 @@ jobs:
           # Without these flags `zig build install` rebuilds in Debug for the
           # runner's native CPU, which is neither fast nor portable.
           OPTS="-Doptimize=ReleaseFast -Dcpu=x86_64_v2"
-          # Zig 0.16 takes the prefix as a separate argument; '--prefix=/usr'
+          # Zig 0.16+ takes the prefix as a separate argument; '--prefix=/usr'
           # is rejected as an unrecognized argument.
           DESTDIR="$PWD/staging" "$ZIG_BIN" build install $OPTS --prefix /usr
           DESTDIR="$PWD/staging" "$ZIG_BIN" build install-icons --prefix /usr/share
