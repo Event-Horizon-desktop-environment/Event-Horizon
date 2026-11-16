@@ -2553,20 +2553,31 @@ pub fn applyCompatPcm(alloc: std.mem.Allocator, io: std.Io, choice: i32) bool {
     return true;
 }
 
-/// `restart_services` — `systemctl --user restart pipewire pipewire-pulse
-/// wireplumber`; blocks for the couple of seconds the restart takes, like
-/// the C++ engine row did.
+/// Restart PipeWire/WirePlumber user services (best-effort, systemd user session).
+/// On non-systemd systems without `systemctl --user`, this is a no-op that returns false.
 pub fn restartServices(io: std.Io) bool {
-    return runSet(io, &.{ "systemctl", "--user", "restart", "pipewire", "pipewire-pulse", "wireplumber" });
+    return runSet(io, &.{
+        "/bin/sh",
+        "-c",
+        "command -v systemctl >/dev/null 2>&1 && systemctl --user restart pipewire pipewire-pulse wireplumber",
+    });
 }
 
 /// Cable's Restart Services exposes the two halves separately.
 pub fn restartWirePlumber(io: std.Io) bool {
-    return runSet(io, &.{ "systemctl", "--user", "restart", "wireplumber" });
+    return runSet(io, &.{
+        "/bin/sh",
+        "-c",
+        "command -v systemctl >/dev/null 2>&1 && systemctl --user restart wireplumber",
+    });
 }
 
 pub fn restartPipeWire(io: std.Io) bool {
-    return runSet(io, &.{ "systemctl", "--user", "restart", "pipewire", "pipewire-pulse" });
+    return runSet(io, &.{
+        "/bin/sh",
+        "-c",
+        "command -v systemctl >/dev/null 2>&1 && systemctl --user restart pipewire pipewire-pulse",
+    });
 }
 
 /// Fire-and-forget speaker test (`sound_test_speakers`): front-left then

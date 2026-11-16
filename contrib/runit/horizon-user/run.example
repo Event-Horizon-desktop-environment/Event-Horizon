@@ -1,0 +1,8 @@
+#!/bin/sh
+# Example runit run script for a user-session supervisor (adapt as needed).
+# Prefer starting `horizon` from your Wayland compositor autostart instead.
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# Ensure WAYLAND_DISPLAY, DBUS_SESSION_BUS_ADDRESS, etc. are set for the session.
+
+exec horizon

@@ -1,0 +1,6 @@
+# OpenRC note:
+# Event Horizon is typically started by the Wayland compositor as a user session (exec-once).
+# If you want to start it via a session manager or init, ensure it's launched in a Wayland
+# environment with proper XDG_RUNTIME_DIR and WAYLAND_DISPLAY.
+#
+# Example autostart (compositor): exec-once = horizon
