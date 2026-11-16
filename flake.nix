@@ -10,7 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        zig = pkgs.zig_0_16;
+        zig = pkgs.zig_0_17;
         buildInputs = with pkgs; [
           wayland
           wayland-protocols

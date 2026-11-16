@@ -45,7 +45,7 @@ Notes:
 ## Step 2: Get the source
 
 ```bash
-git clone https://github.com/visadaking/Event-Horizon.git
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 ```
 

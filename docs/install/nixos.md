@@ -13,10 +13,10 @@ Event Horizon is a Wayland desktop shell (not a compositor). You still need a su
 
 ## Option 1: Flake dev shell (recommended)
 
-This fork includes a `flake.nix` with a development shell that provides Zig (>= 0.16.0) and the native libraries needed to build Event Horizon.
+This fork includes a `flake.nix` with a development shell that provides Zig 0.17 and the native libraries needed to build Event Horizon.
 
 ```bash
-git clone https://github.com/visadaking/Event-Horizon.git
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 
 # enter the dev environment
@@ -35,7 +35,7 @@ Build outputs (with `--no-install`) are placed in `.zig-out-release/` by `build.
 A `shell.nix` is also provided:
 
 ```bash
-git clone https://github.com/visadaking/Event-Horizon.git
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 nix-shell
 ./build.sh --no-install --skip-deps
@@ -91,6 +91,6 @@ Or autostart it from your compositor config (see [../usage.md](../usage.md#autos
 - Troubleshooting: [../usage.md](../usage.md#troubleshooting)
 
 Notes for NixOS:
-- If Zig in nixpkgs is older than 0.16.0 on your channel, use a newer channel, `nixpkgs-unstable`, or a Zig-providing flake/input that supplies >= 0.16.0.
+- The flake/dev shell provides Zig 0.17. If you use a different Nix channel or custom environment, ensure Zig >= 0.16.0 is available (0.17 recommended).
 - The lock screen requires working PAM; ensure your NixOS PAM configuration is intact.
 - `./build.sh` without `--no-install` will attempt to install into `/usr` and is not suitable for NixOS.

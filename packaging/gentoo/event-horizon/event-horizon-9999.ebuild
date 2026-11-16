@@ -6,8 +6,8 @@ EAPI=8
 inherit git-r3
 
 DESCRIPTION="Event Horizon - Wayland desktop shell written in Zig"
-HOMEPAGE="https://github.com/visadaking/Event-Horizon"
-EGIT_REPO_URI="https://github.com/visadaking/Event-Horizon.git"
+HOMEPAGE="https://github.com/Event-Horizon-desktop-environment/Event-Horizon"
+EGIT_REPO_URI="https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git"
 
 LICENSE="GPL-3"
 SLOT="0"

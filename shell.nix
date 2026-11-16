@@ -2,7 +2,7 @@
 
 pkgs.mkShell {
   packages = with pkgs; [
-    zig_0_16
+    zig_0_17
     pkg-config
     wayland
     wayland-protocols

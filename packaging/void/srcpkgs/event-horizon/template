@@ -11,8 +11,8 @@ depends="zenity"
 short_desc="Event Horizon - Wayland desktop shell written in Zig"
 maintainer="visadaking <yahalom.mauni@protonmail.com>"
 license="GPL-3.0-only"
-homepage="https://github.com/visadaking/Event-Horizon"
-distfiles="https://github.com/visadaking/Event-Horizon/archive/refs/tags/v${version}.tar.gz"
+homepage="https://github.com/Event-Horizon-desktop-environment/Event-Horizon"
+distfiles="https://github.com/Event-Horizon-desktop-environment/Event-Horizon/archive/refs/tags/v${version}.tar.gz"
 checksum=SKIP
 
 # Zig >= 0.16.0 required. Ensure host zig meets minimum or provide a compatible zig.
