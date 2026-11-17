@@ -62,9 +62,13 @@ const Out = struct {
 /// rather than a shell component.
 const Reporter = struct {
     io: std.Io,
+    /// Tests that drive failure paths on purpose set this so the expected
+    /// diagnostics do not leak into the test runner's stderr.
+    quiet: bool = false,
     buf: [1024]u8 = undefined,
 
     fn err(self: *Reporter, comptime fmt: []const u8, args: anytype) void {
+        if (self.quiet) return;
         var f = std.Io.File.stderr();
         var w = f.writer(self.io, &self.buf);
         w.interface.print(fmt, args) catch {};
@@ -328,7 +332,13 @@ fn captureStatus(rep: *Reporter, f: flags_mod.Flags, handed_off: bool) u8 {
 /// Validate capture options, save a PNG, and transfer temporary-file ownership
 /// only after successfully starting the clipboard daemon.
 pub fn run(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: ?[]const u8) !u8 {
-    var rep = Reporter{ .io = io };
+    return runInner(io, alloc, args, xdg_runtime, false);
+}
+
+/// `quiet` suppresses the CLI diagnostics; tests that exercise error paths use
+/// it so the expected messages stay out of the test runner's stderr.
+fn runInner(io: std.Io, alloc: Allocator, args: []const []const u8, xdg_runtime: ?[]const u8, quiet: bool) !u8 {
+    var rep = Reporter{ .io = io, .quiet = quiet };
     const argv0: []const u8 = if (args.len > 0) args[0] else "horizon";
 
     const parsed = flags_mod.parse(args);
@@ -695,14 +705,14 @@ test "bootstrap-screenshot: overlap and containment" {
 
 test "bootstrap-screenshot: no clipboard requires a named output before capture" {
     const t = std.testing;
-    try t.expectEqual(@as(u8, 2), try run(t.io, t.allocator, &.{ "horizon", "--no-clipboard" }, null));
-    try t.expectEqual(@as(u8, 2), try run(t.io, t.allocator, &.{ "horizon", "--select", "--no-clipboard" }, null));
-    try t.expectEqual(@as(u8, 2), try run(t.io, t.allocator, &.{ "horizon", "--preview", "--no-clipboard" }, null));
+    try t.expectEqual(@as(u8, 2), try runInner(t.io, t.allocator, &.{ "horizon", "--no-clipboard" }, null, true));
+    try t.expectEqual(@as(u8, 2), try runInner(t.io, t.allocator, &.{ "horizon", "--select", "--no-clipboard" }, null, true));
+    try t.expectEqual(@as(u8, 2), try runInner(t.io, t.allocator, &.{ "horizon", "--preview", "--no-clipboard" }, null, true));
 }
 
 test "bootstrap-screenshot: failed clipboard spawn reports failure for temporary and named captures" {
     const t = std.testing;
-    var rep = Reporter{ .io = t.io };
+    var rep = Reporter{ .io = t.io, .quiet = true };
     const started = spawnDaemon(t.io, "/nonexistent-eh-test/clipboard", "/nonexistent-eh-test/capture.png", true);
     try t.expect(!started);
     try t.expectEqual(@as(u8, 1), captureStatus(&rep, .{}, started));

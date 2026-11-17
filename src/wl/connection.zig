@@ -217,6 +217,7 @@ pub const Connection = struct {
         foreign_toplevel_manager: ?*wl.zwlr_foreign_toplevel_manager_v1 = null,
         toplevel_export: ?*wl.hyprland_toplevel_export_manager_v1 = null,
         focus_grab_manager: ?*wl.hyprland_focus_grab_manager_v1 = null,
+        cursor_shape_manager: ?*wl.wp_cursor_shape_manager_v1 = null,
         screencopy: ?*wl.zwlr_screencopy_manager_v1 = null,
         ext_image_copy_capture: ?*wl.ext_image_copy_capture_manager_v1 = null,
         ext_output_capture_source: ?*wl.ext_output_image_capture_source_manager_v1 = null,
@@ -360,12 +361,20 @@ pub const Connection = struct {
                 if (bound.zoolander_capture_size == null) {
                     bound.zoolander_capture_size = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.zoolander_image_copy_capture_size_manager_v1_interface, 1));
                 }
+            } else if (std.mem.eql(u8, g.interface, "wp_cursor_shape_manager_v1")) {
+                if (bound.cursor_shape_manager == null) {
+                    bound.cursor_shape_manager = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.wp_cursor_shape_manager_v1_interface, @min(g.version, 2)));
+                }
             } else if (std.mem.eql(u8, g.interface, "zwlr_gamma_control_manager_v1")) {
                 if (bound.gamma_manager == null) {
                     bound.gamma_manager = @ptrCast(wl.wl_registry_bind(reg, g.name, &wl.zwlr_gamma_control_manager_v1_interface, 1));
                 }
             }
         }
+        // Cursor shape is bound after the seat may have been created, so hand
+        // it over once every global is in: the seat creates its shape device
+        // when the pointer capability arrives on the roundtrip below.
+        if (bound.seat_obj) |so| so.setCursorShapeManager(bound.cursor_shape_manager);
         _ = wl.wl_display_roundtrip(self.display);
         // Logical geometry is a two-step handshake: the outputs only exist
         // (with names/modes) after the roundtrip above, and the zxdg_output

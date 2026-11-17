@@ -6,7 +6,7 @@ Event Horizon is a desktop shell for Wayland, written in Zig. It is not a compos
 
 It works with Hyprland, Niri, Sway, Mango and Labwc, and has early support for Zoolander. Other wlroots-based compositors mostly work through protocol fallbacks, though those are the least tested.
 
-Event Horizon is young software. The current version is 0.1.6, there are rough edges, and the Zoolander support is still being built out. If something is broken, the logs described below will usually tell you why, and bug reports are welcome.
+Event Horizon is young software. The current version is 0.1.7, there are rough edges, and the Zoolander support is still being built out. If something is broken, the logs described below will usually tell you why, and bug reports are welcome.
 
 ## What you need
 

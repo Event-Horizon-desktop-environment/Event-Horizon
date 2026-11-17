@@ -1496,6 +1496,7 @@ pub const Host = struct {
                 } else {
                     tiles.paintTile(cr, tt, self.colors, self.ui, tiles.appTint(win.app_id), 1.0, win.focused, hov);
                 }
+                if (hov) tiles.paintHoverRing(cr, tt, self.ui, self.colors, 1.0);
                 const after_tile = nowUs();
                 if (live != null) live_us += after_tile - t else tint_us += after_tile - t;
                 if (self.icons) |lk| {

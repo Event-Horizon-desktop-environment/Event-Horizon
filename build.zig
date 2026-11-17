@@ -31,6 +31,7 @@ const protocols = [_]Protocol{
     .{ .name = "dwl-ipc-unstable-v2", .xml = "protocols/dwl-ipc-unstable-v2.xml" },
     .{ .name = "hyprland-toplevel-export-v1", .xml = "protocols/hyprland-toplevel-export-v1.xml" },
     .{ .name = "hyprland-focus-grab-v1", .xml = "protocols/hyprland-focus-grab-v1.xml" },
+    .{ .name = "cursor-shape-v1", .xml = "protocols/cursor-shape-v1.xml" },
     .{ .name = "wlr-screencopy-unstable-v1", .xml = "protocols/wlr-screencopy-unstable-v1.xml" },
     .{ .name = "zoolander-image-copy-capture-size-v1", .xml = "protocols/zoolander-image-copy-capture-size-v1.xml" },
 };
@@ -445,6 +446,7 @@ pub fn build(b: *std.Build) void {
         \\#include <dwl-ipc-unstable-v2-client-protocol.h>
         \\#include <hyprland-toplevel-export-v1-client-protocol.h>
         \\#include <hyprland-focus-grab-v1-client-protocol.h>
+        \\#include <cursor-shape-v1-client-protocol.h>
         \\#include <wlr-screencopy-unstable-v1-client-protocol.h>
         \\#include <ext-image-copy-capture-v1-client-protocol.h>
         \\#include <ext-image-capture-source-v1-client-protocol.h>
