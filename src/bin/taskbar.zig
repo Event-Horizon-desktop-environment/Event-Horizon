@@ -656,8 +656,10 @@ const Taskbar = struct {
         std.mem.writeInt(i32, ib[4..8], @intFromFloat(@round(self.uiScale() * 1000.0)), .little);
         ib[8] = if (self.trash_full) 1 else 0;
         // Settings ships light and dark artwork; a theme flip must reload it.
-        ib[9] = if (dwp.lightArtwork(chrome.isDark(chrome.of(cfg)), cfg.taskbar.widget_dark_icons)) 1 else 0;
+        ib[9] = if (dwp.artworkLight(chrome.isDark(chrome.of(cfg)), cfg.taskbar.widget_dark_icons, cfg.taskbar.widget_uncolored_icons, cfg.taskbar.widget_uncolored_dark_icons)) 1 else 0;
         h.update(&ib);
+        if (cfg.taskbar.widget_uncolored_icons) h.update("uncolored");
+        if (cfg.taskbar.widget_uncolored_dark_icons) h.update("uncolored-dark");
         h.update(cfg.taskbar.icon_theme);
         for (self.pins) |p| h.update(p.norm);
         for (self.groups) |g| {
@@ -1465,9 +1467,11 @@ const Taskbar = struct {
                 // candidates so an older install without the variant still
                 // lands on the generic themed gear.
                 const tpx: i32 = @intFromFloat(@round(@max(16.0, icon * 2.0)));
-                const cands = dwp.iconCandidates(.settings, dwp.lightArtwork(
+                const cands = dwp.iconCandidates(.settings, dwp.artworkLight(
                     chrome.isDark(chrome.of(&self.app.loaded.cfg)),
                     self.app.loaded.cfg.taskbar.widget_dark_icons,
+                    self.app.loaded.cfg.taskbar.widget_uncolored_icons,
+                    self.app.loaded.cfg.taskbar.widget_uncolored_dark_icons,
                 ));
                 for (cands) |name| {
                     self.icons[i] = self.resolveAppIcon(name, tpx);
@@ -2299,7 +2303,8 @@ const Taskbar = struct {
             .lift = lift + bounce,
             .text_rgb = mc.text,
             .accent_rgb = mc.accent,
-            .dark = dwp.lightArtwork(chrome.isDark(mc), cfg.taskbar.widget_dark_icons),
+            .dark = dwp.artworkLight(chrome.isDark(mc), cfg.taskbar.widget_dark_icons, cfg.taskbar.widget_uncolored_icons, cfg.taskbar.widget_uncolored_dark_icons),
+            .uncolored = cfg.taskbar.widget_uncolored_icons,
             // Same rule as the dock's strip: the arms below paint through
             // `paintSlot`, and exactly the kinds that own a pill get one
             // (smenu, trash, overview, settings, …). App and tray are
@@ -2572,7 +2577,8 @@ const Taskbar = struct {
                             .title_scale = media_paint.titleScaleLimit(cfg, slot.key),
                             .now_sec = @as(f64, @floatFromInt(now_ns)) / 1e9,
                             .now_ns = now_ns,
-                            .dark = dwp.lightArtwork(chrome.isDark(mc), cfg.taskbar.widget_dark_icons),
+                            .dark = dwp.artworkLight(chrome.isDark(mc), cfg.taskbar.widget_dark_icons, cfg.taskbar.widget_uncolored_icons, cfg.taskbar.widget_uncolored_dark_icons),
+                            .uncolored = cfg.taskbar.widget_uncolored_icons,
                         },
                         &self.media_pos,
                     );
@@ -2657,9 +2663,11 @@ const Taskbar = struct {
                     .text_rgb = mc.text,
                     .accent_rgb = mc.accent,
                 };
-                const cands = dwp.iconCandidates(kind, dwp.lightArtwork(
+                const cands = dwp.iconCandidates(kind, dwp.artworkLight(
                     chrome.isDark(chrome.of(cfg)),
                     cfg.taskbar.widget_dark_icons,
+                    cfg.taskbar.widget_uncolored_icons,
+                    cfg.taskbar.widget_uncolored_dark_icons,
                 ));
                 d.lucide = if (cands.len > 0) cands[0] else "circle";
                 dwp.paintSlot(c, x, y, w, h, icon_px, d);

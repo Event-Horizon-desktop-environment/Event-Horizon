@@ -10,7 +10,7 @@ You need three things already in place.
 
 A working Wayland compositor. Event Horizon does not include one. Sway is in the Debian archive and can be installed with `sudo apt install sway`. Hyprland, Niri, Mango and Labwc may or may not be packaged for your release, so check your distribution or the compositor's own install instructions. Log in to the compositor once and make sure you can open a terminal. If you want to use my Hyprland or Zoolander config, read [hyprland-setup.md](../hyprland-setup.md) or [zoolander-setup.md](../zoolander-setup.md) after you finish here.
 
-An internet connection. This matters more on Debian than elsewhere, because Debian and Ubuntu usually carry an older Zig than Event Horizon needs. The build script will download the official Zig 0.16.0 for you, but only if it can reach ziglang.org.
+An internet connection. This matters more on Debian than elsewhere, because Debian and Ubuntu usually carry an older Zig than Event Horizon needs. The build script will download the official Zig 0.17.1 for you, but only if it can reach ziglang.org.
 
 A regular user account with `sudo` rights. You will run the build as that user, not as root.
 
@@ -64,7 +64,7 @@ Here is what each one is for.
 | `curl`, `xz-utils` | Downloading and unpacking Zig. |
 | `zenity` | The folder and file picker dialogs. Without it you cannot choose a wallpaper folder, and the color palette is never generated. |
 
-You do not need to install Zig yourself, and you should not try to use the one from `apt`. It is almost certainly too old. The build script checks, and if the system Zig is below 0.16.0 it prints a warning and downloads the official release into `~/.cache/event-horizon/zig-0.16.0/`. Nothing is installed system-wide.
+You do not need to install Zig yourself, and you should not try to use the one from `apt`. It is almost certainly too old. The build script checks, and if the system Zig is below 0.17.1 it prints a warning and downloads the official release into `~/.cache/event-horizon/zig-0.17.1/`. Nothing is installed system-wide.
 
 Older releases such as stable Debian and Ubuntu LTS can ship older versions of PipeWire and the Wayland libraries. If `pkg-config` cannot find `libpipewire-0.3` after you install the package, the release is probably too old. Upgrading to a newer release is the cleanest fix.
 
@@ -155,6 +155,6 @@ Then log out and back in so the new programs are the ones running.
 | `horizon` runs but nothing appears | Run `eh-ipc status`. Also check that all programs were installed to the same folder. |
 | No wallpaper picker window | `sudo apt install zenity` |
 | No audio devices in the sound mixer | Make sure PipeWire is running: `systemctl --user status pipewire`. |
-| The Zig download fails | Check that your machine can reach ziglang.org, or download Zig 0.16.0 yourself from there and pass it with `--zig /path/to/zig`. |
+| The Zig download fails | Check that your machine can reach ziglang.org, or download Zig 0.17.1 yourself from there and pass it with `--zig /path/to/zig`. |
 
 More fixes are in [usage.md](../usage.md#troubleshooting). The logs are in `~/EH-logs/`.

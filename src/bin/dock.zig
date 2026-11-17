@@ -2291,8 +2291,9 @@ const Dock = struct {
         // Settings swaps light/dark artwork with the chrome, so a theme flip
         // must invalidate the resolved pixels like a theme-name change does.
         // The Settings override counts too: it changes which plate is read.
-        const dark: u8 = if (dwp.lightArtwork(chrome_colors.isDark(chrome_colors.of(cfg)), cfg.dock.widget_dark_icons)) 1 else 0;
+        const dark: u8 = if (dwp.artworkLight(chrome_colors.isDark(chrome_colors.of(cfg)), cfg.dock.widget_dark_icons, cfg.dock.widget_uncolored_icons, cfg.dock.widget_uncolored_dark_icons)) 1 else 0;
         h.update(&.{dark});
+        h.update(&.{ @intFromBool(cfg.dock.widget_uncolored_icons), @intFromBool(cfg.dock.widget_uncolored_dark_icons) });
         return h.final();
     }
 
@@ -3353,7 +3354,7 @@ const Dock = struct {
                 n += 1;
             }
         } else {
-            for (dwp.iconCandidates(s.kind, dwp.lightArtwork(chrome_colors.isDark(chrome_colors.of(&self.app.loaded.cfg)), self.app.loaded.cfg.dock.widget_dark_icons))) |cand| {
+            for (dwp.iconCandidates(s.kind, dwp.artworkLight(chrome_colors.isDark(chrome_colors.of(&self.app.loaded.cfg)), self.app.loaded.cfg.dock.widget_dark_icons, self.app.loaded.cfg.dock.widget_uncolored_icons, self.app.loaded.cfg.dock.widget_uncolored_dark_icons))) |cand| {
                 if (n >= names.len) break;
                 names[n] = cand;
                 n += 1;
@@ -3930,7 +3931,8 @@ const Dock = struct {
                         .title_scale = media_paint.titleScaleLimit(cfg, s.key),
                         .now_sec = @as(f64, @floatFromInt(now_ns)) / 1e9,
                         .now_ns = now_ns,
-                        .dark = dwp.lightArtwork(chrome_colors.isDark(chrome), cfg.dock.widget_dark_icons),
+                        .dark = dwp.artworkLight(chrome_colors.isDark(chrome), cfg.dock.widget_dark_icons, cfg.dock.widget_uncolored_icons, cfg.dock.widget_uncolored_dark_icons),
+                        .uncolored = cfg.dock.widget_uncolored_icons,
                     },
                     &self.media_pos,
                 );
@@ -3987,7 +3989,8 @@ const Dock = struct {
                 .frame = cfg.dock.dock_icon_frames and s.kind == .app,
                 .text_rgb = chrome.text,
                 .accent_rgb = chrome.accent,
-                .dark = dwp.lightArtwork(chrome_colors.isDark(chrome), cfg.dock.widget_dark_icons),
+                .dark = dwp.artworkLight(chrome_colors.isDark(chrome), cfg.dock.widget_dark_icons, cfg.dock.widget_uncolored_icons, cfg.dock.widget_uncolored_dark_icons),
+                .uncolored = cfg.dock.widget_uncolored_icons,
             };
             d.pill_rgb = pill_rgb;
             d.pill_alpha = pill_alpha;

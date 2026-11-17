@@ -435,6 +435,10 @@ pub const Settings = struct {
     /// Force the dark variant of the shell's full-colour widget artwork.
     /// Shared by both bars; the Launcher toggle writes it to each bar file.
     widget_dark_icons: bool = false,
+    /// Use the monochrome widget artwork (overrides the dark/light toggle).
+    widget_uncolored_icons: bool = false,
+    /// Force the dark monochrome plate when Uncolored is on.
+    widget_uncolored_dark_icons: bool = false,
 
     overview_axis: i32 = 0,
     overview_live_updates: bool = false,

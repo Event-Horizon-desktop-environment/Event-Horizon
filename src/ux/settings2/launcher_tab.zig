@@ -18,9 +18,9 @@ const common = @import("common.zig");
 //     Folder columns 2-8 "%d", Folder rows 1-6 "%d"
 //   Grid group (0,3): Columns 4-12 "%d", Rows 3-10 "%d",
 //     DPI scale 50-300 "%d %%"
-//   Appearance group (1,1): Dark widget icons toggle, Widget opacity
-//     0-100 "%d %%" (one slider drives both dock.slotPillOpacity and
-//     taskbar.slotPillOpacity)
+//   Appearance group (3,1): Dark widget icons toggle, Uncolored toggle,
+//     Dark uncolored icons toggle, Widget opacity 0-100 "%d %%" (one slider
+//     drives both dock.slotPillOpacity and taskbar.slotPillOpacity)
 // Child 1 "Workspaces" (1 toggle, 2 sliders):
 //   Show app icons toggle ("Show running applications as icons in the
 //     workspace strip"), Number of workspaces 0-16 (0 renders "Auto",

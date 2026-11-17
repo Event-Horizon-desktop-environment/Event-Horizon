@@ -73,6 +73,12 @@ pub const DockSettings = struct {
     /// (the `-dark.svg` plate) instead of picking the one that contrasts with
     /// the bar.
     widget_dark_icons: bool = false,
+    /// Use the monochrome artwork from `src/resources/uncolored-icons`
+    /// instead of the full-colour plates. Overrides `widget_dark_icons`.
+    widget_uncolored_icons: bool = false,
+    /// Force the dark monochrome plate while `widget_uncolored_icons` is on;
+    /// otherwise the uncolored set follows the bar's contrast.
+    widget_uncolored_dark_icons: bool = false,
 };
 
 pub fn decodeDock(alloc: std.mem.Allocator, t: *const T, d: *DockSettings) !void {
@@ -102,6 +108,8 @@ pub fn decodeDock(alloc: std.mem.Allocator, t: *const T, d: *DockSettings) !void
     setInt(t, "manual_bar_height", &d.dock_manual_bar_height_px, 32, 200);
     setBool(t, "slim_dock", &d.dock_slim);
     setBool(t, "widget_dark_icons", &d.widget_dark_icons);
+    setBool(t, "widget_uncolored_icons", &d.widget_uncolored_icons);
+    setBool(t, "widget_uncolored_dark_icons", &d.widget_uncolored_dark_icons);
     try setStrArray(alloc, t, "pinned_apps", &d.pinned_apps);
     try setStrArray(alloc, t, "start_menu_pinned_apps", &d.start_menu_pinned_apps);
     try setStrArray(alloc, t, "drawer_pinned_apps", &d.drawer_pinned_apps);
@@ -150,6 +158,10 @@ pub const TaskbarSettings = struct {
     /// Mirror of the dock's artwork override so each bar can honour it on its
     /// own; the Launcher toggle writes both.
     widget_dark_icons: bool = false,
+    /// Mirror of the dock's uncolored-artwork toggle.
+    widget_uncolored_icons: bool = false,
+    /// Mirror of the dock's forced-dark uncolored-artwork toggle.
+    widget_uncolored_dark_icons: bool = false,
 };
 
 pub fn decodeTaskbar(alloc: std.mem.Allocator, t: *const T, s: *TaskbarSettings) !void {
@@ -186,6 +198,8 @@ pub fn decodeTaskbar(alloc: std.mem.Allocator, t: *const T, s: *TaskbarSettings)
     setBool(t, "border", &s.border);
     setInt(t, "border_size", &s.border_size, 1, 12);
     setBool(t, "widget_dark_icons", &s.widget_dark_icons);
+    setBool(t, "widget_uncolored_icons", &s.widget_uncolored_icons);
+    setBool(t, "widget_uncolored_dark_icons", &s.widget_uncolored_dark_icons);
     if (getStr(t, "icon_theme")) |v| s.icon_theme = try alloc.dupe(u8, std.mem.trim(u8, v, " \t\n"));
 }
 

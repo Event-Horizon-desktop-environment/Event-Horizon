@@ -22,6 +22,10 @@ const perf = @import("media_perf.zig");
 /// bar's chrome, embedded so it works without an icon-theme install.
 const media_idle_light_svg = @embedFile("../../../resources/icons/media-idle-light.svg");
 const media_idle_dark_svg = @embedFile("../../../resources/icons/media-idle-dark.svg");
+/// Monochrome idle disc from `src/resources/uncolored-icons`, used when the
+/// Launcher's Uncolored toggle is on.
+const media_idle_uncolored_light_svg = @embedFile("../../../resources/uncolored-icons/media-idle-light.svg");
+const media_idle_uncolored_dark_svg = @embedFile("../../../resources/uncolored-icons/media-idle-dark.svg");
 
 const tau: f64 = 2.0 * std.math.pi;
 const k_btn_small_d: f64 = 16.0;
@@ -99,6 +103,8 @@ pub const Pill = struct {
     /// Whether the bar chrome reads as dark; the idle vinyl then takes its
     /// light plate (and the dark plate on a light bar).
     dark: bool = true,
+    /// Use the monochrome idle-disc artwork.
+    uncolored: bool = false,
 };
 
 pub const Result = struct {
@@ -442,6 +448,7 @@ pub fn paint(cr: ?*cairo.cairo_t, g: Geometry, p: Pill, pos: *Position) Result {
         .s = s,
         .now_sec = p.now_sec,
         .dark = p.dark,
+        .uncolored = p.uncolored,
     });
 
     if (p.pointer_x >= 0.0) {
@@ -521,6 +528,7 @@ const ContentInputs = struct {
     s: f64,
     now_sec: f64,
     dark: bool,
+    uncolored: bool,
 };
 
 fn paintContent(cr: ?*cairo.cairo_t, in: ContentInputs) bool {
@@ -531,7 +539,10 @@ fn paintContent(cr: ?*cairo.cairo_t, in: ContentInputs) bool {
         paintArt(c, in.art, in.art_cx, in.cy, in.art_dia);
     } else if (!svg_icons.drawArtwork(
         c,
-        if (in.dark) media_idle_light_svg else media_idle_dark_svg,
+        if (in.uncolored)
+            (if (in.dark) media_idle_uncolored_light_svg else media_idle_uncolored_dark_svg)
+        else
+            (if (in.dark) media_idle_light_svg else media_idle_dark_svg),
         in.art_cx,
         in.cy,
         in.art_dia,
