@@ -126,7 +126,7 @@ pub fn load(alloc: std.mem.Allocator, s: *app_mod.Settings, a: *const cfg.Appear
         @field(s, role.settings) = @field(a, role.config);
     }
 
-    // Templates: the base-recipe switch plus the 37 per-app switches. The
+    // Templates: the base-recipe switch plus the 38 per-app switches. The
     // TOML keys and the UI array are in different orders past index 30 (see
     // `tpl_ui_index`), so the mapping is by name, not by position.
     const m = &a.matugen_outputs;
@@ -168,6 +168,7 @@ pub fn load(alloc: std.mem.Allocator, s: *app_mod.Settings, a: *const cfg.Appear
     s.matugen_templates[34] = m.horizon_calendar;
     s.matugen_templates[35] = m.fluxer;
     s.matugen_templates[36] = m.owler;
+    s.matugen_templates[37] = m.cachyos_pi;
 }
 
 /// `[appearance.matugen_templates]` keys in the exact order the C++ writer
@@ -210,6 +211,7 @@ const tpl_keys = [_][]const u8{
     "heroic",
     "fluxer",
     "owler",
+    "cachyos_pi",
 };
 
 /// `Settings.matugen_templates` slot behind each key in `tpl_keys`. The
@@ -220,7 +222,7 @@ const tpl_keys = [_][]const u8{
 const tpl_ui_index = [_]usize{
     0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17,
     18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 31, 32, 35,
-    36,
+    36, 37,
 };
 
 pub fn appendEntries(
@@ -290,7 +292,7 @@ pub fn appendEntries(
     }
 }
 
-/// The `[appearance.matugen_templates]` sub-table: `run_bundled` plus the 37
+/// The `[appearance.matugen_templates]` sub-table: `run_bundled` plus the 38
 /// template switches, keyed by `tpl_keys`/`tpl_ui_index`.
 pub fn appendTemplateEntries(
     list: std.mem.Allocator,
@@ -409,10 +411,11 @@ test "appearance-persist: template keys follow the writer order and array map" {
     s.matugen_templates[31] = false; // OBS Studio
     s.matugen_templates[33] = false; // Horizon Photo
     s.matugen_templates[36] = false; // Owler
+    s.matugen_templates[37] = false; // CachyOS Package Installer
     var entries: std.ArrayList(section_store.Entry) = .empty;
     defer entries.deinit(t.allocator);
     try appendTemplateEntries(t.allocator, &s, &entries);
-    try t.expectEqual(@as(usize, 38), entries.items.len);
+    try t.expectEqual(@as(usize, 39), entries.items.len);
     try t.expectEqualStrings("run_bundled", entries.items[0].key);
     try t.expectEqualStrings("false", entries.items[0].value);
     try t.expectEqualStrings("niri", entries.items[1].key);
@@ -428,6 +431,8 @@ test "appearance-persist: template keys follow the writer order and array map" {
     try t.expectEqualStrings("fluxer", entries.items[36].key);
     try t.expectEqualStrings("owler", entries.items[37].key);
     try t.expectEqualStrings("false", entries.items[37].value);
+    try t.expectEqualStrings("cachyos_pi", entries.items[38].key);
+    try t.expectEqualStrings("false", entries.items[38].value);
 }
 
 test "appearance-persist: load maps percents and toggles onto the settings" {

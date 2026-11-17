@@ -23,7 +23,7 @@ commands:
           name: Install dependencies
           # build.sh's Fedora list plus pam-devel: build.zig always
           # translates security/pam_appl.h and asks pkg-config for pam.pc.
-          # Zig itself is fetched by build.sh (0.17.1+), not taken from dnf.
+          # Zig itself is resolved or fetched by build.sh, not taken from dnf.
           command: |
             dnf install -y \
               git pkgconf-pkg-config curl xz tar gzip \
@@ -54,11 +54,19 @@ jobs:
             CPATH: /usr/include
           command: |
             set -euo pipefail
-            if [ -x "$HOME/.cache/event-horizon/zig-0.17.1/zig" ]; then
-              ZIG_BIN="$HOME/.cache/event-horizon/zig-0.17.1/zig"
-            else
-              ZIG_BIN="$(command -v zig)"
+            # build.sh owns the Zig version (ZIG_MIN_VERSION); never hardcode
+            # its cache path here or this step fails on the download path.
+            CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/event-horizon"
+            ZIG_BIN="$(find "$CACHE_ROOT" -maxdepth 2 -type f -name zig 2>/dev/null \
+              | sort -V | tail -n 1)"
+            if [ -z "$ZIG_BIN" ]; then
+              ZIG_BIN="$(command -v zig || true)"
             fi
+            test -n "$ZIG_BIN" || {
+              echo "error: no Zig found after build.sh; check its download step" >&2
+              exit 1
+            }
+            echo "using Zig at $ZIG_BIN"
             "$ZIG_BIN" build test
             rm -rf staging
             DESTDIR="$PWD/staging" "$ZIG_BIN" build install -Doptimize=ReleaseFast -Dcpu=x86_64_v2 --prefix /usr

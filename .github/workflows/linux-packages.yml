@@ -50,17 +50,25 @@ jobs:
           CPATH: /usr/include
         run: |
           set -euo pipefail
-          # The build script downloads Zig 0.17.1 when the distro version is
-          # missing or too old, and builds ReleaseFast for portable x86-64-v2.
+          # The build script downloads Zig when the distro version is missing
+          # or too old, and builds ReleaseFast for portable x86-64-v2.
           ./build.sh --skip-deps --cpu v2 --no-install
 
-          # Use the script-downloaded Zig when it had to bootstrap one;
-          # otherwise use the system Zig that passed build.sh's version check.
-          if [ -x "$HOME/.cache/event-horizon/zig-0.17.1/zig" ]; then
-            ZIG_BIN="$HOME/.cache/event-horizon/zig-0.17.1/zig"
-          else
-            ZIG_BIN="$(command -v zig)"
+          # Use the Zig that build.sh downloaded, else the system Zig it
+          # accepted. Do not hardcode a version here: build.sh owns it
+          # (ZIG_MIN_VERSION), and a stale copy in CI silently leaves
+          # ZIG_BIN empty on runners without a system Zig.
+          CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/event-horizon"
+          ZIG_BIN="$(find "$CACHE_ROOT" -maxdepth 2 -type f -name zig 2>/dev/null \
+            | sort -V | tail -n 1)"
+          if [ -z "$ZIG_BIN" ]; then
+            ZIG_BIN="$(command -v zig || true)"
           fi
+          test -n "$ZIG_BIN" || {
+            echo "error: no Zig found after build.sh; check its download step" >&2
+            exit 1
+          }
+          echo "using Zig at $ZIG_BIN"
 
           # Tests open sockets under XDG_RUNTIME_DIR; a bare container has none.
           export XDG_RUNTIME_DIR="$(mktemp -d)"

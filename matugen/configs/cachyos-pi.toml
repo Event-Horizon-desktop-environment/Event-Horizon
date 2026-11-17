@@ -1,0 +1,3 @@
+[templates.ehcachyospi]
+input_path = 'SHELL_DIR/matugen/templates/cachyos-pi-colors.json'
+output_path = 'CONFIG_DIR/CachyOS/cachyos-pi-colors.json'
