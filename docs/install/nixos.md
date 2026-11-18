@@ -16,7 +16,7 @@ Event Horizon is a Wayland desktop shell (not a compositor). You still need a su
 This fork includes a `flake.nix` with a development shell that provides Zig (>= 0.17.1) and the native libraries needed to build Event Horizon.
 
 ```bash
-git clone https://github.com/visadaking/Event-Horizon.git
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 
 # enter the dev environment
@@ -35,7 +35,7 @@ Build outputs (with `--no-install`) are placed in `.zig-out-release/` by `build.
 A `shell.nix` is also provided:
 
 ```bash
-git clone https://github.com/visadaking/Event-Horizon.git
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 nix-shell
 ./build.sh --no-install --skip-deps

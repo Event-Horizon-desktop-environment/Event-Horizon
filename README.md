@@ -1,4 +1,4 @@
-<img width="3200" height="960" alt="Event Horizon banner" src="https://github.com/user-attachments/assets/709ddf5b-cf76-4e9b-8a48-1a4c43434a42" />
+  <img width="3200" height="960" alt="Event Horizon banner" src="https://github.com/user-attachments/assets/709ddf5b-cf76-4e9b-8a48-1a4c43434a42" />
 
 # Event Horizon
 
@@ -32,7 +32,7 @@ Pick the guide for your distribution. Each one is a complete walkthrough from a 
 If you just want the short version and you already have the development packages, it is three commands:
 
 ```bash
-git clone https://github.com/visadaking/Event-Horizon.git
+git clone https://github.com/Event-Horizon-desktop-environment/Event-Horizon.git
 cd Event-Horizon
 ./build.sh
 ```
