@@ -226,7 +226,7 @@ When something misbehaves, the order to follow is: run `eh-ipc status` to see wh
 | `wayland-scanner` not found during the build | Install the Wayland package for your distro. It is `libwayland-bin` on Debian. |
 | `pkg-config` cannot find `librsvg-2.0`, `cairo`, `pangocairo`, `libwebp` or `libpipewire-0.3` | Install the matching `-dev` or `-devel` package. |
 | Build fails mentioning PAM | Install the PAM development package. It is `pam-devel` on Fedora and `libpam0g-dev` on Debian. |
-| The build says Zig is too old | Let `build.sh` download Zig, or install 0.16.0 or newer from ziglang.org. |
+| The build says Zig is too old | Let `build.sh` download Zig, or install 0.17.1 or newer from ziglang.org. |
 | `horizon` runs but no dock appears | Run `eh-ipc status`. Make sure every program was installed to the same folder as `horizon`. Check that `[dock] show_dock` has not been turned off. |
 | `eh-ipc` says `Is Event Horizon running?` | The supervisor is not running, or `EH_IPC_SOCKET` points at the wrong socket. |
 | The sound mixer shows no devices | PipeWire is not running. |

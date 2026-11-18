@@ -6,7 +6,7 @@ This guide covers building and running Event Horizon on Void Linux (xbps). Event
 
 - A working Wayland session/compositor
 - `git`, `sudo` (or root) access
-- Internet access (to fetch Zig 0.16.0 if your system Zig is too old)
+- Internet access (to fetch Zig 0.17.1 if your system Zig is too old)
 
 ## Step 1: Install dependencies
 
@@ -27,7 +27,7 @@ sudo xbps-install -S \
 ```
 
 Notes:
-- **Zig version:** Event Horizon requires Zig >= 0.16.0. If Void’s `zig` package is older, `./build.sh` can download the official Zig 0.16.0 into `~/.cache/event-horizon/` (use `--skip-deps` if needed and let the script manage Zig, or pass a compatible Zig with `--zig /path/to/zig`).
+- **Zig version:** Event Horizon requires Zig >= 0.17.1. If Void’s `zig` package is older, `./build.sh` can download the official Zig 0.17.1 into `~/.cache/event-horizon/` (use `--skip-deps` if needed and let the script manage Zig, or pass a compatible Zig with `--zig /path/to/zig`).
 - **PAM:** required for the lock screen (`pam-devel` provides headers; runtime PAM is part of the base system).
 - **zenity:** used for file/folder picker dialogs (e.g. wallpaper selection/palette generation).
 - **wayland-scanner:** typically provided by `wayland-devel` on Void.

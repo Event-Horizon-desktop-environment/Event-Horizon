@@ -8,11 +8,11 @@ This guide covers building and running Event Horizon on Gentoo Linux. Event Hori
 
 - A working Wayland session/compositor
 - `git`, a working toolchain, and `sudo`/root access for installing packages
-- Internet access (to fetch Zig 0.16.0 if your system Zig is too old)
+- Internet access (to fetch Zig 0.17.1 if your system Zig is too old)
 
 ## Step 1: Install dependencies
 
-Event Horizon needs Zig (>= 0.16.0), `pkg-config`, Wayland development files, and several libraries (cairo, pango, librsvg, libwebp, PipeWire, libxkbcommon, PAM, etc.).
+Event Horizon needs Zig (>= 0.17.1), `pkg-config`, Wayland development files, and several libraries (cairo, pango, librsvg, libwebp, PipeWire, libxkbcommon, PAM, etc.).
 
 Example (package atoms may differ on your system/overlays):
 
@@ -37,7 +37,7 @@ sudo emerge --ask --verbose \
 ```
 
 Notes:
-- **Zig version:** Event Horizon requires Zig >= 0.16.0. If Gentoo’s `dev-lang/zig` is older, `./build.sh` can download the official Zig 0.16.0 into `~/.cache/event-horizon/` (recommended: keep using the script’s managed Zig rather than forcing a system install).
+- **Zig version:** Event Horizon requires Zig >= 0.17.1. If Gentoo’s `dev-lang/zig` is older, `./build.sh` can download the official Zig 0.17.1 into `~/.cache/event-horizon/` (recommended: keep using the script’s managed Zig rather than forcing a system install).
 - **PAM:** required for the lock screen (headers/libs must be available at build time).
 - **zenity:** used for file/folder picker dialogs (e.g. wallpaper selection). Without it, wallpaper picking/palette generation may not work as expected.
 - **PipeWire:** required for the sound mixer; ensure PipeWire (and wireplumber/pulse compatibility if you use them) is running in your session.

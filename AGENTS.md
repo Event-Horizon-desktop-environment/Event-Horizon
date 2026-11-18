@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Event Horizon is a Wayland desktop shell written in Zig 0.16 (version 0.1.2).
+Event Horizon is a Wayland desktop shell written in Zig 0.17.1 (version 0.1.7).
 It runs as a layer-shell client next to a compositor (Hyprland, Niri, Sway,
 Mango, Labwc) and provides dock, taskbar, desktop, overview, settings,
 notifications, lock screen, wallpaper, clipboard history and audio control.
@@ -9,7 +9,7 @@ only build.
 
 ## Rules that prevent most mistakes
 
-1. Zig 0.16 differs from what you remember. This code uses the new `std.Io`
+1. Zig 0.17.1 differs from what you remember. This code uses the new `std.Io`
    API: `pub fn main(init: std.process.Init)`, `init.gpa`, `init.io`,
    `std.Io.File`, `std.Io.Dir`, and writers that take an `io` argument.
    Never write a `std` call from memory. First grep this repo for an existing

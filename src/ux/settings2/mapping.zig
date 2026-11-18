@@ -48,6 +48,10 @@ pub const launcher_keys = [_]TomlKey{
     .{ .section = "taskbar", .key = "slot_pill_opacity" },
     .{ .section = "dock", .key = "widget_dark_icons" },
     .{ .section = "taskbar", .key = "widget_dark_icons" },
+    .{ .section = "dock", .key = "widget_uncolored_icons" },
+    .{ .section = "taskbar", .key = "widget_uncolored_icons" },
+    .{ .section = "dock", .key = "widget_uncolored_dark_icons" },
+    .{ .section = "taskbar", .key = "widget_uncolored_dark_icons" },
 };
 pub fn applyDockPreview(src: app_mod.Settings, icon_count: usize) i32 {
     // Mirrors settings_dock_preview_auto_bar_px().

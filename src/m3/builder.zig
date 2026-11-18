@@ -319,7 +319,7 @@ fn widgetPaintFn(comptime T: type) ?*const fn (?*anyopaque, ?*cairo.cairo_t, f32
     // forward `0`, which is exactly what a static draw wants.
     const takes_time = blk: {
         const fn_info = @typeInfo(@TypeOf(@field(T, "paint"))).@"fn";
-        break :blk fn_info.params.len >= 3;
+        break :blk fn_info.param_types.len >= 3;
     };
 
     return struct {

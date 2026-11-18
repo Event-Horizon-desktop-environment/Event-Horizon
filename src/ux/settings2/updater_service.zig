@@ -296,12 +296,17 @@ pub fn parseDigestHex(s: []const u8) ?[32]u8 {
 pub fn installArgv(kind: PackageKind, path: []const u8, buf: *[8][]const u8) []const []const u8 {
     switch (kind) {
         .arch => {
+            // A self-update unpacks over the running install, and pacman
+            // refuses to clobber files that exist on disk without a package
+            // owner (for example an unpacked LICENSE). Let it overwrite.
             buf[0] = "pkexec";
             buf[1] = "pacman";
             buf[2] = "-U";
             buf[3] = "--noconfirm";
-            buf[4] = path;
-            return buf[0..5];
+            buf[4] = "--overwrite";
+            buf[5] = "*";
+            buf[6] = path;
+            return buf[0..7];
         },
         .deb => {
             buf[0] = "pkexec";
@@ -984,7 +989,10 @@ test "updater-service: install argv names the right package manager" {
     const arch = installArgv(.arch, "/tmp/p.pkg.tar.zst", &buf);
     try t.expectEqualStrings("pkexec", arch[0]);
     try t.expectEqualStrings("pacman", arch[1]);
-    try t.expectEqualStrings("/tmp/p.pkg.tar.zst", arch[4]);
+    try t.expectEqualStrings("--overwrite", arch[4]);
+    try t.expectEqualStrings("*", arch[5]);
+    try t.expectEqualStrings("/tmp/p.pkg.tar.zst", arch[6]);
+    try t.expectEqual(@as(usize, 7), arch.len);
     const deb = installArgv(.deb, "/tmp/p.deb", &buf);
     try t.expectEqualStrings("apt-get", deb[1]);
     const rpm = installArgv(.rpm, "/tmp/p.rpm", &buf);

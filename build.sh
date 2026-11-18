@@ -15,7 +15,7 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-readonly ZIG_MIN_VERSION="0.16.0"
+readonly ZIG_MIN_VERSION="0.17.1"
 readonly OPTIMIZE="ReleaseFast"
 readonly CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/event-horizon"
 readonly ZIG_CACHE_DIR="$CACHE_ROOT/zig-$ZIG_MIN_VERSION"

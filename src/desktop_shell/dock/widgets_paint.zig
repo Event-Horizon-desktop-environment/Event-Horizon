@@ -34,28 +34,77 @@ const trash_empty_light_svg = @embedFile("../../resources/icons/trash-empty-ligh
 const trash_empty_dark_svg = @embedFile("../../resources/icons/trash-empty-dark.svg");
 const trash_full_light_svg = @embedFile("../../resources/icons/trash-full-light.svg");
 const trash_full_dark_svg = @embedFile("../../resources/icons/trash-full-dark.svg");
+/// Settings wears the same light/dark plate rule. The uncolored variant is
+/// drawn from embedded art too, so the override works before `install-icons`.
+const settings_light_svg = @embedFile("../../resources/icons/settings-1-sliders-light.svg");
+const settings_dark_svg = @embedFile("../../resources/icons/settings-1-sliders-dark.svg");
+
+/// Monochrome artwork (`src/resources/uncolored-icons`) used by the
+/// Launcher's "Uncolored" toggle. It keeps the same light-on-dark /
+/// dark-on-light contrast rule as the full-colour plates.
+const overview_uncolored_light_svg = @embedFile("../../resources/uncolored-icons/overview-light.svg");
+const overview_uncolored_dark_svg = @embedFile("../../resources/uncolored-icons/overview-dark.svg");
+const audio_center_uncolored_light_svg = @embedFile("../../resources/uncolored-icons/audio-center-light.svg");
+const audio_center_uncolored_dark_svg = @embedFile("../../resources/uncolored-icons/audio-center-dark.svg");
+const sound_mixer_uncolored_light_svg = @embedFile("../../resources/uncolored-icons/sound-mixer-light.svg");
+const sound_mixer_uncolored_dark_svg = @embedFile("../../resources/uncolored-icons/sound-mixer-dark.svg");
+const trash_empty_uncolored_light_svg = @embedFile("../../resources/uncolored-icons/trash-empty-light.svg");
+const trash_empty_uncolored_dark_svg = @embedFile("../../resources/uncolored-icons/trash-empty-dark.svg");
+const trash_full_uncolored_light_svg = @embedFile("../../resources/uncolored-icons/trash-full-light.svg");
+const trash_full_uncolored_dark_svg = @embedFile("../../resources/uncolored-icons/trash-full-dark.svg");
+const settings_uncolored_light_svg = @embedFile("../../resources/uncolored-icons/settings-1-sliders-light.svg");
+const settings_uncolored_dark_svg = @embedFile("../../resources/uncolored-icons/settings-1-sliders-dark.svg");
 
 /// Draw the full-colour Overview artwork, choosing the variant that contrasts
-/// with `dark` chrome. Returns false when rasterization failed, so callers
-/// keep the Lucide dashboard glyph as a fallback.
-pub fn drawOverviewArtwork(cr: ?*cairo.cairo_t, dark: bool, cx: f64, cy: f64, px: f64) bool {
-    return svg_icons.drawArtwork(cr, if (dark) overview_light_svg else overview_dark_svg, cx, cy, px);
+/// with `dark` chrome. `uncolored` selects the monochrome set. Returns false
+/// when rasterization failed, so callers keep the Lucide dashboard glyph as a
+/// fallback.
+pub fn drawOverviewArtwork(cr: ?*cairo.cairo_t, dark: bool, uncolored: bool, cx: f64, cy: f64, px: f64) bool {
+    const svg = if (uncolored)
+        (if (dark) overview_uncolored_light_svg else overview_uncolored_dark_svg)
+    else
+        (if (dark) overview_light_svg else overview_dark_svg);
+    return svg_icons.drawArtwork(cr, svg, cx, cy, px);
 }
 
 /// Audio Centre speaker plate, light on a dark bar.
-pub fn drawAudioCenterArtwork(cr: ?*cairo.cairo_t, dark: bool, cx: f64, cy: f64, px: f64) bool {
-    return svg_icons.drawArtwork(cr, if (dark) audio_center_light_svg else audio_center_dark_svg, cx, cy, px);
+pub fn drawAudioCenterArtwork(cr: ?*cairo.cairo_t, dark: bool, uncolored: bool, cx: f64, cy: f64, px: f64) bool {
+    const svg = if (uncolored)
+        (if (dark) audio_center_uncolored_light_svg else audio_center_uncolored_dark_svg)
+    else
+        (if (dark) audio_center_light_svg else audio_center_dark_svg);
+    return svg_icons.drawArtwork(cr, svg, cx, cy, px);
 }
 
 /// Sound Mixer fader plate, light on a dark bar.
-pub fn drawSoundMixerArtwork(cr: ?*cairo.cairo_t, dark: bool, cx: f64, cy: f64, px: f64) bool {
-    return svg_icons.drawArtwork(cr, if (dark) sound_mixer_light_svg else sound_mixer_dark_svg, cx, cy, px);
+pub fn drawSoundMixerArtwork(cr: ?*cairo.cairo_t, dark: bool, uncolored: bool, cx: f64, cy: f64, px: f64) bool {
+    const svg = if (uncolored)
+        (if (dark) sound_mixer_uncolored_light_svg else sound_mixer_uncolored_dark_svg)
+    else
+        (if (dark) sound_mixer_light_svg else sound_mixer_dark_svg);
+    return svg_icons.drawArtwork(cr, svg, cx, cy, px);
+}
+
+/// Settings sliders plate. Normally resolved from the installed icon theme
+/// (`iconCandidates`); the uncolored override draws the embedded monochrome
+/// art directly so it never depends on `install-icons`.
+pub fn drawSettingsArtwork(cr: ?*cairo.cairo_t, dark: bool, uncolored: bool, cx: f64, cy: f64, px: f64) bool {
+    const svg = if (uncolored)
+        (if (dark) settings_uncolored_light_svg else settings_uncolored_dark_svg)
+    else
+        (if (dark) settings_light_svg else settings_dark_svg);
+    return svg_icons.drawArtwork(cr, svg, cx, cy, px);
 }
 
 /// Trash can artwork: `full` picks the filled variant, `dark` the plate that
-/// contrasts with the bar.
-pub fn drawTrashArtwork(cr: ?*cairo.cairo_t, dark: bool, full: bool, cx: f64, cy: f64, px: f64) bool {
-    const svg = if (full)
+/// contrasts with the bar, `uncolored` the monochrome set.
+pub fn drawTrashArtwork(cr: ?*cairo.cairo_t, dark: bool, uncolored: bool, full: bool, cx: f64, cy: f64, px: f64) bool {
+    const svg = if (uncolored)
+        (if (full)
+            (if (dark) trash_full_uncolored_light_svg else trash_full_uncolored_dark_svg)
+        else
+            (if (dark) trash_empty_uncolored_light_svg else trash_empty_uncolored_dark_svg))
+    else if (full)
         (if (dark) trash_full_light_svg else trash_full_dark_svg)
     else
         (if (dark) trash_empty_light_svg else trash_empty_dark_svg);
@@ -67,6 +116,12 @@ pub fn drawTrashArtwork(cr: ?*cairo.cairo_t, dark: bool, full: bool, cx: f64, cy
 /// is the `dark` argument every `draw*Artwork` call takes (true = light art).
 pub fn lightArtwork(dark_chrome: bool, force_dark: bool) bool {
     return dark_chrome and !force_dark;
+}
+
+/// Like `lightArtwork`, but the Uncolored toggle overrides the colored
+/// forced-dark preference and has its own forced-dark switch.
+pub fn artworkLight(dark_chrome: bool, force_dark: bool, uncolored: bool, uncolored_dark: bool) bool {
+    return lightArtwork(dark_chrome, if (uncolored) uncolored_dark else force_dark);
 }
 
 pub const IconPx = @import("paint.zig").IconPx;
@@ -186,6 +241,8 @@ pub const Draw = struct {
     /// Whether the bar chrome reads as dark. Artwork that ships light and
     /// dark plates picks the contrasting one: light art on a dark bar.
     dark: bool = true,
+    /// Use the monochrome artwork instead of the full-colour plates.
+    uncolored: bool = false,
     /// `Kind.trash` only: whether the trash can has anything in it. Selects
     /// the filled artwork over the empty one.
     trash_full: bool = false,
@@ -547,15 +604,16 @@ fn drawContent(c: ?*cairo.cairo_t, x: f64, y: f64, w: f64, h: f64, icon_px: f64,
             return;
         }
     }
-    if (d.kind == .overview or d.kind == .audio_center or d.kind == .volume_mixer or d.kind == .trash) {
+    if (d.kind == .overview or d.kind == .audio_center or d.kind == .volume_mixer or d.kind == .trash or (d.uncolored and d.kind == .settings)) {
         const box = @min(iconAvail(d.kind, icon_px), @min(w, h));
         const cx = x + w * 0.5;
         const cy = y + h * 0.5;
         const drawn = switch (d.kind) {
-            .overview => drawOverviewArtwork(cr, d.dark, cx, cy, box),
-            .audio_center => drawAudioCenterArtwork(cr, d.dark, cx, cy, box),
-            .volume_mixer => drawSoundMixerArtwork(cr, d.dark, cx, cy, box),
-            .trash => drawTrashArtwork(cr, d.dark, d.trash_full, cx, cy, box),
+            .overview => drawOverviewArtwork(cr, d.dark, d.uncolored, cx, cy, box),
+            .audio_center => drawAudioCenterArtwork(cr, d.dark, d.uncolored, cx, cy, box),
+            .volume_mixer => drawSoundMixerArtwork(cr, d.dark, d.uncolored, cx, cy, box),
+            .trash => drawTrashArtwork(cr, d.dark, d.uncolored, d.trash_full, cx, cy, box),
+            .settings => drawSettingsArtwork(cr, d.dark, d.uncolored, cx, cy, box),
             else => unreachable,
         };
         if (drawn) return;
@@ -680,19 +738,23 @@ test "widgets-paint: overview, audio, mixer and trash artwork rasterize in both 
     const cr = cairo.cairo_create(surf);
     defer cairo.cairo_destroy(cr);
     // Light plate for a dark bar, dark plate for a light bar.
-    try t.expect(drawOverviewArtwork(cr, true, 32, 32, 38));
-    try t.expect(drawOverviewArtwork(cr, false, 32, 32, 38));
-    try t.expect(drawAudioCenterArtwork(cr, true, 32, 32, 38));
-    try t.expect(drawAudioCenterArtwork(cr, false, 32, 32, 38));
-    try t.expect(drawSoundMixerArtwork(cr, true, 32, 32, 38));
-    try t.expect(drawSoundMixerArtwork(cr, false, 32, 32, 38));
-    // Both trash states, both plates.
-    inline for ([_]bool{ false, true }) |full| {
-        inline for ([_]bool{ true, false }) |dark| {
-            try t.expect(drawTrashArtwork(cr, dark, full, 32, 32, 38));
+    inline for ([_]bool{ false, true }) |uncolored| {
+        try t.expect(drawOverviewArtwork(cr, true, uncolored, 32, 32, 38));
+        try t.expect(drawOverviewArtwork(cr, false, uncolored, 32, 32, 38));
+        try t.expect(drawAudioCenterArtwork(cr, true, uncolored, 32, 32, 38));
+        try t.expect(drawAudioCenterArtwork(cr, false, uncolored, 32, 32, 38));
+        try t.expect(drawSoundMixerArtwork(cr, true, uncolored, 32, 32, 38));
+        try t.expect(drawSoundMixerArtwork(cr, false, uncolored, 32, 32, 38));
+        try t.expect(drawSettingsArtwork(cr, true, uncolored, 32, 32, 38));
+        try t.expect(drawSettingsArtwork(cr, false, uncolored, 32, 32, 38));
+        // Both trash states, both plates.
+        inline for ([_]bool{ false, true }) |full| {
+            inline for ([_]bool{ true, false }) |dark| {
+                try t.expect(drawTrashArtwork(cr, dark, uncolored, full, 32, 32, 38));
+            }
         }
     }
-    try t.expect(drawOverviewArtwork(null, true, 32, 32, 38) == false);
+    try t.expect(drawOverviewArtwork(null, true, false, 32, 32, 38) == false);
     try t.expect(cairo.cairo_status(cr) == cairo.CAIRO_STATUS_SUCCESS);
 }
 
@@ -704,6 +766,12 @@ test "widgets-paint: the artwork override forces the dark plate" {
     // The Settings override always lands on the dark plate.
     try t.expect(!lightArtwork(true, true));
     try t.expect(!lightArtwork(false, true));
+    // Uncolored overrides the colored forced-dark preference and has its own.
+    try t.expect(artworkLight(true, true, true, false));
+    try t.expect(!artworkLight(false, true, true, false));
+    try t.expect(!artworkLight(true, true, true, true));
+    try t.expect(!artworkLight(false, false, true, true));
+    try t.expect(!artworkLight(true, true, false, false));
 }
 
 test "widgets-paint: the generic pill and the widget pill are byte-identical" {

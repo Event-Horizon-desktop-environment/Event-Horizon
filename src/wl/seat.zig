@@ -22,6 +22,13 @@ pub const Seat = struct {
     seat: ?*wl.wl_seat = null,
     pointer: ?*wl.wl_pointer = null,
     keyboard: ?*wl.wl_keyboard = null,
+    /// Cursor shape manager (cursor-shape-v1), when the compositor offers it.
+    /// Without it the shell never sets a cursor image, so the cursor stays
+    /// whatever the previously focused client left behind — an app that
+    /// hides its pointer (a game, a video player) leaves the overview with no
+    /// cursor at all.
+    cursor_shape_manager: ?*wl.wp_cursor_shape_manager_v1 = null,
+    cursor_shape_device: ?*wl.wp_cursor_shape_device_v1 = null,
     focus_surface: ?*wl.wl_surface = null,
     pointer_x: f64 = 0,
     pointer_y: f64 = 0,
@@ -56,13 +63,50 @@ pub const Seat = struct {
 
     const Self = @This();
 
+    /// Hand the compositor's cursor-shape global to the seat. Called once the
+    /// registry pass is over, so it works regardless of global order relative
+    /// to the seat.
+    pub fn setCursorShapeManager(self: *Self, mgr: ?*wl.wp_cursor_shape_manager_v1) void {
+        self.cursor_shape_manager = mgr;
+        if (mgr != null) {
+            if (self.pointer) |p| self.bindCursorShape(p);
+        } else {
+            self.releaseCursorShape();
+        }
+    }
+
+    fn bindCursorShape(self: *Self, ptr: *wl.wl_pointer) void {
+        if (self.cursor_shape_device != null) return;
+        const mgr = self.cursor_shape_manager orelse return;
+        self.cursor_shape_device = wl.wp_cursor_shape_manager_v1_get_pointer(mgr, ptr);
+    }
+
+    fn releaseCursorShape(self: *Self) void {
+        if (self.cursor_shape_device) |dev| {
+            wl.wp_cursor_shape_device_v1_destroy(dev);
+            self.cursor_shape_device = null;
+        }
+    }
+
+    /// Restore the default arrow on every pointer enter. The shell draws
+    /// nothing for the pointer itself, so this is what guarantees a visible
+    /// cursor after another client hid it.
+    fn showDefaultCursor(self: *Self, serial: u32) void {
+        const dev = self.cursor_shape_device orelse return;
+        wl.wp_cursor_shape_device_v1_set_shape(dev, serial, wl.WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    }
+
     fn seatCaps(data: ?*anyopaque, seat: ?*wl.wl_seat, caps: u32) callconv(.c) void {
         _ = seat;
         const self: *Self = @ptrCast(@alignCast(data orelse return));
         if ((caps & wl.WL_SEAT_CAPABILITY_POINTER) != 0 and self.pointer == null) {
             self.pointer = wl.wl_seat_get_pointer(self.seat);
-            if (self.pointer) |p| _ = wl.wl_pointer_add_listener(p, &pointer_listener, self);
+            if (self.pointer) |p| {
+                _ = wl.wl_pointer_add_listener(p, &pointer_listener, self);
+                self.bindCursorShape(p);
+            }
         } else if ((caps & wl.WL_SEAT_CAPABILITY_POINTER) == 0 and self.pointer != null) {
+            self.releaseCursorShape();
             wl.wl_pointer_release(self.pointer);
             self.pointer = null;
         }
@@ -88,9 +132,9 @@ pub const Seat = struct {
 
     fn ptrEnter(data: ?*anyopaque, ptr: ?*wl.wl_pointer, serial: u32, surface: ?*wl.wl_surface, sx: wl.wl_fixed_t, sy: wl.wl_fixed_t) callconv(.c) void {
         _ = ptr;
-        _ = serial;
         const self: *Self = @ptrCast(@alignCast(data orelse return));
         self.focus_surface = surface;
+        self.showDefaultCursor(serial);
         self.pointer_x = wl.wl_fixed_to_double(sx);
         self.pointer_y = wl.wl_fixed_to_double(sy);
         if (self.on_pointer_enter) |h| h(self.cb_ctx, wl.wl_fixed_to_double(sx), wl.wl_fixed_to_double(sy));
@@ -287,6 +331,7 @@ pub const Seat = struct {
             self.keyboard = null;
         }
         if (self.pointer) |p| {
+            self.releaseCursorShape();
             wl.wl_pointer_release(p);
             self.pointer = null;
         }

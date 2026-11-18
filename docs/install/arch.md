@@ -65,7 +65,7 @@ Here is what each one is for.
 | `curl`, `xz` | Downloading and unpacking Zig. |
 | `zenity` | The folder and file picker dialogs. Without it you cannot choose a wallpaper folder, and the color palette is never generated. |
 
-You do not need to install Zig yourself. The build script uses the one on your system if it is version 0.16.0 or newer, and otherwise downloads the official 0.16.0 release into `~/.cache/event-horizon/`.
+You do not need to install Zig yourself. The build script uses the one on your system if it is version 0.17.1 or newer, and otherwise downloads the official 0.17.1 release into `~/.cache/event-horizon/`.
 
 ## Step 5: Get the source
 

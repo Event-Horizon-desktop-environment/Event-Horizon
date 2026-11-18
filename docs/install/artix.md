@@ -8,7 +8,7 @@ Artix is Arch-based and uses `pacman`, so the build dependencies are the same as
 
 - A working Wayland session/compositor
 - `git`, `sudo` (or root) access
-- Internet access (to fetch Zig 0.16.0 if your system Zig is too old)
+- Internet access (to fetch Zig 0.17.1 if your system Zig is too old)
 
 ## Step 1: Install dependencies
 
@@ -22,7 +22,7 @@ sudo pacman -S --needed git base-devel pam \
 
 Notes:
 - **PAM:** required for the lock screen (install `pam` if not already present).
-- **Zig version:** Event Horizon requires Zig >= 0.16.0. `./build.sh` will use a system Zig if compatible, otherwise it downloads Zig 0.16.0 to `~/.cache/event-horizon/`.
+- **Zig version:** Event Horizon requires Zig >= 0.17.1. `./build.sh` will use a system Zig if compatible, otherwise it downloads Zig 0.17.1 to `~/.cache/event-horizon/`.
 - **zenity:** used for file/folder picker dialogs (e.g. wallpaper selection/palette generation).
 
 ## Step 2: Get the source

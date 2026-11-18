@@ -6,7 +6,7 @@ This guide covers openSUSE (Tumbleweed/Leap) and SUSE-family systems. Event Hori
 
 - A working Wayland session/compositor
 - `git`, `sudo` (or root) access
-- Internet access (to fetch Zig 0.16.0 if your system Zig is too old)
+- Internet access (to fetch Zig 0.17.1 if your system Zig is too old)
 
 ## Step 1: Install dependencies
 
@@ -24,7 +24,7 @@ sudo zypper install -y \
 ```
 
 Notes:
-- **Zig version:** Event Horizon requires Zig >= 0.16.0. If openSUSE’s `zig` package is older/unavailable, `./build.sh` can download the official Zig 0.16.0 into `~/.cache/event-horizon/`.
+- **Zig version:** Event Horizon requires Zig >= 0.17.1. If openSUSE’s `zig` package is older/unavailable, `./build.sh` can download the official Zig 0.17.1 into `~/.cache/event-horizon/`.
 - **PAM:** `pam-devel` is required for the lock screen build.
 - **zenity:** used for file/folder picker dialogs (e.g. wallpaper selection/palette generation).
 - Package names can vary slightly between Tumbleweed and Leap; adjust if `zypper` reports missing names.

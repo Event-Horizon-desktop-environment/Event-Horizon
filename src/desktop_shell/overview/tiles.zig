@@ -178,7 +178,7 @@ pub fn fittedSurface(
     const scale = @min(rect_w / iw, rect_h / ih);
     const fw: i32 = @max(1, @as(i32, @intFromFloat(iw * scale)));
     const fh: i32 = @max(1, @as(i32, @intFromFloat(ih * scale)));
-    const k: u8 = @intFromEnum(kind);
+    const k: u8 = @backingInt(kind);
     const ent = cache.find(k, id, frame.gen, rw, rh) orelse blk: {
         const surf = scaleTo(frame, fw, fh) orelse return .{};
         break :blk cache.insertScaled(k, id, frame.gen, rw, rh, fw, fh, surf) orelse {
@@ -334,6 +334,44 @@ pub fn paintFocusRing(
     cairo.cairo_set_source_rgba(c, acc[0], acc[1], acc[2], 0.85 * alpha);
     cairo.cairo_set_line_width(c, 2.0 * ui);
     cairo_helpers.roundedRect(c, tile.x, tile.y, tile.w, tile.h, 12.0 * ui);
+    cairo.cairo_stroke(c);
+}
+
+/// Hover cue for a window tile: a soft accent glow under a bright hairline
+/// ring. Painted over live frames as well as tinted tiles — a captured
+/// window would otherwise get no feedback at all, only its close button.
+pub fn paintHoverRing(
+    cr: ?*cairo.cairo_t,
+    tile: Rect,
+    ui: f64,
+    colors: Colors,
+    alpha: f64,
+) void {
+    const c = cr orelse return;
+    if (alpha <= 0.0 or tile.w <= 0.0 or tile.h <= 0.0) return;
+    const r = 12.0 * ui;
+    const acc = colors.accent;
+
+    // Glow: a widening accent stroke that fades outward, clipped to the
+    // tile's rounded shape so it reads as light around the edge rather than
+    // a blurred second border.
+    cairo.cairo_save(c);
+    cairo_helpers.roundedRect(c, tile.x, tile.y, tile.w, tile.h, r);
+    cairo.cairo_clip(c);
+    var band: i32 = 4;
+    while (band >= 1) : (band -= 1) {
+        const bw = @as(f64, @floatFromInt(band)) * 2.2 * ui;
+        cairo.cairo_set_source_rgba(c, acc[0], acc[1], acc[2], 0.045 * alpha);
+        cairo.cairo_set_line_width(c, bw);
+        cairo_helpers.roundedRect(c, tile.x, tile.y, tile.w, tile.h, r);
+        cairo.cairo_stroke(c);
+    }
+    cairo.cairo_restore(c);
+
+    // Core ring: light enough to stand out over a bright capture.
+    cairo.cairo_set_source_rgba(c, 1, 1, 1, 0.66 * alpha);
+    cairo.cairo_set_line_width(c, 1.5 * ui);
+    cairo_helpers.roundedRect(c, tile.x, tile.y, tile.w, tile.h, r);
     cairo.cairo_stroke(c);
 }
 

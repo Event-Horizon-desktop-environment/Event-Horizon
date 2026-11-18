@@ -4,7 +4,7 @@ This page is for people who want to build by hand, work on the code, or understa
 
 ## Building by hand
 
-`build.sh` is a wrapper around `zig build`. If you want to drive Zig yourself, you need Zig 0.16.0 or newer and the same development libraries the script would install. Check [build-sh.md](build-sh.md) and your distro guide for package names. Do not forget PAM.
+`build.sh` is a wrapper around `zig build`. If you want to drive Zig yourself, you need Zig 0.17.1 or newer and the same development libraries the script would install. Check [build-sh.md](build-sh.md) and your distro guide for package names. Do not forget PAM.
 
 ```bash
 zig build -Doptimize=ReleaseFast                       # this machine's default CPU target
@@ -19,7 +19,7 @@ The libraries the build needs are these:
 
 | Dependency | Used for |
 |---|---|
-| Zig 0.16.0 or newer | Compiler and build system |
+| Zig 0.17.1 or newer | Compiler and build system |
 | `pkg-config` | Finding the native libraries |
 | `wayland-client`, `wayland-protocols`, `wayland-scanner` | Talking to the compositor and generating protocol code |
 | `libxkbcommon` | Keyboard handling |

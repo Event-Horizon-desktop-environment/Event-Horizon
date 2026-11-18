@@ -13,7 +13,7 @@ If you only want to get Event Horizon installed, use the guide for your distribu
 With no options the script does these things in order:
 
 1. Checks that the libraries Event Horizon needs are installed, and installs the missing ones with your package manager.
-2. Finds a Zig compiler that is version 0.16.0 or newer, and downloads one if it cannot.
+2. Finds a Zig compiler that is version 0.17.1 or newer, and downloads one if it cannot.
 3. Looks at your CPU and picks the highest x86-64 level it supports.
 4. Builds everything in `ReleaseFast` mode.
 5. Installs the result to `/usr`, asking for administrator rights once.
@@ -100,7 +100,7 @@ Limits how many things the compiler builds at once. It is passed to Zig as `-jN`
 
 ### --zig
 
-Use a specific Zig compiler. The script checks that it is version 0.16.0 or newer. If it is not, the script stops with an error. It does not quietly fall back to another Zig, because you asked for that one specifically.
+Use a specific Zig compiler. The script checks that it is version 0.17.1 or newer. If it is not, the script stops with an error. It does not quietly fall back to another Zig, because you asked for that one specifically.
 
 ## What happens, step by step
 
@@ -127,14 +127,14 @@ Second, the check is only about libraries `pkg-config` can see. `zenity`, which 
 
 ### 2. Zig
 
-Event Horizon needs Zig 0.16.0 or newer. The script looks in this order and takes the first that works:
+Event Horizon needs Zig 0.17.1 or newer. The script looks in this order and takes the first that works:
 
 1. The Zig you named with `--zig` or `ZIG`. If it is too old, that is an error.
 2. A `zig` on your `PATH`, if it is new enough. If it is too old, the script warns and keeps looking.
-3. A copy it downloaded on an earlier run, kept in `~/.cache/event-horizon/zig-0.16.0/` (it respects `XDG_CACHE_HOME` if you have set that).
+3. A copy it downloaded on an earlier run, kept in `~/.cache/event-horizon/zig-0.17.1/` (it respects `XDG_CACHE_HOME` if you have set that).
 4. A fresh download.
 
-For a download, it needs `curl` or `wget`, plus `tar` and `xz`. If those are missing it installs them with the package manager, unless you passed `--skip-deps`, in which case it stops. It fetches the official 0.16.0 release for your architecture from ziglang.org, supporting x86-64 and ARM64. It unpacks into the cache folder, checks the version, and uses it. On any other architecture it stops, because it has no download for it.
+For a download, it needs `curl` or `wget`, plus `tar` and `xz`. If those are missing it installs them with the package manager, unless you passed `--skip-deps`, in which case it stops. It fetches the official 0.17.1 release for your architecture from ziglang.org, supporting x86-64 and ARM64. It unpacks into the cache folder, checks the version, and uses it. On any other architecture it stops, because it has no download for it.
 
 This downloaded Zig is only used by the build script. It does not install anything into your system and nothing else uses it.
 
@@ -255,8 +255,8 @@ If you cannot or do not want to use the script's install step, you can build wit
 | `unsupported distro; install the Wayland/Cairo/Pango/librsvg/libwebp/PipeWire development packages manually` | The script does not recognize your distribution. Install the packages yourself and run with `--skip-deps`. |
 | `dependencies are still missing: ...` | The package manager ran but the libraries are still not visible to `pkg-config`. Check that the installs really worked and that package names exist on your release. |
 | `install the missing packages or rerun without --skip-deps` | You passed `--skip-deps` and something is missing. Install it, or drop the option. |
-| `X is not Zig 0.16.0 or newer` | The Zig you named is too old. Use a newer one, or drop `--zig` and let the script manage Zig. |
-| `could not download Zig 0.16.0` | No network, or ziglang.org was unreachable. Check your connection and try again. |
+| `X is not Zig 0.17.1 or newer` | The Zig you named is too old. Use a newer one, or drop `--zig` and let the script manage Zig. |
+| `could not download Zig 0.17.1` | No network, or ziglang.org was unreachable. Check your connection and try again. |
 | `--cpu needs a value`, `--jobs needs a value`, and similar | You left off the value after an option. |
 | `--prefix must be an absolute path` | Start the path with `/`. |
 | `--jobs must be a number` | Use a plain whole number. |
