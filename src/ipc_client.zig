@@ -277,7 +277,7 @@ fn sleepMs(ms: i64) void {
 pub fn socketPathFor(alloc: std.mem.Allocator, eh_ipc_socket: ?[]const u8, xdg_runtime: ?[]const u8) ![]u8 {
     if (eh_ipc_socket) |p| return alloc.dupe(u8, p);
     if (xdg_runtime) |d| return std.fs.path.join(alloc, &.{ d, "event-horizon-ipc.sock" });
-    return alloc.dupe(u8, "/tmp/event-horizon-ipc.sock");
+    return std.fmt.allocPrint(alloc, "/tmp/event-horizon-ipc-{d}.sock", .{linux.getuid()});
 }
 
 pub fn sendLegacy(alloc: std.mem.Allocator, path: []const u8, line: []const u8) ![]u8 {

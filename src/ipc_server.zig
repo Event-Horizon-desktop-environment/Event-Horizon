@@ -78,11 +78,13 @@ pub const Service = struct {
             const dir = try std.fs.path.join(alloc, &.{ d, "event-horizon-ipc.sock" });
             return dir;
         }
-        return alloc.dupe(u8, "/tmp/event-horizon-ipc.sock");
+        return std.fmt.allocPrint(alloc, "/tmp/event-horizon-ipc-{d}.sock", .{linux.getuid()});
     }
 
     pub fn start(self: *Service, path: []const u8) !void {
         if (self.listen_fd >= 0) self.stop();
+        if (path.len >= sock.sun_path_len) return error.PathTooLong;
+
         self.socket_path = try self.alloc.dupe(u8, path);
         errdefer {
             self.alloc.free(self.socket_path);
@@ -297,6 +299,28 @@ pub const Service = struct {
         if (dead) self.removeClient(fd);
     }
 
+    fn sendLegacyBounded(fd: i32, data: []const u8) void {
+        var off: usize = 0;
+        const deadline = sock.nowMs() + 100;
+        while (off < data.len) {
+            const rc = linux.sendto(fd, data[off..].ptr, data.len - off, linux.MSG.NOSIGNAL, null, 0);
+            const e = linux.errno(rc);
+            if (e == .SUCCESS) {
+                const n: usize = @intCast(rc);
+                if (n == 0) return;
+                off += n;
+                continue;
+            }
+            if (e == .INTR) continue;
+            if (e == .AGAIN) {
+                if (sock.nowMs() >= deadline) return;
+                sock.sleepMs(1);
+                continue;
+            }
+            return;
+        }
+    }
+
     fn dispatchLegacy(self: *Service, fd: i32) void {
         var buf: [ipc.max_legacy_cmd]u8 = undefined;
         const n = linux.read(fd, &buf, buf.len);
@@ -310,7 +334,7 @@ pub const Service = struct {
         if (std.mem.indexOfScalar(u8, line, '\n')) |nl| {
             line = line[0..nl];
         } else if (got == ipc.max_legacy_cmd) {
-            sock.sendAll(fd, "error command too long\n") catch {};
+            sendLegacyBounded(fd, "error command too long\n");
             sock.closeFd(fd);
             return;
         }
@@ -322,7 +346,7 @@ pub const Service = struct {
             sock.closeFd(fd);
             return;
         };
-        sock.sendAll(fd, out) catch {};
+        sendLegacyBounded(fd, out);
         sock.closeFd(fd);
     }
 

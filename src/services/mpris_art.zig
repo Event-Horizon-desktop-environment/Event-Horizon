@@ -100,7 +100,10 @@ pub fn resolve(alloc: std.mem.Allocator, raw: []const u8) ?[]const u8 {
     }
 
     if (startsWithCi(path, "cider-cache://")) return alloc.dupe(u8, path) catch null;
-    if (startsWithCi(path, "http")) return alloc.dupe(u8, path) catch null;
+    if (startsWithCi(path, "http")) {
+        if (!isAllowedRemoteArtUrl(path)) return null;
+        return alloc.dupe(u8, path) catch null;
+    }
     if (path.len > 0 and path[0] == '/') return alloc.dupe(u8, path) catch null;
     return null;
 }
@@ -284,6 +287,8 @@ pub fn loadFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) ?Cover {
 /// on a worker thread and never on the shell's own; the bytes come back owned
 /// by the caller.
 pub fn fetchBytes(alloc: std.mem.Allocator, io: std.Io, url: []const u8) ![]u8 {
+    if (!isAllowedRemoteArtUrl(url)) return error.DisallowedScheme;
+
     var client = std.http.Client{ .allocator = alloc, .io = io };
     defer client.deinit();
     var aw = std.Io.Writer.Allocating.init(alloc);
@@ -300,6 +305,24 @@ pub fn fetchBytes(alloc: std.mem.Allocator, io: std.Io, url: []const u8) ![]u8 {
         return error.TooLarge;
     }
     return body;
+}
+
+fn isAllowedRemoteArtUrl(url: []const u8) bool {
+    if (std.mem.startsWith(u8, url, "https://")) return true;
+    if (!std.mem.startsWith(u8, url, "http://")) return false;
+
+    const rest = url["http://".len..];
+    var end = rest.len;
+    for (rest, 0..) |c, i| {
+        if (c == '/' or c == ':' or c == '?' or c == '#') {
+            end = i;
+            break;
+        }
+    }
+    const host = rest[0..end];
+    return std.ascii.eqlIgnoreCase(host, "localhost") or
+        std.ascii.eqlIgnoreCase(host, "127.0.0.1") or
+        std.ascii.eqlIgnoreCase(host, "[::1]");
 }
 
 const Reduced = struct { w: i32, h: i32, pixels: []u8 };
@@ -431,11 +454,13 @@ test "mpris-art: a local file URL becomes a decoded path" {
 
 test "mpris-art: only readable schemes resolve" {
     const t = std.testing;
-    const http = resolve(t.allocator, "https://x/cover.jpg") orelse return error.SkipZigTest;
-    defer t.allocator.free(http);
-    try t.expectEqualStrings("https://x/cover.jpg", http);
-    const plain = resolve(t.allocator, "http://x/cover.jpg") orelse return error.SkipZigTest;
-    defer t.allocator.free(plain);
+    const https = resolve(t.allocator, "https://x/cover.jpg") orelse return error.SkipZigTest;
+    defer t.allocator.free(https);
+    try t.expectEqualStrings("https://x/cover.jpg", https);
+    try t.expect(resolve(t.allocator, "http://x/cover.jpg") == null);
+    const loopback = resolve(t.allocator, "http://127.0.0.1/cover.jpg") orelse return error.SkipZigTest;
+    defer t.allocator.free(loopback);
+    try t.expectEqualStrings("http://127.0.0.1/cover.jpg", loopback);
     const cached = resolve(t.allocator, "cider-cache://covers/1") orelse return error.SkipZigTest;
     defer t.allocator.free(cached);
     try t.expect(resolve(t.allocator, "") == null);

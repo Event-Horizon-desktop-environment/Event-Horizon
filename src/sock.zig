@@ -10,6 +10,7 @@ pub const SockError = error{
     SendFailed,
     RecvFailed,
     TruncatedControl,
+    PathTooLong,
     OutOfMemory,
 };
 
@@ -80,6 +81,7 @@ pub fn createStream(nonblock: bool) SockError!i32 {
 }
 
 pub fn bindPath(fd: i32, path: []const u8) SockError!void {
+    if (path.len >= sun_path_len) return error.PathTooLong;
     var addr = AddrUn.init(path);
     const rc = linux.bind(fd, @ptrCast(&addr), @sizeOf(AddrUn));
     if (check(rc)) |_| return error.BindFailed;
@@ -99,6 +101,7 @@ pub fn acceptConn(listen_fd: i32) ?i32 {
 }
 
 pub fn connectPath(fd: i32, path: []const u8) ?linux.E {
+    if (path.len >= sun_path_len) return linux.E.NAMETOOLONG;
     var addr = AddrUn.init(path);
     const rc = linux.connect(fd, @ptrCast(&addr), @sizeOf(AddrUn));
     return check(rc);
