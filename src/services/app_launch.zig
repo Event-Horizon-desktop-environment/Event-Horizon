@@ -57,12 +57,23 @@ pub fn freeDirs(alloc: std.mem.Allocator, dirs: [][]const u8) void {
 /// `kde/org.kde.foo.desktop`), then — when no spelling of the id names a file
 /// at all — the entry whose `StartupWMClass` names the window the app opens.
 /// Returns an owned absolute-ish path.
+fn isSafeDesktopId(app_id: []const u8) bool {
+    if (app_id.len == 0) return false;
+    if (std.mem.eql(u8, app_id, ".") or std.mem.eql(u8, app_id, "..")) return false;
+    for (app_id) |c| {
+        if (c == 0 or c == '/' or c == '\\') return false;
+    }
+    return true;
+}
+
 pub fn findDesktopPath(
     alloc: std.mem.Allocator,
     io: std.Io,
     dirs: []const []const u8,
     app_id: []const u8,
 ) ?[]u8 {
+    if (!isSafeDesktopId(app_id)) return null;
+
     var namebuf: [512]u8 = undefined;
     const fname: []const u8 = if (std.mem.endsWith(u8, app_id, ".desktop"))
         app_id
@@ -761,4 +772,29 @@ test "app-launch: the window-class index answers for the path it was built under
     defer if (again) |p| t.allocator.free(p);
     try t.expect(again != null);
     try t.expectEqualStrings("com.example.First.desktop", std.fs.path.basename(again.?));
+}
+
+test "app-launch: rejects unsafe desktop ids" {
+    const t = std.testing;
+    const io = std.testing.io;
+
+    var dirs = [_][]const u8{};
+
+    const bad = [_][]const u8{
+        "",
+        ".",
+        "..",
+        "../evil",
+        "foo/bar",
+        "/abs/path.desktop",
+        "..\\evil.desktop",
+    };
+    for (bad) |id| {
+        try t.expect(findDesktopPath(t.allocator, io, &dirs, id) == null);
+        try t.expectError(error.NotFound, prepare(t.allocator, io, &dirs, id));
+    }
+
+    const with_nul = "evil\x00id";
+    try t.expect(findDesktopPath(t.allocator, io, &dirs, with_nul) == null);
+    try t.expectError(error.NotFound, prepare(t.allocator, io, &dirs, with_nul));
 }
